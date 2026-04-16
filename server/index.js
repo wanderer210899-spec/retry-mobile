@@ -1,0 +1,208 @@
+const crypto = require('node:crypto');
+
+const { runJob } = require('./job-runner');
+const { isTermuxAvailable } = require('./notifier');
+const { createStructuredError, toStructuredError } = require('./retry-error');
+const { buildChatKey, createJob, getJob, getJobByChat, serializeJob, touchJob } = require('./state');
+
+const PLUGIN_ID = 'auto-reroll';
+
+function init(router, config) {
+    const app = router;
+    const environment = {
+        baseUrl: `http://127.0.0.1:${config?.port || 8000}`,
+    };
+
+    app.get('/capabilities', (_request, response) => {
+        return response.send({
+            termux: isTermuxAvailable(),
+        });
+    });
+
+    app.post('/start', async (request, response) => {
+        try {
+            if (!request.body?.chatIdentity || !request.body?.capturedRequest || !request.body?.runConfig || !request.body?.targetFingerprint) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'Missing required start payload fields.',
+                ));
+                return response.status(400).send({
+                    error: structuredError.message,
+                    structuredError,
+                });
+            }
+
+            const targetAcceptedCount = Number(request.body.runConfig.targetAcceptedCount) || 1;
+            const maxAttempts = Number(request.body.runConfig.maxAttempts) || 1;
+            if (maxAttempts < targetAcceptedCount) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'Maximum attempts must be at least as large as the accepted outputs goal.',
+                ));
+                return response.status(400).send({
+                    error: structuredError.message,
+                    structuredError,
+                });
+            }
+
+            const existing = getJobByChat(request.body.chatIdentity);
+            if (existing) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'A Retry Mobile job is already running for this chat.',
+                ));
+                return response.status(409).send({
+                    error: structuredError.message,
+                    structuredError,
+                    job: serializeJob(existing),
+                });
+            }
+
+            const targetFingerprint = normalizeFingerprint(request.body.targetFingerprint, request.body.chatIdentity);
+            const assistantMessageIndex = Number(request.body.assistantMessageIndex);
+            if (!targetFingerprint || !Number.isFinite(assistantMessageIndex) || assistantMessageIndex < 0) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'The backend did not receive a confirmed target turn for this run.',
+                ));
+                return response.status(400).send({
+                    error: structuredError.message,
+                    structuredError,
+                });
+            }
+
+            const job = createJob({
+                jobId: crypto.randomUUID(),
+                runId: typeof request.body.runId === 'string' && request.body.runId
+                    ? request.body.runId
+                    : crypto.randomUUID(),
+                chatKey: buildChatKey(request.body.chatIdentity),
+                chatIdentity: request.body.chatIdentity,
+                targetAcceptedCount,
+                maxAttempts,
+                acceptedCount: 0,
+                runConfig: request.body.runConfig,
+                capturedRequest: request.body.capturedRequest,
+                captureMeta: request.body.captureMeta || {},
+                assistantMessageIndex,
+                targetFingerprint,
+                userContext: {
+                    handle: request.user.profile.handle,
+                    directories: request.user.directories,
+                },
+                authHeaders: buildAuthHeaders(request),
+            });
+
+            void runJob(job, environment);
+            return response.send({
+                ok: true,
+                jobId: job.jobId,
+                job: serializeJob(job),
+                termux: isTermuxAvailable(),
+            });
+        } catch (error) {
+            console.error('[retry-mobile:backend] Start failed:', error);
+            const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not start the backend job.');
+            return response.status(500).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+    });
+
+    app.get('/status/:jobId', async (request, response) => {
+        const job = getJob(request.params.jobId);
+        if (!job) {
+            const structuredError = toStructuredError(createStructuredError(
+                'handoff_request_failed',
+                'Job not found.',
+            ));
+            return response.status(404).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+
+        return response.send(serializeJob(job));
+    });
+
+    app.post('/cancel/:jobId', async (request, response) => {
+        const job = getJob(request.params.jobId);
+        if (!job) {
+            const structuredError = toStructuredError(createStructuredError(
+                'handoff_request_failed',
+                'Job not found.',
+            ));
+            return response.status(404).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+
+        touchJob(job, {
+            cancelRequested: true,
+            state: 'cancelled',
+            phase: 'cancel_requested',
+        });
+        return response.send({ ok: true, job: serializeJob(job) });
+    });
+
+    app.get('/active', async (request, response) => {
+        const identity = {
+            kind: request.query.groupId ? 'group' : 'character',
+            chatId: String(request.query.chatId || ''),
+            groupId: request.query.groupId ? String(request.query.groupId) : null,
+        };
+        const job = getJobByChat(identity);
+        return response.send(job ? serializeJob(job) : {});
+    });
+}
+
+function buildAuthHeaders(request) {
+    const headers = {};
+    const cookie = request.headers?.cookie;
+    const csrf = request.headers?.['x-csrf-token'];
+
+    if (cookie) {
+        headers.Cookie = cookie;
+    }
+
+    if (csrf) {
+        headers['x-csrf-token'] = csrf;
+    }
+
+    return headers;
+}
+
+function normalizeFingerprint(fingerprint, chatIdentity) {
+    if (!fingerprint || typeof fingerprint !== 'object') {
+        return null;
+    }
+
+    const userMessageIndex = Number(fingerprint.userMessageIndex);
+    const userMessageText = typeof fingerprint.userMessageText === 'string'
+        ? fingerprint.userMessageText
+        : '';
+    if (!Number.isFinite(userMessageIndex) || userMessageIndex < 0 || !userMessageText) {
+        return null;
+    }
+
+    return {
+        chatIdentity,
+        userMessageIndex,
+        userMessageText,
+        capturedAt: typeof fingerprint.capturedAt === 'string' ? fingerprint.capturedAt : new Date().toISOString(),
+        requestType: typeof fingerprint.requestType === 'string' ? fingerprint.requestType : '',
+        messageIdHint: Number.isFinite(Number(fingerprint.messageIdHint)) ? Number(fingerprint.messageIdHint) : null,
+    };
+}
+
+module.exports = {
+    init,
+    info: {
+        id: PLUGIN_ID,
+        name: 'Retry Mobile Auto Reroll',
+        description: 'Backend retry loop for captured SillyTavern requests.',
+    },
+};
+

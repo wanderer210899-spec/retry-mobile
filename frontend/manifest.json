@@ -1,0 +1,11 @@
+{
+    "display_name": "Retry Mobile",
+    "loading_order": 120,
+    "js": "index.js",
+    "css": "style.css",
+    "author": "",
+    "version": "0.1.0",
+    "homePage": "",
+    "auto_update": false,
+    "dependencies": []
+}
