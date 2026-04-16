@@ -11,6 +11,16 @@
     padding: 0;
 }
 
+.rm-title-link {
+    color: inherit;
+    text-decoration: none;
+}
+
+.rm-title-link:hover,
+.rm-title-link:focus-visible {
+    text-decoration: underline;
+}
+
 .rm-panel__body {
     display: grid;
     gap: 14px;
@@ -200,6 +210,69 @@
 .rm-checkbox__copy {
     display: grid;
     gap: 2px;
+}
+
+.rm-release-card {
+    display: grid;
+    gap: 10px;
+}
+
+.rm-release-card__header {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: center;
+}
+
+.rm-release-card__link {
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.rm-release-card__link:hover,
+.rm-release-card__link:focus-visible {
+    text-decoration: underline;
+}
+
+.rm-release-card__status {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--rm-border);
+    font-size: 0.86rem;
+    font-weight: 700;
+}
+
+.rm-release-card__status--ok {
+    border-color: color-mix(in srgb, #64b96a 55%, white);
+}
+
+.rm-release-card__status--warning {
+    border-color: color-mix(in srgb, #d6ab4c 55%, white);
+}
+
+.rm-release-card__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 10px;
+}
+
+.rm-release-card__grid > div {
+    display: grid;
+    gap: 4px;
+    padding: 10px;
+    border-radius: 12px;
+    border: 1px solid var(--rm-border);
+    background: color-mix(in srgb, var(--rm-bg) 62%, transparent);
+}
+
+.rm-release-card__grid strong {
+    font-size: 0.82rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    opacity: 0.78;
 }
 
 .rm-actions {

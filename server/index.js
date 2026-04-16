@@ -2,10 +2,10 @@ const crypto = require('node:crypto');
 
 const { runJob } = require('./job-runner');
 const { isTermuxAvailable } = require('./notifier');
+const { PLUGIN_ID, PLUGIN_NAME } = require('./plugin-meta');
 const { createStructuredError, toStructuredError } = require('./retry-error');
+const { getReleaseInfo } = require('./update-info');
 const { buildChatKey, createJob, getJob, getJobByChat, serializeJob, touchJob } = require('./state');
-
-const PLUGIN_ID = 'auto-reroll';
 
 function init(router, config) {
     const app = router;
@@ -17,6 +17,18 @@ function init(router, config) {
         return response.send({
             termux: isTermuxAvailable(),
         });
+    });
+
+    app.get('/release-info', async (request, response) => {
+        try {
+            const info = await getReleaseInfo(request);
+            return response.send(info);
+        } catch (error) {
+            console.error('[retry-mobile:backend] Release info failed:', error);
+            return response.status(500).send({
+                error: error instanceof Error ? error.message : String(error),
+            });
+        }
     });
 
     app.post('/start', async (request, response) => {
@@ -201,7 +213,7 @@ module.exports = {
     init,
     info: {
         id: PLUGIN_ID,
-        name: 'Retry Mobile Auto Reroll',
+        name: PLUGIN_NAME,
         description: 'Backend retry loop for captured SillyTavern requests.',
     },
 };

@@ -1,10 +1,12 @@
 export const EXTENSION_ID = 'retry-mobile';
 export const EXTENSION_NAME = 'Retry Mobile';
+export const BACKEND_PLUGIN_ID = 'retry-mobile';
 export const SETTINGS_KEY = 'retryMobile';
 export const PANEL_ID = 'retry-mobile-panel';
 export const MENU_ITEM_ID = 'retry-mobile-menu-item';
 export const QUICK_REPLY_SET_NAME = 'Retry Mobile';
 export const SLASH_COMMAND_PREFIX = 'retry-mobile';
+export const REPOSITORY_URL = 'https://github.com/wanderer210899-spec/retry-mobile';
 
 export const RUN_STATE = Object.freeze({
     IDLE: 'idle',

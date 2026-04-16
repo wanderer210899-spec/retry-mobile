@@ -1,9 +1,11 @@
 import {
+    BACKEND_PLUGIN_ID,
     EXTENSION_ID,
     EXTENSION_NAME,
     LOG_PREFIX,
     PANEL_ID,
     POLL_INTERVAL_MS,
+    REPOSITORY_URL,
     RUN_MODE,
     RUN_STATE,
     SLASH_COMMAND_PREFIX,
@@ -22,6 +24,7 @@ import {
     fetchActiveJob,
     fetchCapabilities,
     fetchJobStatus,
+    fetchReleaseInfo,
     getStructuredErrorFromApi,
     startBackendJob,
 } from './backend-api.js';
@@ -46,6 +49,7 @@ const runtime = {
     stats: null,
     diagnosticsContainer: null,
     debugContainer: null,
+    releaseInfoContainer: null,
     errorBox: null,
     noteBox: null,
     actionToggleButton: null,
@@ -66,6 +70,7 @@ const runtime = {
     fingerprint: null,
     assistantMessageIndex: null,
     termuxAvailable: false,
+    releaseInfo: null,
 };
 
 export function bootRetryMobile() {
@@ -81,6 +86,7 @@ export function bootRetryMobile() {
         runtime.termuxAvailable = Boolean(caps?.termux);
         render();
     });
+    void refreshReleaseInfo();
 }
 
 function mountPanel() {
@@ -104,7 +110,7 @@ function mountPanel() {
     drawer.className = 'inline-drawer';
     drawer.innerHTML = `
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b>${EXTENSION_NAME}</b>
+            <b><a class="rm-title-link" href="${REPOSITORY_URL}" target="_blank" rel="noopener noreferrer">${EXTENSION_NAME}</a></b>
             <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
@@ -112,6 +118,10 @@ function mountPanel() {
                 <section class="rm-panel__status">
                     <div class="rm-status-pill" data-role="state-pill" data-state="${RUN_STATE.IDLE}">Idle</div>
                     <div class="rm-stat-grid" data-role="stats"></div>
+                </section>
+                <section class="rm-fieldset">
+                    <div class="rm-fieldset__title">Install & Update</div>
+                    <div class="rm-release-card" data-role="release-info">Checking Retry Mobile install status...</div>
                 </section>
                 <section class="rm-settings-grid">
                     <div class="rm-field rm-field--wide">
@@ -206,7 +216,7 @@ function mountPanel() {
                 <section class="rm-diagnostics" data-role="diagnostics"></section>
                 <section class="rm-diagnostics" data-role="debug-box"></section>
                 <div class="rm-panel__meta">
-                    <span>Backend route: <code>/api/plugins/auto-reroll/*</code></span>
+                    <span>Backend route: <code>/api/plugins/${BACKEND_PLUGIN_ID}/*</code></span>
                     <span>Owner model: native ST first, Retry Mobile top-up second</span>
                 </div>
             </div>
@@ -219,6 +229,7 @@ function mountPanel() {
     runtime.stats = drawer.querySelector('[data-role="stats"]');
     runtime.diagnosticsContainer = drawer.querySelector('[data-role="diagnostics"]');
     runtime.debugContainer = drawer.querySelector('[data-role="debug-box"]');
+    runtime.releaseInfoContainer = drawer.querySelector('[data-role="release-info"]');
     runtime.errorBox = drawer.querySelector('[data-role="error-box"]');
     runtime.noteBox = drawer.querySelector('[data-role="note-box"]');
     runtime.actionToggleButton = drawer.querySelector('[data-action="toggle-run"]');
@@ -230,8 +241,43 @@ function mountPanel() {
     render();
 }
 
+async function refreshReleaseInfo() {
+    try {
+        runtime.releaseInfo = await fetchReleaseInfo();
+    } catch (error) {
+        backendLog.warn('Could not fetch release info.', error);
+        runtime.releaseInfo = {
+            repositoryUrl: REPOSITORY_URL,
+            update: {
+                canCheck: false,
+                hasUpdate: false,
+                message: error?.message || 'Retry Mobile could not reach the backend release endpoint.',
+            },
+            installed: {
+                backend: { installed: true, version: '' },
+                frontend: { installed: false, version: '', scope: 'missing' },
+            },
+            latest: {
+                backendVersion: '',
+                frontendVersion: '',
+            },
+            instructions: {
+                updateNow: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.',
+                addProfile: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now to add another profile or install for everyone.',
+            },
+        };
+    }
+
+    render();
+}
+
 function bindPanelEvents(drawer) {
     drawer.addEventListener('click', async (event) => {
+        if (event.target?.closest?.('.rm-title-link')) {
+            event.stopPropagation();
+            return;
+        }
+
         const action = event.target?.closest?.('[data-action]')?.dataset?.action;
         if (!action) {
             const header = event.target?.closest?.('.inline-drawer-toggle');
@@ -911,6 +957,9 @@ function render() {
     if (runtime.quickReplyStatusLine) {
         runtime.quickReplyStatusLine.textContent = renderQuickReplyStatusLine(runtime.quickReplyStatus);
     }
+    if (runtime.releaseInfoContainer) {
+        runtime.releaseInfoContainer.innerHTML = renderReleaseInfo();
+    }
     runtime.diagnosticsContainer.innerHTML = renderDiagnostics();
     runtime.debugContainer.innerHTML = renderDebugPanel(snapshot);
 
@@ -972,6 +1021,44 @@ function renderDiagnostics() {
         </ul>
         <div class="rm-diagnostics__line">Required native events:</div>
         <ul class="rm-diagnostics__list">${eventItems}</ul>
+    `;
+}
+
+function renderReleaseInfo() {
+    if (!runtime.releaseInfo) {
+        return '<div class="rm-diagnostics__line">Checking Retry Mobile install status...</div>';
+    }
+
+    const info = runtime.releaseInfo;
+    const backendVersion = info.installed?.backend?.version || 'unknown';
+    const frontendVersion = info.installed?.frontend?.installed
+        ? info.installed?.frontend?.version || 'unknown'
+        : 'not installed';
+    const latestBackend = info.latest?.backendVersion || 'unknown';
+    const latestFrontend = info.latest?.frontendVersion || 'unknown';
+    const updateMessage = info.update?.message || 'Update information unavailable.';
+    const updateStateClass = info.update?.hasUpdate ? 'rm-release-card__status--warning' : 'rm-release-card__status--ok';
+    const updateLabel = info.update?.hasUpdate ? 'Update available' : 'Up to date';
+    const profileScope = info.installed?.frontend?.scope || 'missing';
+    const profileLabel = profileScope === 'current-profile'
+        ? 'Installed for this profile'
+        : profileScope === 'global'
+            ? 'Installed globally for all profiles'
+            : 'Not installed for this profile';
+
+    return `
+        <div class="rm-release-card__header">
+            <a class="rm-release-card__link" href="${escapeHtml(info.repositoryUrl || REPOSITORY_URL)}" target="_blank" rel="noopener noreferrer">GitHub</a>
+            <span class="rm-release-card__status ${updateStateClass}">${escapeHtml(updateLabel)}</span>
+        </div>
+        <div class="rm-diagnostics__line">${escapeHtml(updateMessage)}</div>
+        <div class="rm-release-card__grid">
+            <div><strong>Backend</strong><span>${escapeHtml(backendVersion)} → ${escapeHtml(latestBackend)}</span></div>
+            <div><strong>Frontend</strong><span>${escapeHtml(frontendVersion)} → ${escapeHtml(latestFrontend)}</span></div>
+            <div><strong>Scope</strong><span>${escapeHtml(profileLabel)}</span></div>
+            <div><strong>Update</strong><span>${escapeHtml(info.instructions?.updateNow || 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.')}</span></div>
+        </div>
+        <div class="rm-diagnostics__line">${escapeHtml(info.instructions?.addProfile || 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now to add another profile or install for everyone.')}</div>
     `;
 }
 

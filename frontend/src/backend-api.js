@@ -1,6 +1,7 @@
 import { createStructuredError } from './retry-error.js';
+import { BACKEND_PLUGIN_ID } from './constants.js';
 
-const BASE_URL = '/api/plugins/auto-reroll';
+const BASE_URL = `/api/plugins/${BACKEND_PLUGIN_ID}`;
 
 export async function startBackendJob(payload) {
     return requestJson(`${BASE_URL}/start`, {
@@ -35,6 +36,12 @@ export async function fetchCapabilities() {
     } catch {
         return { termux: false };
     }
+}
+
+export async function fetchReleaseInfo() {
+    return requestJson(`${BASE_URL}/release-info`, {
+        method: 'GET',
+    });
 }
 
 export async function fetchActiveJob(identity) {
