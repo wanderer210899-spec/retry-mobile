@@ -24,4 +24,9 @@ fi
 
 git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
 cd "$LAUNCH_DIRECTORY"
-node "$REPO_DIR/install.cjs"
+if [ -r /dev/tty ]; then
+  node "$REPO_DIR/install.cjs" < /dev/tty
+else
+  echo "Retry Mobile installer requires interactive terminal input (/dev/tty was not available)."
+  exit 1
+fi
