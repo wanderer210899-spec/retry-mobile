@@ -14,14 +14,31 @@ async function runJob(job, environment) {
                 structuredError: null,
             });
 
-            const responsePayload = await replayCapturedRequest(job, environment);
+            let responsePayload = null;
+            try {
+                responsePayload = await replayCapturedRequest(job, environment);
+            } catch (error) {
+                const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not complete a retry attempt.');
+                if (structuredError.code === 'attempt_timeout') {
+                    job.lastError = structuredError.message;
+                    job.structuredError = null;
+                    job.lastValidation = null;
+                    touchJob(job, {
+                        phase: 'attempt_timed_out',
+                    });
+                    continue;
+                }
+
+                throw error;
+            }
+
             const text = extractResponseText(responsePayload);
             const validation = validateAcceptedText(text, job.runConfig);
 
             if (!validation.accepted) {
-                job.lastError = `Rejected response: ${validation.reason}`;
+                job.lastError = `Rejected response: ${formatValidationRejection(validation)}`;
                 job.structuredError = null;
-                job.lastAcceptedMetrics = validation.metrics;
+                job.lastValidation = validation;
                 touchJob(job, {
                     phase: 'validation_rejected',
                 });
@@ -34,11 +51,12 @@ async function runJob(job, environment) {
             await writeAcceptedResult(job, validation.metrics);
             job.acceptedResults.push({
                 text: validation.metrics.text,
-                wordCount: validation.metrics.wordCount,
+                characterCount: validation.metrics.characterCount,
                 tokenCount: validation.metrics.tokenCount,
             });
             job.acceptedCount += 1;
             job.lastAcceptedMetrics = validation.metrics;
+            job.lastValidation = validation;
             job.lastAcceptedAt = new Date().toISOString();
             job.lastError = '';
             job.structuredError = null;
@@ -49,7 +67,8 @@ async function runJob(job, environment) {
             notify(job.runConfig, 'success', {
                 acceptedCount: job.acceptedCount,
                 targetAcceptedCount: job.targetAcceptedCount,
-                wordCount: validation.metrics.wordCount,
+                attemptCount: job.attemptCount,
+                characterCount: validation.metrics.characterCount,
                 tokenCount: validation.metrics.tokenCount,
             });
         }
@@ -58,10 +77,6 @@ async function runJob(job, environment) {
             touchJob(job, {
                 state: 'cancelled',
                 phase: 'cancelled',
-            });
-            notify(job.runConfig, 'stopped', {
-                attemptCount: job.attemptCount,
-                acceptedCount: job.acceptedCount,
             });
             releaseWakeLock();
             return;
@@ -75,6 +90,7 @@ async function runJob(job, environment) {
             notify(job.runConfig, 'completed', {
                 attemptCount: job.attemptCount,
                 acceptedCount: job.acceptedCount,
+                targetAcceptedCount: job.targetAcceptedCount,
             });
             releaseWakeLock();
             return;
@@ -89,10 +105,6 @@ async function runJob(job, environment) {
             phase: 'failed',
             lastError: structuredError.message,
             structuredError,
-        });
-        notify(job.runConfig, 'stopped', {
-            attemptCount: job.attemptCount,
-            acceptedCount: job.acceptedCount,
         });
         releaseWakeLock();
     } catch (error) {
@@ -113,17 +125,51 @@ async function replayCapturedRequest(job, environment) {
     body.stream = false;
 
     const endpoint = resolveGenerationEndpoint(body);
-    const response = await fetch(`${environment.baseUrl}${endpoint}`, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Accept: 'application/json',
-            ...(job.authHeaders || {}),
-        },
-        body: JSON.stringify(body),
-    });
+    const timeoutSeconds = Math.max(1, Number(job.runConfig?.attemptTimeoutSeconds) || 0);
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => {
+        controller.abort();
+    }, timeoutSeconds * 1000);
 
-    const text = await response.text();
+    let response = null;
+    try {
+        response = await fetch(`${environment.baseUrl}${endpoint}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Accept: 'application/json',
+                ...(job.authHeaders || {}),
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal,
+        });
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            throw createStructuredError(
+                'attempt_timeout',
+                `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
+            );
+        }
+
+        throw error;
+    }
+
+    let text = '';
+    try {
+        text = await response.text();
+    } catch (error) {
+        if (error?.name === 'AbortError') {
+            throw createStructuredError(
+                'attempt_timeout',
+                `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
+            );
+        }
+
+        throw error;
+    } finally {
+        clearTimeout(timeoutHandle);
+    }
+
     const payload = tryParseJson(text);
     if (!response.ok) {
         throw createStructuredError(
@@ -205,3 +251,18 @@ module.exports = {
     runJob,
 };
 
+function formatValidationRejection(validation) {
+    if (validation?.reason === 'below_min_characters') {
+        return `below minimum character count (${validation.metrics?.characterCount || 0}/${validation.threshold || 0})`;
+    }
+
+    if (validation?.reason === 'below_min_tokens') {
+        return `below minimum token count (${validation.metrics?.tokenCount || 0}/${validation.threshold || 0})`;
+    }
+
+    if (validation?.reason === 'empty') {
+        return 'empty response';
+    }
+
+    return validation?.reason || 'validation failed';
+}

@@ -171,13 +171,25 @@
     line-height: 1.45;
 }
 
-.rm-field input[type="number"] {
+.rm-field input[type="number"],
+.rm-field textarea {
     width: 100%;
     padding: 9px 11px;
     border-radius: 10px;
     border: 1px solid var(--rm-border);
     background: color-mix(in srgb, var(--SmartThemeBlurTintColor, #171a1f) 90%, transparent);
     color: inherit;
+}
+
+.rm-field textarea {
+    min-height: 84px;
+    resize: vertical;
+    font: inherit;
+}
+
+.rm-field input[type="number"]:disabled {
+    opacity: 0.58;
+    cursor: not-allowed;
 }
 
 .rm-fieldset {

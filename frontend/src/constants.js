@@ -24,16 +24,24 @@ export const RUN_MODE = Object.freeze({
     TOGGLE: 'toggle',
 });
 
+export const VALIDATION_MODE = Object.freeze({
+    CHARACTERS: 'characters',
+    TOKENS: 'tokens',
+});
+
 export const DEFAULT_SETTINGS = Object.freeze({
     runMode: RUN_MODE.SINGLE,
     targetAcceptedCount: 3,
     maxAttempts: 30,
+    attemptTimeoutSeconds: 90,
+    validationMode: VALIDATION_MODE.CHARACTERS,
     minTokens: 0,
-    minWords: 60,
+    minCharacters: 300,
     notifyOnSuccess: false,
     notifyOnComplete: true,
     vibrateOnSuccess: false,
     vibrateOnComplete: false,
+    notificationMessageTemplate: '',
 });
 
 export const REQUIRED_EVENT_NAMES = Object.freeze([

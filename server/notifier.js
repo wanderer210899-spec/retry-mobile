@@ -38,20 +38,23 @@ function resolveBin(name) {
 function notify(runConfig, stage, payload = {}) {
     const shouldNotify = stage === 'success'
         ? Boolean(runConfig.notifyOnSuccess)
-        : Boolean(runConfig.notifyOnComplete);
+        : stage === 'completed'
+            ? Boolean(runConfig.notifyOnComplete)
+            : false;
     const shouldVibrate = stage === 'success'
         ? Boolean(runConfig.vibrateOnSuccess)
-        : Boolean(runConfig.vibrateOnComplete);
+        : stage === 'completed'
+            ? Boolean(runConfig.vibrateOnComplete)
+            : false;
 
     if (shouldNotify) {
         const bin = resolveBin('termux-notification');
         if (bin) {
-            const isComplete = stage === 'completed' || stage === 'stopped';
             runTermuxCommand(bin, [
                 '--id', String(NOTIFICATION_ID),
                 '--title', 'Retry Mobile',
-                '--content', buildMessage(stage, payload),
-                '--priority', isComplete ? 'high' : 'default',
+                '--content', buildMessage(runConfig, stage, payload),
+                '--priority', stage === 'completed' ? 'high' : 'default',
                 '--sound',
                 '--icon', 'ic_notification_overlay',
             ]);
@@ -81,16 +84,60 @@ function releaseWakeLock() {
     }
 }
 
-function buildMessage(stage, payload) {
+function buildMessage(runConfig, stage, payload) {
+    const customMessage = renderCustomMessage(runConfig, stage, payload);
+    if (customMessage) {
+        return customMessage;
+    }
+
     if (stage === 'success') {
-        return `Accepted ${payload.acceptedCount}/${payload.targetAcceptedCount} · ${payload.wordCount}w · ${payload.tokenCount}t`;
+        return `Accepted ${payload.acceptedCount}/${payload.targetAcceptedCount} - ${payload.characterCount}c - ${payload.tokenCount}t`;
     }
 
     if (stage === 'completed') {
-        return `Done — ${payload.acceptedCount} accepted in ${payload.attemptCount} attempts.`;
+        return `Done - ${payload.acceptedCount} accepted in ${payload.attemptCount} attempts.`;
     }
 
-    return `Stopped — ${payload.acceptedCount} accepted, ${payload.attemptCount} attempts.`;
+    return `Retry Mobile ${stage}.`;
+}
+
+function renderCustomMessage(runConfig, stage, payload) {
+    const template = normalizeTemplate(runConfig?.notificationMessageTemplate);
+    if (!template) {
+        return '';
+    }
+
+    const values = {
+        stage: stage === 'success' ? 'accepted' : stage,
+        acceptedCount: stringifyTemplateValue(payload.acceptedCount),
+        targetAcceptedCount: stringifyTemplateValue(payload.targetAcceptedCount),
+        attemptCount: stringifyTemplateValue(payload.attemptCount),
+        characterCount: stringifyTemplateValue(payload.characterCount),
+        wordCount: stringifyTemplateValue(payload.characterCount),
+        tokenCount: stringifyTemplateValue(payload.tokenCount),
+        reason: stringifyTemplateValue(payload.reason),
+        timeoutSeconds: stringifyTemplateValue(runConfig?.attemptTimeoutSeconds),
+    };
+
+    return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (match, key) => (
+        Object.prototype.hasOwnProperty.call(values, key)
+            ? values[key]
+            : match
+    ));
+}
+
+function normalizeTemplate(template) {
+    if (typeof template !== 'string') {
+        return '';
+    }
+
+    return template
+        .replace(/\r?\n+/g, ' ')
+        .trim();
+}
+
+function stringifyTemplateValue(value) {
+    return value == null ? '' : String(value);
 }
 
 function runTermuxCommand(bin, args) {

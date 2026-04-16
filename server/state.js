@@ -26,6 +26,7 @@ function createJob(input) {
         targetMessageVersion: 0,
         targetMessage: null,
         lastAcceptedAt: null,
+        lastValidation: null,
         ...input,
     };
 
@@ -81,6 +82,7 @@ function serializeJob(job) {
         targetFingerprint: job.targetFingerprint,
         lastAcceptedMetrics: job.lastAcceptedMetrics ?? null,
         lastAcceptedAt: job.lastAcceptedAt ?? null,
+        lastValidation: job.lastValidation ?? null,
     };
 }
 
@@ -93,4 +95,3 @@ module.exports = {
     serializeJob,
     touchJob,
 };
-

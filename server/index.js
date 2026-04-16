@@ -6,6 +6,7 @@ const { PLUGIN_ID, PLUGIN_NAME } = require('./plugin-meta');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { getReleaseInfo } = require('./update-info');
 const { buildChatKey, createJob, getJob, getJobByChat, serializeJob, touchJob } = require('./state');
+const { validateRunConfig } = require('./validation');
 
 function init(router, config) {
     const app = router;
@@ -57,6 +58,18 @@ function init(router, config) {
                 });
             }
 
+            const runConfigValidation = validateRunConfig(request.body.runConfig);
+            if (!runConfigValidation.ok) {
+                const structuredError = toStructuredError(createStructuredError(
+                    runConfigValidation.code,
+                    runConfigValidation.message,
+                ));
+                return response.status(400).send({
+                    error: structuredError.message,
+                    structuredError,
+                });
+            }
+
             const existing = getJobByChat(request.body.chatIdentity);
             if (existing) {
                 const structuredError = toStructuredError(createStructuredError(
@@ -93,7 +106,7 @@ function init(router, config) {
                 targetAcceptedCount,
                 maxAttempts,
                 acceptedCount: 0,
-                runConfig: request.body.runConfig,
+                runConfig: normalizeRunConfig(request.body.runConfig, targetAcceptedCount, maxAttempts, runConfigValidation.mode),
                 capturedRequest: request.body.capturedRequest,
                 captureMeta: request.body.captureMeta || {},
                 assistantMessageIndex,
@@ -206,6 +219,24 @@ function normalizeFingerprint(fingerprint, chatIdentity) {
         capturedAt: typeof fingerprint.capturedAt === 'string' ? fingerprint.capturedAt : new Date().toISOString(),
         requestType: typeof fingerprint.requestType === 'string' ? fingerprint.requestType : '',
         messageIdHint: Number.isFinite(Number(fingerprint.messageIdHint)) ? Number(fingerprint.messageIdHint) : null,
+    };
+}
+
+function normalizeRunConfig(runConfig = {}, targetAcceptedCount, maxAttempts, validationMode) {
+    return {
+        targetAcceptedCount,
+        maxAttempts,
+        attemptTimeoutSeconds: Math.max(1, Number(runConfig.attemptTimeoutSeconds) || 0),
+        validationMode,
+        minCharacters: Math.max(0, Number(runConfig.minCharacters ?? runConfig.minWords) || 0),
+        minTokens: Math.max(0, Number(runConfig.minTokens) || 0),
+        notifyOnSuccess: Boolean(runConfig.notifyOnSuccess),
+        notifyOnComplete: Boolean(runConfig.notifyOnComplete),
+        vibrateOnSuccess: Boolean(runConfig.vibrateOnSuccess),
+        vibrateOnComplete: Boolean(runConfig.vibrateOnComplete),
+        notificationMessageTemplate: typeof runConfig.notificationMessageTemplate === 'string'
+            ? runConfig.notificationMessageTemplate
+            : '',
     };
 }
 

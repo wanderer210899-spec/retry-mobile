@@ -9,6 +9,7 @@ import {
     RUN_MODE,
     RUN_STATE,
     SLASH_COMMAND_PREFIX,
+    VALIDATION_MODE,
 } from './constants.js';
 import { createLogger } from './logger.js';
 import { readSettings, writeSettings } from './settings.js';
@@ -154,18 +155,48 @@ function mountPanel() {
                         <small>The backend stops early as soon as the accepted goal is reached. This must be at least as large as the accepted outputs goal.</small>
                     </div>
                     <div class="rm-field">
-                        <label for="${EXTENSION_ID}-words">Minimum words</label>
-                        <input id="${EXTENSION_ID}-words" type="number" min="0" step="1" />
-                        <small>Leave at 0 if you only want the token heuristic.</small>
+                        <label for="${EXTENSION_ID}-timeout">Attempt timeout (seconds)</label>
+                        <input id="${EXTENSION_ID}-timeout" type="number" min="1" step="1" />
+                        <small>If one generation attempt produces no response before this limit, that attempt fails and Retry Mobile moves on to the next retry.</small>
+                    </div>
+                    <div class="rm-field rm-field--wide">
+                        <label>Acceptance hard block</label>
+                        <div class="rm-choice-grid" role="radiogroup" aria-label="Retry Mobile acceptance hard block">
+                            <label class="rm-choice">
+                                <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.CHARACTERS}" />
+                                <span class="rm-choice__copy">
+                                    <span>Character count</span>
+                                    <small>Reject any response below the minimum character count for this run.</small>
+                                </span>
+                            </label>
+                            <label class="rm-choice">
+                                <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.TOKENS}" />
+                                <span class="rm-choice__copy">
+                                    <span>Token count</span>
+                                    <small>Reject any response below the minimum heuristic token count for this run.</small>
+                                </span>
+                            </label>
+                        </div>
+                        <small>Only one hard block is active at a time. Rejected responses do not increase the accepted count.</small>
+                    </div>
+                    <div class="rm-field">
+                        <label for="${EXTENSION_ID}-characters">Minimum characters</label>
+                        <input id="${EXTENSION_ID}-characters" type="number" min="0" step="1" />
+                        <small>Active only while character-count blocking is selected. Spaces and line breaks do not count toward this total.</small>
                     </div>
                     <div class="rm-field">
                         <label for="${EXTENSION_ID}-tokens">Minimum tokens</label>
                         <input id="${EXTENSION_ID}-tokens" type="number" min="0" step="1" />
-                        <small>This is a backend heuristic token count, not ST's exact tokenizer.</small>
+                        <small>Active only while token-count blocking is selected. This is a backend heuristic token count, not ST's exact tokenizer.</small>
                     </div>
                 </section>
                 <section class="rm-fieldset">
                     <div class="rm-fieldset__title">Notifications</div>
+                    <div class="rm-field rm-field--wide">
+                        <label for="${EXTENSION_ID}-notification-template">Termux notification message</label>
+                        <textarea id="${EXTENSION_ID}-notification-template" rows="3" placeholder="Leave blank to use Retry Mobile's default message."></textarea>
+                        <small>Optional template. You can use {stage}, {acceptedCount}, {targetAcceptedCount}, {attemptCount}, {characterCount}, {wordCount}, {tokenCount}, {reason}, and {timeoutSeconds}.</small>
+                    </div>
                     <div class="rm-checkbox-grid">
                         <label class="rm-checkbox">
                             <input data-setting="notifyOnSuccess" type="checkbox" />
@@ -177,8 +208,8 @@ function mountPanel() {
                         <label class="rm-checkbox">
                             <input data-setting="notifyOnComplete" type="checkbox" />
                             <span class="rm-checkbox__copy">
-                                <span>Notify when the run finishes</span>
-                                <small>Good default if you only want one final ping.</small>
+                                <span>Notify when the run completes</span>
+                                <small>Fires only when the accepted goal is reached, not for rejected or failed runs.</small>
                             </span>
                         </label>
                         <label class="rm-checkbox">
@@ -191,8 +222,8 @@ function mountPanel() {
                         <label class="rm-checkbox">
                             <input data-setting="vibrateOnComplete" type="checkbox" />
                             <span class="rm-checkbox__copy">
-                                <span>Vibrate when the run finishes</span>
-                                <small>Kept separate from notifications so you can mix and match them.</small>
+                                <span>Vibrate when the run completes</span>
+                                <small>Fires only on successful completion so you can keep failure cases quiet.</small>
                             </span>
                         </label>
                     </div>
@@ -317,6 +348,18 @@ function bindPanelEvents(drawer) {
             return;
         }
 
+        const validationMode = event.target?.name === `${EXTENSION_ID}-validation-mode`
+            ? String(event.target.value || '')
+            : '';
+        if (validationMode) {
+            runtime.settings.validationMode = validationMode === VALIDATION_MODE.TOKENS
+                ? VALIDATION_MODE.TOKENS
+                : VALIDATION_MODE.CHARACTERS;
+            persistSettings();
+            render();
+            return;
+        }
+
         const field = event.target?.dataset?.setting;
         if (field) {
             runtime.settings[field] = Boolean(event.target.checked);
@@ -339,8 +382,15 @@ function bindPanelEvents(drawer) {
             return;
         }
 
-        if (event.target?.id === `${EXTENSION_ID}-words`) {
-            runtime.settings.minWords = clampWholeNumber(event.target.value, 0, runtime.settings.minWords);
+        if (event.target?.id === `${EXTENSION_ID}-timeout`) {
+            runtime.settings.attemptTimeoutSeconds = clampWholeNumber(event.target.value, 1, runtime.settings.attemptTimeoutSeconds);
+            persistSettings();
+            render();
+            return;
+        }
+
+        if (event.target?.id === `${EXTENSION_ID}-characters`) {
+            runtime.settings.minCharacters = clampWholeNumber(event.target.value, 0, runtime.settings.minCharacters);
             persistSettings();
             render();
             return;
@@ -348,6 +398,13 @@ function bindPanelEvents(drawer) {
 
         if (event.target?.id === `${EXTENSION_ID}-tokens`) {
             runtime.settings.minTokens = clampWholeNumber(event.target.value, 0, runtime.settings.minTokens);
+            persistSettings();
+            render();
+            return;
+        }
+
+        if (event.target?.id === `${EXTENSION_ID}-notification-template`) {
+            runtime.settings.notificationMessageTemplate = String(event.target.value || '');
             persistSettings();
             render();
         }
@@ -362,14 +419,20 @@ function hydrateForm() {
 
     drawer.querySelector(`#${EXTENSION_ID}-target`).value = String(runtime.settings.targetAcceptedCount);
     drawer.querySelector(`#${EXTENSION_ID}-attempts`).value = String(runtime.settings.maxAttempts);
-    drawer.querySelector(`#${EXTENSION_ID}-words`).value = String(runtime.settings.minWords);
+    drawer.querySelector(`#${EXTENSION_ID}-timeout`).value = String(runtime.settings.attemptTimeoutSeconds);
+    drawer.querySelector(`#${EXTENSION_ID}-characters`).value = String(runtime.settings.minCharacters);
     drawer.querySelector(`#${EXTENSION_ID}-tokens`).value = String(runtime.settings.minTokens);
+    drawer.querySelector(`#${EXTENSION_ID}-notification-template`).value = runtime.settings.notificationMessageTemplate || '';
     drawer.querySelectorAll(`input[name="${EXTENSION_ID}-run-mode"]`).forEach((element) => {
         element.checked = element.value === runtime.settings.runMode;
+    });
+    drawer.querySelectorAll(`input[name="${EXTENSION_ID}-validation-mode"]`).forEach((element) => {
+        element.checked = element.value === runtime.settings.validationMode;
     });
     drawer.querySelectorAll('[data-setting]').forEach((element) => {
         element.checked = Boolean(runtime.settings[element.dataset.setting]);
     });
+    syncValidationControls(drawer);
 }
 
 function persistSettings() {
@@ -406,6 +469,12 @@ async function armPlugin(options = {}) {
             'handoff_request_failed',
             'Maximum attempts must be at least as large as the accepted outputs goal.',
         ));
+        return;
+    }
+
+    const runConfigError = getRunConfigError(runtime.settings);
+    if (runConfigError) {
+        applyErrorState(runConfigError);
         return;
     }
 
@@ -549,12 +618,15 @@ async function handoffToBackend(runId, nativeResult) {
         runConfig: {
             targetAcceptedCount: runtime.settings.targetAcceptedCount,
             maxAttempts: runtime.settings.maxAttempts,
+            attemptTimeoutSeconds: runtime.settings.attemptTimeoutSeconds,
+            validationMode: runtime.settings.validationMode,
             minTokens: runtime.settings.minTokens,
-            minWords: runtime.settings.minWords,
+            minCharacters: runtime.settings.minCharacters,
             notifyOnSuccess: runtime.settings.notifyOnSuccess,
             notifyOnComplete: runtime.settings.notifyOnComplete,
             vibrateOnSuccess: runtime.settings.vibrateOnSuccess,
             vibrateOnComplete: runtime.settings.vibrateOnComplete,
+            notificationMessageTemplate: runtime.settings.notificationMessageTemplate,
         },
         capturedRequest: runtime.capturedRequest,
         targetFingerprint: runtime.fingerprint,
@@ -943,6 +1015,8 @@ function render() {
         renderStat('Accepted', activeStatus?.acceptedCount ?? 0),
         renderStat('Attempts', activeStatus?.attemptCount ?? 0),
         renderStat('Target', runtime.settings.targetAcceptedCount),
+        renderStat('Timeout', `${runtime.settings.attemptTimeoutSeconds}s`),
+        renderStat('Hard Block', formatValidationSummary(runtime.settings)),
         renderStat('Mode', runtime.settings.runMode === RUN_MODE.TOGGLE ? 'Toggle' : 'Single'),
         renderStat('Owns Turn', snapshot.ownsTurn ? 'Yes' : 'No'),
         renderStat('Quick Replies', formatQuickReplyBadge(runtime.quickReplyStatus)),
@@ -962,6 +1036,7 @@ function render() {
     }
     runtime.diagnosticsContainer.innerHTML = renderDiagnostics();
     runtime.debugContainer.innerHTML = renderDebugPanel(snapshot);
+    syncValidationControls(runtime.panel);
 
     if (runtime.actionToggleButton) {
         const stopMode = isRunningLikeState(state);
@@ -1085,12 +1160,14 @@ function buildNoteText(snapshot) {
     const modeLine = runtime.settings.runMode === RUN_MODE.TOGGLE
         ? 'Toggle mode re-arms after each finished run in the same chat.'
         : 'Single mode handles one captured turn and then stops.';
+    const validationLine = `Length rule: ${formatValidationSummary(runtime.settings)}. Anything shorter is rejected and does not count as an accept. Character mode counts visible non-whitespace characters, so Chinese can be tuned directly with its own character target.`;
+    const timeoutLine = `Timeout rule: each attempt has ${runtime.settings.attemptTimeoutSeconds} seconds to return a response before Retry Mobile marks that attempt failed and retries.`;
 
     const ownerLine = snapshot.ownsTurn
         ? 'Retry Mobile currently owns retry generations for this turn.'
         : 'SillyTavern owns the current native turn until handoff happens.';
 
-    return `${modeLine} ${ownerLine}`;
+    return `${modeLine} ${validationLine} ${timeoutLine} ${ownerLine}`;
 }
 
 function applyErrorState(error) {
@@ -1167,6 +1244,58 @@ async function maybeAutoRearmAfterRun(resultState) {
     await armPlugin({
         showToastMessage: 'Toggle mode re-armed Retry Mobile for the next qualifying generation in the active chat.',
     });
+}
+
+function syncValidationControls(drawer) {
+    if (!drawer) {
+        return;
+    }
+
+    const charactersInput = drawer.querySelector(`#${EXTENSION_ID}-characters`);
+    const tokensInput = drawer.querySelector(`#${EXTENSION_ID}-tokens`);
+    if (charactersInput) {
+        charactersInput.disabled = runtime.settings.validationMode !== VALIDATION_MODE.CHARACTERS;
+    }
+    if (tokensInput) {
+        tokensInput.disabled = runtime.settings.validationMode !== VALIDATION_MODE.TOKENS;
+    }
+}
+
+function getRunConfigError(settings) {
+    const timeoutSeconds = Number(settings.attemptTimeoutSeconds) || 0;
+    if (timeoutSeconds <= 0) {
+        return createStructuredError(
+            'validation_config_invalid',
+            'Attempt timeout must be greater than 0 seconds.',
+        );
+    }
+
+    const minimum = settings.validationMode === VALIDATION_MODE.TOKENS
+        ? Number(settings.minTokens) || 0
+        : Number(settings.minCharacters) || 0;
+
+    if (minimum > 0) {
+        return null;
+    }
+
+    return createStructuredError(
+        'validation_config_invalid',
+        settings.validationMode === VALIDATION_MODE.TOKENS
+            ? 'Minimum tokens must be greater than 0 when token-count blocking is active.'
+            : 'Minimum characters must be greater than 0 when character-count blocking is active.',
+    );
+}
+
+function formatValidationSummary(settings) {
+    const minimum = settings.validationMode === VALIDATION_MODE.TOKENS
+        ? Number(settings.minTokens) || 0
+        : Number(settings.minCharacters) || 0;
+
+    if (settings.validationMode === VALIDATION_MODE.TOKENS) {
+        return `Tokens >= ${minimum}`;
+    }
+
+    return `Characters >= ${minimum}`;
 }
 
 function formatQuickReplyBadge(status) {

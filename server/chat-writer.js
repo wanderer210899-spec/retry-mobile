@@ -22,7 +22,8 @@ async function writeAcceptedResult(job, accepted) {
         ...(targetMessage.extra || {}),
         retryMobileJobId: job.jobId,
         retryMobileAcceptedCount: job.acceptedCount + 1,
-        retryMobileWordCount: accepted.wordCount,
+        retryMobileCharacterCount: accepted.characterCount,
+        retryMobileWordCount: accepted.characterCount,
         retryMobileTokenCount: accepted.tokenCount,
         model: firstString(job.capturedRequest?.model, targetMessage.extra?.model),
     };
