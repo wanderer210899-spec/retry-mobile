@@ -32,7 +32,7 @@ async function main() {
             const choice = await promptMainMenuChoice(rl);
             switch (choice) {
                 case '1':
-                    enableServerPlugins(layout, platform);
+                    await configureServerPluginSettings(rl, layout, platform);
                     break;
                 case '2':
                     await installOrUpdateNow(rl, layout, platform);
@@ -154,15 +154,41 @@ function refreshProfiles(layout) {
         : [];
 
     layout.globalFrontendInstalled = fs.existsSync(layout.globalFrontendTarget);
-    layout.profiles = entries
+    const profiles = entries
         .filter((entry) => entry.isDirectory())
         .filter((entry) => !entry.name.startsWith('_'))
-        .map((entry) => createProfileRecord(layout.dataRoot, entry.name))
+        .filter((entry) => looksLikeProfileRoot(path.join(layout.dataRoot, entry.name)))
+        .map((entry) => createProfileRecord(path.join(layout.dataRoot, entry.name), entry.name))
         .sort((left, right) => left.handle.localeCompare(right.handle));
+
+    if (profiles.length > 0) {
+        layout.profiles = profiles;
+        return;
+    }
+
+    if (looksLikeProfileRoot(layout.dataRoot)) {
+        layout.profiles = [createProfileRecord(layout.dataRoot)];
+        return;
+    }
+
+    layout.profiles = [];
 }
 
-function createProfileRecord(dataRoot, handle) {
-    const root = path.join(dataRoot, handle);
+function looksLikeProfileRoot(root) {
+    if (!fs.existsSync(root)) {
+        return false;
+    }
+
+    const stats = fs.statSync(root);
+    if (!stats.isDirectory()) {
+        return false;
+    }
+
+    const extensionsDir = path.join(root, 'extensions');
+    return fs.existsSync(extensionsDir) && fs.statSync(extensionsDir).isDirectory();
+}
+
+function createProfileRecord(root, handle = path.basename(root)) {
     const extensionsDir = path.join(root, 'extensions');
     const frontendTarget = path.join(extensionsDir, PLUGIN_ID);
     return {
@@ -180,7 +206,7 @@ function renderMenu(layout, platform) {
     console.log(' ==============================================================');
     console.log(' ______________________________________________________________');
     console.log(' | What would you like to do?');
-    console.log(' |   1. Enable server plugins');
+    console.log(' |   1. Enable server plugin (prerequisite) / auto-update (optional)');
     console.log(' |   2. Install / Update now');
     console.log(' |   3. Uninstall');
     console.log(' ______________________________________________________________');
@@ -220,16 +246,63 @@ async function promptMainMenuChoice(rl) {
     return (await rl.question(' Choose Your Destiny (0-3): ')).trim();
 }
 
-function enableServerPlugins(layout, platform) {
+async function configureServerPluginSettings(rl, layout, platform) {
+    console.log('\nServer plugin settings');
+    console.log('1. Enable server plugin');
+    console.log('2. Enable plugin auto-update');
+    console.log('3. Enable both');
+    console.log('0. Cancel');
+    console.log('Plugin auto-update lets SillyTavern automatically update server-side plugins inside plugins/.');
+
+    const choice = (await rl.question('Selection: ')).trim();
+    if (choice === '1') {
+        updateServerPluginSettings(layout, { enableServerPlugins: true });
+        console.log('\nServer plugins are now enabled in config.yaml.');
+        console.log('Plugin auto-update was left unchanged.');
+        logRestartMessage(platform);
+        return;
+    }
+
+    if (choice === '2') {
+        updateServerPluginSettings(layout, { enableServerPluginsAutoUpdate: true });
+        console.log('\nServer plugin auto-update is now enabled in config.yaml.');
+        if (!layout.config.enableServerPlugins) {
+            console.log('Server plugins are still disabled. Auto-update will only apply after server plugins are enabled.');
+        }
+        logRestartMessage(platform);
+        return;
+    }
+
+    if (choice === '3') {
+        updateServerPluginSettings(layout, {
+            enableServerPlugins: true,
+            enableServerPluginsAutoUpdate: true,
+        });
+        console.log('\nServer plugins and plugin auto-update are now enabled in config.yaml.');
+        logRestartMessage(platform);
+        return;
+    }
+
+    console.log('No config changes were made.');
+}
+
+function updateServerPluginSettings(layout, changes) {
     ensureWritable(layout.configPath);
     let configText = fs.readFileSync(layout.configPath, 'utf8');
-    configText = upsertYamlBoolean(configText, 'enableServerPlugins', true);
-    configText = upsertYamlBoolean(configText, 'enableServerPluginsAutoUpdate', false);
+
+    if (typeof changes.enableServerPlugins === 'boolean') {
+        configText = upsertYamlBoolean(configText, 'enableServerPlugins', changes.enableServerPlugins);
+    }
+
+    if (typeof changes.enableServerPluginsAutoUpdate === 'boolean') {
+        configText = upsertYamlBoolean(configText, 'enableServerPluginsAutoUpdate', changes.enableServerPluginsAutoUpdate);
+    }
+
     fs.writeFileSync(layout.configPath, configText, 'utf8');
     layout.config = parseConfigSummary(configText);
+}
 
-    console.log('\nServer plugins are now enabled in config.yaml.');
-    console.log('Server plugin auto-update was set to false so Retry Mobile stays installer-managed.');
+function logRestartMessage(platform) {
     console.log(platform === 'windows'
         ? 'Restart SillyTavern from your Windows launcher for the change to take effect.'
         : 'Restart SillyTavern in Termux for the change to take effect.');
@@ -237,13 +310,9 @@ function enableServerPlugins(layout, platform) {
 
 async function installOrUpdateNow(rl, layout, platform) {
     if (!layout.config.enableServerPlugins) {
-        const enableNow = await confirm(rl, 'Server plugins are disabled. Enable them now before installing?', true);
-        if (!enableNow) {
-            console.log('Install cancelled.');
-            return;
-        }
-
-        enableServerPlugins(layout, platform);
+        console.log('Server plugins are disabled. Install / Update now will not change config.yaml.');
+        console.log('Use option 1 first to enable the server plugin prerequisite, then run Install / Update now again.');
+        return;
     }
 
     ensureWritable(layout.pluginsDir, true);
