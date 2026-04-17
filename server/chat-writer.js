@@ -100,21 +100,15 @@ function inspectNativeAssistantState(job) {
         return { kind: 'target_pending' };
     }
 
-    const fingerprint = job.targetFingerprint;
-    const userIndex = getPersistedUserIndex(job, chat);
-    const current = Number.isFinite(userIndex) && userIndex >= 0
-        ? chat[userIndex]
-        : null;
-
-    if (!current || current.is_user !== true) {
-        return { kind: 'target_pending' };
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind === 'missing_appendable') {
+        return {
+            kind: 'missing_user_anchor',
+            persistedUserIndex: userState.persistedUserIndex,
+        };
     }
-
-    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
-        throw createStructuredError(
-            'backend_turn_changed',
-            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
-        );
+    if (userState.kind !== 'present') {
+        return { kind: 'target_pending' };
     }
 
     return inspectAdjacentAssistantState(job, chat);
@@ -124,11 +118,21 @@ async function readCurrentChat(job) {
     const saveTarget = getSaveTarget(job);
     const maxAttempts = 12;
     const delayMs = 300;
+    const allowCreateUserAnchor = shouldCreateMissingUserAnchor(job);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         const liveChat = readChatJsonl(saveTarget.filePath);
-        if (Array.isArray(liveChat) && liveChat.length > 0 && liveChatContainsTargetTurn(job, liveChat)) {
-            return liveChat;
+        if (Array.isArray(liveChat) && liveChat.length > 0) {
+            const userState = resolveTargetUserState(job, liveChat);
+            if (userState.kind === 'present') {
+                return liveChat;
+            }
+
+            if (allowCreateUserAnchor && userState.kind === 'missing_appendable') {
+                insertUserMessage(job, liveChat, userState.persistedUserIndex);
+                saveChatJsonl(liveChat, saveTarget.filePath);
+                return liveChat;
+            }
         }
 
         if (attempt < maxAttempts) {
@@ -144,51 +148,21 @@ async function readCurrentChat(job) {
 }
 
 function assertChatStillMatches(job, chat) {
-    const fingerprint = job.targetFingerprint;
-    const userIndex = getPersistedUserIndex(job, chat);
-    if (!Number.isFinite(userIndex) || userIndex < 0) {
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind !== 'present') {
         throw createStructuredError(
             'backend_turn_missing',
             'Target user turn could not be resolved.',
         );
     }
-
-    const current = chat[userIndex];
-    if (!current || current.is_user !== true) {
-        throw createStructuredError(
-            'backend_turn_missing',
-            'The target user turn no longer exists as a user message.',
-        );
-    }
-
-    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
-        throw createStructuredError(
-            'backend_turn_changed',
-            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
-        );
-    }
 }
 
 function liveChatContainsTargetTurn(job, chat) {
-    const fingerprint = job.targetFingerprint;
-    const userIndex = getPersistedUserIndex(job, chat);
-    if (!Number.isFinite(userIndex) || userIndex < 0) {
-        return false;
-    }
-
-    const current = chat[userIndex];
-    if (!current || current.is_user !== true) {
-        return false;
-    }
-
-    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
-        return false;
-    }
-
-    return true;
+    return resolveTargetUserState(job, chat).kind === 'present';
 }
 
 function ensureTargetAssistantMessage(job, chat) {
+    ensureTargetUserMessage(job, chat);
     const state = inspectAdjacentAssistantState(job, chat);
 
     if (state.kind === 'missing_assistant') {
@@ -249,6 +223,22 @@ function inspectAdjacentAssistantState(job, chat) {
     };
 }
 
+function ensureTargetUserMessage(job, chat) {
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind === 'present') {
+        return userState.persistedUserIndex;
+    }
+
+    if (userState.kind === 'missing_appendable' && shouldCreateMissingUserAnchor(job)) {
+        return insertUserMessage(job, chat, userState.persistedUserIndex).persistedUserIndex;
+    }
+
+    throw createStructuredError(
+        'backend_turn_missing',
+        'Target user turn could not be resolved.',
+    );
+}
+
 function insertAssistantMessage(job, chat, persistedAssistantIndex) {
     const message = buildAssistantSeedMessage(job);
     chat.splice(persistedAssistantIndex, 0, message);
@@ -258,6 +248,35 @@ function insertAssistantMessage(job, chat, persistedAssistantIndex) {
         assistantMessageIndex: persistedAssistantIndex - getPersistedChatOffset(chat),
         assistantMessage: message,
     };
+}
+
+function insertUserMessage(job, chat, persistedUserIndex) {
+    const message = buildUserSeedMessage(job);
+    chat.splice(persistedUserIndex, 0, message);
+    return {
+        persistedUserIndex,
+        userMessage: message,
+    };
+}
+
+function buildUserSeedMessage(job) {
+    const message = {
+        name: firstString(job.captureMeta?.userName, 'You'),
+        is_user: true,
+        is_system: false,
+        send_date: new Date().toISOString(),
+        mes: String(job.targetFingerprint?.userMessageText || ''),
+        extra: {
+            isSmallSys: false,
+        },
+    };
+
+    const userAvatar = firstString(job.captureMeta?.userAvatar);
+    if (userAvatar) {
+        message.force_avatar = userAvatar;
+    }
+
+    return message;
 }
 
 function buildAssistantSeedMessage(job) {
@@ -391,6 +410,47 @@ function getPersistedUserIndex(job, chat) {
     }
 
     return liveIndex + getPersistedChatOffset(chat);
+}
+
+function resolveTargetUserState(job, chat) {
+    const fingerprint = job.targetFingerprint;
+    const persistedUserIndex = getPersistedUserIndex(job, chat);
+    if (!Number.isFinite(persistedUserIndex) || persistedUserIndex < 0) {
+        return { kind: 'missing_unresolved', persistedUserIndex };
+    }
+
+    const current = chat[persistedUserIndex];
+    if (!current) {
+        if (persistedUserIndex === chat.length) {
+            return { kind: 'missing_appendable', persistedUserIndex };
+        }
+
+        return { kind: 'missing_unresolved', persistedUserIndex };
+    }
+
+    if (current.is_user !== true) {
+        throw createStructuredError(
+            'backend_turn_changed',
+            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
+        );
+    }
+
+    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
+        throw createStructuredError(
+            'backend_turn_changed',
+            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
+        );
+    }
+
+    return {
+        kind: 'present',
+        persistedUserIndex,
+        userMessage: current,
+    };
+}
+
+function shouldCreateMissingUserAnchor(job) {
+    return job.nativeState === 'abandoned' && job.recoveryMode === 'create_missing_turn';
 }
 
 function getPersistedChatOffset(chat) {

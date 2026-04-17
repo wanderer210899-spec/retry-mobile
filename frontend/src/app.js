@@ -525,10 +525,9 @@ async function armPlugin(options = {}) {
     }
 
     if (isRunningLikeState(getCurrentState())) {
-        applyErrorState(createStructuredError(
-            'handoff_request_failed',
-            'Retry Mobile is already armed or running for this browser session.',
-        ));
+        runtime.machine.recordEvent('ui', 'start_ignored', 'Ignored start because Retry Mobile is already armed or running.');
+        render();
+        showToast('info', EXTENSION_NAME, 'Retry Mobile is already armed or running in this browser session.');
         return;
     }
 
@@ -667,6 +666,7 @@ async function reserveBackendJob(runId) {
     }
 
     const snapshot = runtime.machine.getSnapshot();
+    const context = getContext();
     const body = {
         schemaVersion: 2,
         runId,
@@ -689,6 +689,8 @@ async function reserveBackendJob(runId) {
         captureMeta: {
             capturedAt: runtime.fingerprint?.capturedAt || new Date().toISOString(),
             assistantName: snapshot.chatIdentity?.assistantName || 'Assistant',
+            userName: String(context?.name1 || context?.user_name || 'You'),
+            userAvatar: String(context?.user_avatar || ''),
         },
     };
 

@@ -273,6 +273,21 @@ async function awaitNativeOutcome(job) {
                 return;
             }
 
+            if (inspection.kind === 'missing_user_anchor') {
+                touchJob(job, {
+                    nativeState: 'abandoned',
+                    phase: 'native_abandoned',
+                    recoveryMode: 'create_missing_turn',
+                    assistantMessageIndex: null,
+                    targetMessageIndex: null,
+                    targetMessage: null,
+                    lastError: '',
+                    structuredError: null,
+                });
+                appendLifecycleLog(job, 'native_abandoned', 'Native first reply was abandoned before SillyTavern saved the captured user turn. Backend will recreate the user and assistant anchor.');
+                return;
+            }
+
             throw createStructuredError(
                 'backend_turn_missing',
                 'Retry Mobile could not resolve the captured user turn on disk before native recovery.',
