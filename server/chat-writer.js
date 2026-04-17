@@ -130,7 +130,15 @@ async function readCurrentChat(job) {
 
             if (allowCreateUserAnchor && userState.kind === 'missing_appendable') {
                 insertUserMessage(job, liveChat, userState.persistedUserIndex);
-                saveChatJsonl(liveChat, saveTarget.filePath);
+                try {
+                    saveChatJsonl(liveChat, saveTarget.filePath);
+                } catch (error) {
+                    throw createStructuredError(
+                        'backend_write_failed',
+                        'Retry Mobile could not save the recreated captured user turn back to the live chat.',
+                        error instanceof Error ? error.message : String(error),
+                    );
+                }
                 return liveChat;
             }
         }

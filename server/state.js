@@ -112,7 +112,9 @@ function serializeJob(job) {
         recoveryMode: job.recoveryMode,
         captureConfirmedAt: job.captureConfirmedAt,
         nativeGraceDeadline: job.nativeGraceDeadline,
-        assistantMessageIndex: Number.isFinite(Number(job.assistantMessageIndex)) ? Number(job.assistantMessageIndex) : null,
+        assistantMessageIndex: job.assistantMessageIndex == null
+            ? null
+            : (Number.isFinite(Number(job.assistantMessageIndex)) ? Number(job.assistantMessageIndex) : null),
         lastAcceptedMetrics: job.lastAcceptedMetrics ?? null,
         lastAcceptedAt: job.lastAcceptedAt ?? null,
         lastValidation: job.lastValidation ?? null,

@@ -344,54 +344,56 @@ async function replayCapturedRequest(job, environment) {
         controller.abort();
     }, timeoutSeconds * 1000);
 
-    let response = null;
     try {
-        response = await fetch(`${environment.baseUrl}${endpoint}`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Accept: 'application/json',
-                ...(job.authHeaders || {}),
-            },
-            body: JSON.stringify(body),
-            signal: controller.signal,
-        });
-    } catch (error) {
-        if (error?.name === 'AbortError') {
+        let response = null;
+        try {
+            response = await fetch(`${environment.baseUrl}${endpoint}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json',
+                    ...(job.authHeaders || {}),
+                },
+                body: JSON.stringify(body),
+                signal: controller.signal,
+            });
+        } catch (error) {
+            if (error?.name === 'AbortError') {
+                throw createStructuredError(
+                    'attempt_timeout',
+                    `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
+                );
+            }
+
+            throw error;
+        }
+
+        let text = '';
+        try {
+            text = await response.text();
+        } catch (error) {
+            if (error?.name === 'AbortError') {
+                throw createStructuredError(
+                    'attempt_timeout',
+                    `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
+                );
+            }
+
+            throw error;
+        }
+
+        const payload = tryParseJson(text);
+        if (!response.ok) {
             throw createStructuredError(
-                'attempt_timeout',
-                `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
+                'handoff_request_failed',
+                payload?.error || `Generation request failed with status ${response.status}`,
             );
         }
 
-        throw error;
-    }
-
-    let text = '';
-    try {
-        text = await response.text();
-    } catch (error) {
-        if (error?.name === 'AbortError') {
-            throw createStructuredError(
-                'attempt_timeout',
-                `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
-            );
-        }
-
-        throw error;
+        return payload;
     } finally {
         clearTimeout(timeoutHandle);
     }
-
-    const payload = tryParseJson(text);
-    if (!response.ok) {
-        throw createStructuredError(
-            'handoff_request_failed',
-            payload?.error || `Generation request failed with status ${response.status}`,
-        );
-    }
-
-    return payload;
 }
 
 function resolveGenerationEndpoint(body) {
@@ -458,6 +460,10 @@ function tryParseJson(text) {
 
 function clone(value) {
     return JSON.parse(JSON.stringify(value ?? null));
+}
+
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 module.exports = {

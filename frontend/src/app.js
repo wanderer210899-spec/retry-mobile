@@ -1488,9 +1488,17 @@ function formatVisibleStateLabel(state, status) {
         case RUN_STATE.BACKEND_RUNNING:
             return status.phaseText || formatStateLabel(state);
         case RUN_STATE.COMPLETED:
+            return status.state === 'completed'
+                ? (status.phaseText || formatStateLabel(state))
+                : formatStateLabel(state);
         case RUN_STATE.FAILED:
+            return status.state === 'failed'
+                ? (status.phaseText || formatStateLabel(state))
+                : formatStateLabel(state);
         case RUN_STATE.CANCELLED:
-            return status.phaseText || formatStateLabel(state);
+            return status.state === 'cancelled'
+                ? (status.phaseText || formatStateLabel(state))
+                : formatStateLabel(state);
         default:
             return formatStateLabel(state);
     }
@@ -1755,7 +1763,7 @@ function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
         `nativeState: ${status.nativeState || 'unknown'}`,
         `recoveryMode: ${formatRecoveryMode(status.recoveryMode)}`,
         `nativeGraceDeadline: ${formatGraceDeadline(status.nativeGraceDeadline)}`,
-        `assistantMessageIndex: ${Number.isFinite(Number(status.assistantMessageIndex)) ? Number(status.assistantMessageIndex) : 'none'}`,
+        `assistantMessageIndex: ${status.assistantMessageIndex == null ? 'none' : (Number.isFinite(Number(status.assistantMessageIndex)) ? Number(status.assistantMessageIndex) : 'none')}`,
         `accepted: ${Number(status.acceptedCount) || 0}/${Number(status.targetAcceptedCount) || 0}`,
         `attempts: ${Number(status.attemptCount) || 0}/${Number(status.maxAttempts) || 0}`,
         `targetMessageVersion: ${Number(status.targetMessageVersion) || 0}`,
