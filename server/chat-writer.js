@@ -9,24 +9,25 @@ async function writeAcceptedResult(job, accepted) {
     const targetIndex = ensureTargetAssistantMessage(job, currentChat);
     const targetMessage = currentChat[targetIndex];
     const timestamp = new Date().toISOString();
+    const nextExtra = buildAcceptedExtra(job, targetMessage.extra, accepted);
+    const shouldSeedResult = job.acceptedCount === 0 && !messageHasMeaningfulContent(targetMessage);
 
-    targetMessage.swipes.push(accepted.text);
-    targetMessage.swipe_info.push(createSwipeInfo(timestamp, targetMessage.extra));
-    targetMessage.swipe_id = targetMessage.swipes.length - 1;
-    targetMessage.mes = accepted.text;
-
+    targetMessage.extra = nextExtra;
     targetMessage.send_date = timestamp;
     targetMessage.gen_started = timestamp;
     targetMessage.gen_finished = timestamp;
-    targetMessage.extra = {
-        ...(targetMessage.extra || {}),
-        retryMobileJobId: job.jobId,
-        retryMobileAcceptedCount: job.acceptedCount + 1,
-        retryMobileCharacterCount: accepted.characterCount,
-        retryMobileWordCount: accepted.characterCount,
-        retryMobileTokenCount: accepted.tokenCount,
-        model: firstString(job.capturedRequest?.model, targetMessage.extra?.model),
-    };
+    targetMessage.mes = accepted.text;
+
+    if (shouldSeedResult) {
+        targetMessage.swipes = [accepted.text];
+        targetMessage.swipe_info = [createSwipeInfo(timestamp, nextExtra)];
+        targetMessage.swipe_id = 0;
+    } else {
+        normalizeSwipeShape(targetMessage);
+        targetMessage.swipes.push(accepted.text);
+        targetMessage.swipe_info.push(createSwipeInfo(timestamp, nextExtra));
+        targetMessage.swipe_id = targetMessage.swipes.length - 1;
+    }
 
     const saveTarget = getSaveTarget(job);
     try {
@@ -39,15 +40,84 @@ async function writeAcceptedResult(job, accepted) {
         );
     }
 
-    job.targetMessageIndex = targetIndex;
+    job.targetMessageIndex = targetIndex - getPersistedChatOffset(currentChat);
     job.targetMessageVersion += 1;
     job.targetMessage = clone(targetMessage);
 
     return {
-        targetMessageIndex: targetIndex,
+        targetMessageIndex: job.targetMessageIndex,
         targetMessageVersion: job.targetMessageVersion,
         targetMessage: job.targetMessage,
     };
+}
+
+async function confirmNativeAssistantTurn(job, assistantMessageIndex) {
+    const liveAssistantIndex = Number(assistantMessageIndex);
+    if (!Number.isFinite(liveAssistantIndex) || liveAssistantIndex < 0) {
+        throw createStructuredError(
+            'handoff_request_failed',
+            'Retry Mobile did not receive a valid native assistant turn to confirm.',
+        );
+    }
+
+    const currentChat = await readCurrentChat(job);
+    assertChatStillMatches(job, currentChat);
+
+    const state = inspectAdjacentAssistantState(job, currentChat);
+    if (state.kind === 'missing_assistant') {
+        throw createStructuredError(
+            'backend_turn_missing',
+            'The native assistant turn was missing when Retry Mobile tried to confirm it.',
+        );
+    }
+
+    if (state.assistantMessageIndex !== liveAssistantIndex) {
+        throw createStructuredError(
+            'backend_turn_changed',
+            'The confirmed native assistant turn no longer matches the captured user turn.',
+            `Expected live assistant index ${liveAssistantIndex}, found ${state.assistantMessageIndex}.`,
+        );
+    }
+
+    job.assistantMessageIndex = liveAssistantIndex;
+    job.targetMessageIndex = liveAssistantIndex;
+    job.targetMessage = clone(state.assistantMessage);
+
+    return {
+        assistantMessageIndex: liveAssistantIndex,
+        targetMessageIndex: liveAssistantIndex,
+        targetMessage: job.targetMessage,
+    };
+}
+
+function inspectNativeAssistantState(job) {
+    const saveTarget = getSaveTarget(job);
+    let chat = null;
+
+    try {
+        chat = readChatJsonl(saveTarget.filePath);
+    } catch {
+        return { kind: 'target_pending' };
+    }
+
+    const fingerprint = job.targetFingerprint;
+    const userIndex = getPersistedUserIndex(job, chat);
+    const current = Number.isFinite(userIndex) && userIndex >= 0
+        ? chat[userIndex]
+        : null;
+
+    if (!current || current.is_user !== true) {
+        return { kind: 'target_pending' };
+    }
+
+    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
+        throw createStructuredError(
+            'backend_turn_changed',
+            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
+        );
+    }
+
+    return inspectAdjacentAssistantState(job, chat);
 }
 
 async function readCurrentChat(job) {
@@ -119,18 +189,23 @@ function liveChatContainsTargetTurn(job, chat) {
 }
 
 function ensureTargetAssistantMessage(job, chat) {
-    const targetIndex = getPersistedAssistantIndex(job, chat);
-    const targetMessage = Number.isFinite(targetIndex) && targetIndex >= 0
-        ? chat[targetIndex]
-        : null;
-    if (!targetMessage || targetMessage.is_user === true) {
+    const state = inspectAdjacentAssistantState(job, chat);
+
+    if (state.kind === 'missing_assistant') {
+        if (job.recoveryMode === 'create_missing_turn') {
+            const created = insertAssistantMessage(job, chat, state.persistedAssistantIndex);
+            job.assistantMessageIndex = created.assistantMessageIndex;
+            job.targetMessageIndex = created.assistantMessageIndex;
+            return created.persistedAssistantIndex;
+        }
+
         throw createStructuredError(
             'backend_turn_missing',
             'The native assistant turn was missing when Retry Mobile tried to append a swipe.',
         );
     }
 
-    const previousMessage = chat[targetIndex - 1];
+    const previousMessage = chat[state.persistedAssistantIndex - 1];
     if (previousMessage?.is_user !== true || previousMessage.mes !== job.targetFingerprint?.userMessageText) {
         throw createStructuredError(
             'backend_turn_changed',
@@ -138,9 +213,84 @@ function ensureTargetAssistantMessage(job, chat) {
         );
     }
 
-    normalizeSwipeShape(targetMessage);
-    job.targetMessageIndex = targetIndex - getPersistedChatOffset(chat);
-    return targetIndex;
+    job.assistantMessageIndex = state.assistantMessageIndex;
+    job.targetMessageIndex = state.assistantMessageIndex;
+    return state.persistedAssistantIndex;
+}
+
+function inspectAdjacentAssistantState(job, chat) {
+    const persistedUserIndex = getPersistedUserIndex(job, chat);
+    const persistedAssistantIndex = Number.isFinite(persistedUserIndex) && persistedUserIndex >= 0
+        ? persistedUserIndex + 1
+        : -1;
+    const assistantMessage = persistedAssistantIndex >= 0
+        ? chat[persistedAssistantIndex]
+        : null;
+    const assistantMessageIndex = persistedAssistantIndex >= 0
+        ? persistedAssistantIndex - getPersistedChatOffset(chat)
+        : null;
+
+    if (!assistantMessage || assistantMessage.is_user === true) {
+        return {
+            kind: 'missing_assistant',
+            persistedUserIndex,
+            persistedAssistantIndex,
+            assistantMessageIndex,
+            assistantMessage: null,
+        };
+    }
+
+    return {
+        kind: messageHasMeaningfulContent(assistantMessage) ? 'filled' : 'empty_placeholder',
+        persistedUserIndex,
+        persistedAssistantIndex,
+        assistantMessageIndex,
+        assistantMessage,
+    };
+}
+
+function insertAssistantMessage(job, chat, persistedAssistantIndex) {
+    const message = buildAssistantSeedMessage(job);
+    chat.splice(persistedAssistantIndex, 0, message);
+
+    return {
+        persistedAssistantIndex,
+        assistantMessageIndex: persistedAssistantIndex - getPersistedChatOffset(chat),
+        assistantMessage: message,
+    };
+}
+
+function buildAssistantSeedMessage(job) {
+    const extra = {};
+    const model = firstString(job.capturedRequest?.model);
+    const api = firstString(job.capturedRequest?.chat_completion_source);
+
+    if (api) {
+        extra.api = api;
+    }
+
+    if (model) {
+        extra.model = model;
+    }
+
+    const message = {
+        name: firstString(job.captureMeta?.assistantName, job.chatIdentity?.assistantName, 'Assistant'),
+        is_user: false,
+        is_system: false,
+        send_date: '',
+        mes: '',
+        title: '',
+        extra,
+        swipes: [],
+        swipe_info: [],
+        swipe_id: 0,
+    };
+
+    if (job.chatIdentity?.avatarUrl) {
+        message.original_avatar = job.chatIdentity.avatarUrl;
+    }
+
+    return message;
 }
 
 function normalizeSwipeShape(message) {
@@ -160,12 +310,46 @@ function normalizeSwipeShape(message) {
     }
 }
 
+function messageHasMeaningfulContent(message) {
+    if (!message || typeof message !== 'object') {
+        return false;
+    }
+
+    if (normalizeText(message.mes)) {
+        return true;
+    }
+
+    if (Array.isArray(message.swipes)) {
+        return message.swipes.some((swipe) => Boolean(normalizeText(swipe)));
+    }
+
+    return false;
+}
+
+function normalizeText(value) {
+    return String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
+}
+
 function createSwipeInfo(timestamp, extra = {}) {
     return {
         send_date: timestamp,
         gen_started: timestamp,
         gen_finished: timestamp,
         extra: clone(extra || {}),
+    };
+}
+
+function buildAcceptedExtra(job, currentExtra, accepted) {
+    return {
+        ...(currentExtra || {}),
+        retryMobileJobId: job.jobId,
+        retryMobileAcceptedCount: job.acceptedCount + 1,
+        retryMobileCharacterCount: accepted.characterCount,
+        retryMobileWordCount: accepted.characterCount,
+        retryMobileTokenCount: accepted.tokenCount,
+        model: firstString(job.capturedRequest?.model, currentExtra?.model),
     };
 }
 
@@ -209,15 +393,6 @@ function getPersistedUserIndex(job, chat) {
     return liveIndex + getPersistedChatOffset(chat);
 }
 
-function getPersistedAssistantIndex(job, chat) {
-    const liveIndex = Number(job.assistantMessageIndex);
-    if (!Number.isFinite(liveIndex) || liveIndex < 0) {
-        return -1;
-    }
-
-    return liveIndex + getPersistedChatOffset(chat);
-}
-
 function getPersistedChatOffset(chat) {
     const firstRow = Array.isArray(chat) ? chat[0] : null;
     return firstRow && typeof firstRow === 'object' && firstRow.chat_metadata
@@ -232,7 +407,7 @@ function readChatJsonl(filePath) {
     } catch (error) {
         throw createStructuredError(
             'backend_turn_missing',
-            `Retry Mobile could not read the chat file at the expected path.`,
+            'Retry Mobile could not read the chat file at the expected path.',
             error instanceof Error ? error.message : String(error),
         );
     }
@@ -283,5 +458,7 @@ function sanitizeFileName(value) {
 }
 
 module.exports = {
+    confirmNativeAssistantTurn,
+    inspectNativeAssistantState,
     writeAcceptedResult,
 };

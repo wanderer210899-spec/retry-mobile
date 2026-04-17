@@ -1,4 +1,10 @@
-import { NATIVE_CONFIRM_POLL_MS, NATIVE_CONFIRM_TIMEOUT_MS, NATIVE_WAIT_TIMEOUT_MS } from './constants.js';
+import {
+    NATIVE_CONFIRM_POLL_MS,
+    NATIVE_CONFIRM_TIMEOUT_MS,
+    NATIVE_WAIT_PROGRESS_TIMEOUT_MS,
+    NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS,
+    NATIVE_WAIT_TIMEOUT_MS,
+} from './constants.js';
 import { getContext, getEventTypes, subscribeEvent } from './st-context.js';
 import { confirmTargetTurn } from './st-chat.js';
 import { createStructuredError } from './retry-error.js';
@@ -16,6 +22,8 @@ export function waitForNativeCompletion({
         let settled = false;
         let confirming = false;
         let timeoutHandle = 0;
+        let progressTimeoutHandle = 0;
+        let renderedWithoutEndHandle = 0;
         let lastEndedMessageId = null;
         let lastRenderedMessageId = null;
         let lastRenderedType = '';
@@ -32,6 +40,8 @@ export function waitForNativeCompletion({
         stopListening.push(
             subscribeEvent(eventTypes.GENERATION_ENDED, (messageId) => {
                 lastEndedMessageId = normalizeMessageId(messageId);
+                clearProgressTimeout();
+                clearRenderedWithoutEndTimeout();
                 onEvent?.('GENERATION_ENDED', `SillyTavern reported native completion for message ${lastEndedMessageId}.`);
                 void confirmFromObservedEvents();
             }, context),
@@ -43,6 +53,8 @@ export function waitForNativeCompletion({
                     lastRenderedMessageId = normalizeMessageId(messageId);
                     lastRenderedType = String(type || '');
                     lastRenderedSummary = `Rendered assistant message ${messageId} (${type || 'unknown'}).`;
+                    clearProgressTimeout();
+                    armRenderedWithoutEndTimeout();
                     onEvent?.('CHARACTER_MESSAGE_RENDERED', lastRenderedSummary);
                     if (lastEndedMessageId != null) {
                         void confirmFromObservedEvents();
@@ -93,6 +105,13 @@ export function waitForNativeCompletion({
                     : `The last native completion event pointed at message ${lastEndedMessageId}. ${lastRenderedSummary}`.trim(),
             ));
         }, timeoutMs);
+        progressTimeoutHandle = window.setTimeout(() => {
+            fail(createStructuredError(
+                'native_wait_stalled',
+                'Retry Mobile captured the request, but SillyTavern never reported native completion progress.',
+                describeObservedEvents() || 'No native lifecycle events arrived after capture.',
+            ));
+        }, Math.min(timeoutMs, NATIVE_WAIT_PROGRESS_TIMEOUT_MS));
 
         async function confirmFromObservedEvents() {
             if (settled || confirming || lastEndedMessageId == null) {
@@ -247,11 +266,52 @@ export function waitForNativeCompletion({
                 timeoutHandle = 0;
             }
 
+            clearProgressTimeout();
+            clearRenderedWithoutEndTimeout();
+
             stopListening.splice(0).forEach((stop) => {
                 try {
                     stop();
                 } catch {}
             });
+        }
+
+        function clearProgressTimeout() {
+            if (!progressTimeoutHandle) {
+                return;
+            }
+
+            window.clearTimeout(progressTimeoutHandle);
+            progressTimeoutHandle = 0;
+        }
+
+        function armRenderedWithoutEndTimeout() {
+            if (lastEndedMessageId != null) {
+                clearRenderedWithoutEndTimeout();
+                return;
+            }
+
+            clearRenderedWithoutEndTimeout();
+            renderedWithoutEndHandle = window.setTimeout(() => {
+                if (lastEndedMessageId != null) {
+                    return;
+                }
+
+                fail(createStructuredError(
+                    'native_wait_stalled',
+                    'Retry Mobile saw the native assistant render, but SillyTavern never emitted the matching completion event.',
+                    describeObservedEvents() || lastRenderedSummary,
+                ));
+            }, Math.min(timeoutMs, NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS));
+        }
+
+        function clearRenderedWithoutEndTimeout() {
+            if (!renderedWithoutEndHandle) {
+                return;
+            }
+
+            window.clearTimeout(renderedWithoutEndHandle);
+            renderedWithoutEndHandle = 0;
         }
     });
 }
