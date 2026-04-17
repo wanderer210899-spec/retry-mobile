@@ -1,7 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const process = require('node:process');
-const { execFileSync } = require('node:child_process');
 const readline = require('node:readline/promises');
 
 const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./server/plugin-meta');
@@ -10,6 +9,8 @@ const LEGACY_PLUGIN_ID = 'auto-reroll';
 const SOURCE_ROOT = __dirname;
 const FRONTEND_SOURCE = path.join(SOURCE_ROOT, 'frontend');
 const BACKEND_SOURCE = path.join(SOURCE_ROOT, 'server');
+const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https://raw.githubusercontent.com/');
+const RELEASE_MANIFEST_FILE = 'release.json';
 
 main().catch((error) => {
     console.error(`\n${PLUGIN_NAME} installer failed.`);
@@ -29,7 +30,7 @@ async function main() {
         let keepRunning = true;
         while (keepRunning) {
             refreshProfiles(layout);
-            refreshInstallerGitStatus(layout);
+            await refreshInstallerReleaseStatus(layout);
             renderMenu(layout, platform);
             const choice = await promptMainMenuChoice(rl);
             switch (choice) {
@@ -95,7 +96,7 @@ function resolveLocalLayout(startDir, platform) {
         globalExtensionsDir: path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party'),
         globalFrontendTarget: path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party', PLUGIN_ID),
         globalFrontendInstalled: false,
-        gitUpdate: null,
+        releaseUpdate: null,
         profiles: [],
     };
 
@@ -220,7 +221,7 @@ function renderMenu(layout, platform) {
     console.log(` |   Working dir: ${truncateMiddle(layout.workingDir, 42)}`);
     console.log(` |   ST root:     ${truncateMiddle(layout.stRoot, 42)}`);
     console.log(` |   Repository:  ${truncateMiddle(REPOSITORY_URL, 42)}`);
-    console.log(` |   Source Git:  ${truncateMiddle(formatInstallerGitStatus(layout.gitUpdate), 42)}`);
+    console.log(` |   Source Ver:  ${truncateMiddle(formatInstallerReleaseStatus(layout.releaseUpdate), 42)}`);
     console.log(' ______________________________________________________________');
     console.log(' | Retry Mobile Status:');
     console.log(` |   Server plugins: ${layout.config.enableServerPlugins ? 'Enabled' : 'Disabled'}`);
@@ -463,6 +464,7 @@ async function uninstallFlow(rl, layout) {
 
 function installBackend(layout) {
     replaceDirectory(BACKEND_SOURCE, layout.backendTarget);
+    fs.copyFileSync(path.join(SOURCE_ROOT, RELEASE_MANIFEST_FILE), path.join(layout.backendTarget, RELEASE_MANIFEST_FILE));
 }
 
 function installGlobalFrontend(layout) {
@@ -557,34 +559,31 @@ function findExistingPath(targetPath) {
     return current;
 }
 
-function refreshInstallerGitStatus(layout) {
-    layout.gitUpdate = readInstallerGitUpdateInfo(SOURCE_ROOT);
+async function refreshInstallerReleaseStatus(layout) {
+    layout.releaseUpdate = await readInstallerReleaseUpdateInfo(SOURCE_ROOT);
 }
 
-function readInstallerGitUpdateInfo(repoPath) {
+async function readInstallerReleaseUpdateInfo(repoPath) {
     const result = {
         canCheck: false,
         hasUpdate: false,
-        message: 'Git unavailable',
+        localVersion: '',
+        remoteVersion: '',
+        message: 'Update check unavailable',
     };
 
     try {
-        const inside = runGit(repoPath, ['rev-parse', '--is-inside-work-tree']);
-        if (inside !== 'true') {
-            result.message = 'Not a Git checkout';
-            return result;
-        }
-
-        const localHead = runGit(repoPath, ['rev-parse', '--short', 'HEAD']);
-        const remoteLine = runGit(repoPath, ['ls-remote', 'origin', `refs/heads/${DEFAULT_BRANCH}`]);
-        const remoteHead = String(remoteLine || '').split(/\s+/)[0] || '';
-        const remoteShort = remoteHead ? remoteHead.slice(0, 7) : '';
-
-        result.canCheck = Boolean(localHead && remoteShort);
-        result.hasUpdate = result.canCheck && localHead !== remoteShort;
+        const localRelease = readJsonFile(path.join(repoPath, RELEASE_MANIFEST_FILE)) || {};
+        const remoteRelease = await fetchJson(`${RAW_REPOSITORY_BASE}/${DEFAULT_BRANCH}/${RELEASE_MANIFEST_FILE}`);
+        result.localVersion = typeof localRelease.version === 'string' ? localRelease.version : '';
+        result.remoteVersion = typeof remoteRelease?.version === 'string' ? remoteRelease.version : '';
+        result.canCheck = Boolean(result.localVersion && result.remoteVersion);
+        result.hasUpdate = result.canCheck && compareVersions(result.localVersion, result.remoteVersion) < 0;
         result.message = result.canCheck
-            ? (result.hasUpdate ? `Update available (${localHead} → ${remoteShort})` : `Up to date (${localHead})`)
-            : 'Remote check unavailable';
+            ? (result.hasUpdate
+                ? `Update available (${result.localVersion} → ${result.remoteVersion})`
+                : `Up to date (${result.localVersion})`)
+            : 'Release manifest missing a version value.';
         return result;
     } catch (error) {
         result.message = error instanceof Error ? error.message : String(error);
@@ -592,16 +591,58 @@ function readInstallerGitUpdateInfo(repoPath) {
     }
 }
 
-function runGit(repoPath, args) {
-    return execFileSync('git', ['-C', repoPath, ...args], {
-        encoding: 'utf8',
-        timeout: 5000,
-        windowsHide: true,
-    }).trim();
+async function fetchJson(url) {
+    const options = {};
+    if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+        options.signal = AbortSignal.timeout(8000);
+    }
+
+    const response = await fetch(url, options);
+    if (!response.ok) {
+        throw new Error(`Update check failed at ${url} (${response.status}).`);
+    }
+
+    return response.json();
 }
 
-function formatInstallerGitStatus(gitUpdate) {
-    return gitUpdate?.message || 'Git unavailable';
+function readJsonFile(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) {
+        return null;
+    }
+
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function compareVersions(left, right) {
+    const leftParts = normalizeVersion(left);
+    const rightParts = normalizeVersion(right);
+    const length = Math.max(leftParts.length, rightParts.length);
+
+    for (let index = 0; index < length; index += 1) {
+        const leftPart = leftParts[index] ?? 0;
+        const rightPart = rightParts[index] ?? 0;
+        if (leftPart > rightPart) {
+            return 1;
+        }
+        if (leftPart < rightPart) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+function normalizeVersion(value) {
+    return String(value || '')
+        .trim()
+        .replace(/^v/i, '')
+        .split('.')
+        .map((part) => Number.parseInt(part, 10))
+        .filter((part) => Number.isFinite(part));
+}
+
+function formatInstallerReleaseStatus(releaseUpdate) {
+    return releaseUpdate?.message || 'Update check unavailable';
 }
 
 function truncateMiddle(value, maxLength) {

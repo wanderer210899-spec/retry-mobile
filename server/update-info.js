@@ -1,42 +1,37 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 
 const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./plugin-meta');
 
 const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https://raw.githubusercontent.com/');
+const RELEASE_MANIFEST_FILE = 'release.json';
 
-async function getReleaseInfo(request) {
-    const backendPackage = readJsonFile(path.join(__dirname, 'package.json')) || {};
-    const frontendInstall = resolveFrontendInstall(request);
-    const git = readGitUpdateInfo(__dirname);
+async function getReleaseInfo() {
+    const localRelease = readJsonFile(path.join(__dirname, '..', RELEASE_MANIFEST_FILE)) || {};
+    const localVersion = typeof localRelease.version === 'string' ? localRelease.version : '';
     const latest = {
-        backendVersion: '',
-        frontendVersion: '',
+        version: '',
         checkedAt: new Date().toISOString(),
     };
 
     const update = {
         canCheck: false,
         hasUpdate: false,
-        backendOutdated: false,
-        frontendOutdated: false,
         message: 'Update check has not run yet.',
     };
 
     try {
-        const latestVersions = await fetchLatestVersions();
-        latest.backendVersion = latestVersions.backendVersion;
-        latest.frontendVersion = latestVersions.frontendVersion;
+        const latestRelease = await fetchLatestReleaseManifest();
+        latest.version = typeof latestRelease.version === 'string' ? latestRelease.version : '';
         latest.checkedAt = new Date().toISOString();
 
-        update.canCheck = true;
-        update.backendOutdated = compareVersions(backendPackage.version, latest.backendVersion) < 0;
-        update.frontendOutdated = frontendInstall.installed && compareVersions(frontendInstall.version, latest.frontendVersion) < 0;
-        update.hasUpdate = update.backendOutdated || update.frontendOutdated;
-        update.message = update.hasUpdate
-            ? 'A newer Retry Mobile build is available. From your local SillyTavern directory, run the installer and choose Install / Update now.'
-            : 'Retry Mobile is up to date.';
+        update.canCheck = Boolean(localVersion && latest.version);
+        update.hasUpdate = update.canCheck && compareVersions(localVersion, latest.version) < 0;
+        update.message = update.canCheck
+            ? (update.hasUpdate
+                ? 'A newer Retry Mobile build is available. From your local SillyTavern directory, run the installer and choose Install / Update now.'
+                : 'Retry Mobile is up to date.')
+            : 'Release manifest missing a version value.';
     } catch (error) {
         update.message = error instanceof Error ? error.message : String(error);
     }
@@ -46,14 +41,8 @@ async function getReleaseInfo(request) {
         pluginName: PLUGIN_NAME,
         repositoryUrl: REPOSITORY_URL,
         branch: DEFAULT_BRANCH,
-        git,
         installed: {
-            backend: {
-                installed: true,
-                version: typeof backendPackage.version === 'string' ? backendPackage.version : '',
-                location: 'plugins/retry-mobile',
-            },
-            frontend: frontendInstall,
+            version: localVersion,
         },
         latest,
         update,
@@ -64,49 +53,8 @@ async function getReleaseInfo(request) {
     };
 }
 
-function resolveFrontendInstall(request) {
-    const localBase = request?.user?.directories?.extensions;
-    const localPath = localBase ? path.join(localBase, PLUGIN_ID) : '';
-    const globalPath = path.join(process.cwd(), 'public', 'scripts', 'extensions', 'third-party', PLUGIN_ID);
-
-    const localManifest = readJsonFile(localPath ? path.join(localPath, 'manifest.json') : '');
-    if (localManifest) {
-        return {
-            installed: true,
-            version: typeof localManifest.version === 'string' ? localManifest.version : '',
-            scope: 'current-profile',
-            location: 'Current profile',
-        };
-    }
-
-    const globalManifest = readJsonFile(path.join(globalPath, 'manifest.json'));
-    if (globalManifest) {
-        return {
-            installed: true,
-            version: typeof globalManifest.version === 'string' ? globalManifest.version : '',
-            scope: 'global',
-            location: 'All profiles (global third-party)',
-        };
-    }
-
-    return {
-        installed: false,
-        version: '',
-        scope: 'missing',
-        location: 'Not installed for this profile',
-    };
-}
-
-async function fetchLatestVersions() {
-    const [backendPackage, frontendManifest] = await Promise.all([
-        fetchJson(`${RAW_REPOSITORY_BASE}/${DEFAULT_BRANCH}/server/package.json`),
-        fetchJson(`${RAW_REPOSITORY_BASE}/${DEFAULT_BRANCH}/frontend/manifest.json`),
-    ]);
-
-    return {
-        backendVersion: typeof backendPackage?.version === 'string' ? backendPackage.version : '',
-        frontendVersion: typeof frontendManifest?.version === 'string' ? frontendManifest.version : '',
-    };
+async function fetchLatestReleaseManifest() {
+    return fetchJson(`${RAW_REPOSITORY_BASE}/${DEFAULT_BRANCH}/${RELEASE_MANIFEST_FILE}`);
 }
 
 async function fetchJson(url) {
@@ -129,51 +77,6 @@ function readJsonFile(filePath) {
     }
 
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
-
-function readGitUpdateInfo(repoPath) {
-    const result = {
-        canCheck: false,
-        hasUpdate: false,
-        branch: DEFAULT_BRANCH,
-        localHead: '',
-        remoteHead: '',
-        message: 'Git tracking unavailable for this install.',
-    };
-
-    try {
-        const inside = runGit(repoPath, ['rev-parse', '--is-inside-work-tree']);
-        if (inside !== 'true') {
-            result.message = 'This install is not a Git checkout.';
-            return result;
-        }
-
-        const localHead = runGit(repoPath, ['rev-parse', 'HEAD']);
-        const remoteLine = runGit(repoPath, ['ls-remote', 'origin', `refs/heads/${DEFAULT_BRANCH}`]);
-        const remoteHead = String(remoteLine || '').split(/\s+/)[0] || '';
-
-        result.canCheck = Boolean(localHead && remoteHead);
-        result.localHead = localHead;
-        result.remoteHead = remoteHead;
-        result.hasUpdate = result.canCheck && localHead !== remoteHead;
-        result.message = result.canCheck
-            ? (result.hasUpdate
-                ? 'Git reports this checkout is behind origin.'
-                : 'Git reports this checkout matches origin.')
-            : 'Git tracking could not resolve local and remote heads.';
-        return result;
-    } catch (error) {
-        result.message = error instanceof Error ? error.message : String(error);
-        return result;
-    }
-}
-
-function runGit(repoPath, args) {
-    return execFileSync('git', ['-C', repoPath, ...args], {
-        encoding: 'utf8',
-        timeout: 5000,
-        windowsHide: true,
-    }).trim();
 }
 
 function compareVersions(left, right) {

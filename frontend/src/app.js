@@ -305,23 +305,16 @@ async function refreshReleaseInfo() {
         backendLog.warn('Could not fetch release info.', error);
         runtime.releaseInfo = {
             repositoryUrl: REPOSITORY_URL,
-            git: {
-                canCheck: false,
-                hasUpdate: false,
-                message: 'Git tracking unavailable for this install.',
-            },
             update: {
                 canCheck: false,
                 hasUpdate: false,
                 message: error?.message || 'Retry Mobile could not reach the backend release endpoint.',
             },
             installed: {
-                backend: { installed: true, version: '' },
-                frontend: { installed: false, version: '', scope: 'missing' },
+                version: '',
             },
             latest: {
-                backendVersion: '',
-                frontendVersion: '',
+                version: '',
             },
             instructions: {
                 updateNow: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.',
@@ -1198,39 +1191,20 @@ function renderReleaseInfo() {
     }
 
     const info = runtime.releaseInfo;
-    const gitInfo = info.git || {};
-    const backendVersion = info.installed?.backend?.version || 'unknown';
-    const frontendVersion = info.installed?.frontend?.installed
-        ? info.installed?.frontend?.version || 'unknown'
-        : 'not installed';
-    const latestBackend = info.latest?.backendVersion || 'unknown';
-    const latestFrontend = info.latest?.frontendVersion || 'unknown';
+    const localVersion = info.installed?.version || 'unknown';
+    const latestVersion = info.latest?.version || 'unknown';
     const updateMessage = info.update?.message || 'Update information unavailable.';
-    const hasUpdate = Boolean(info.update?.hasUpdate || gitInfo?.hasUpdate);
+    const hasUpdate = Boolean(info.update?.hasUpdate);
     const updateStateClass = hasUpdate ? 'rm-release-card__status--warning' : 'rm-release-card__status--ok';
     const updateLabel = hasUpdate ? 'Update available' : 'Up to date';
-    const profileScope = info.installed?.frontend?.scope || 'missing';
-    const profileLabel = profileScope === 'current-profile'
-        ? 'Installed for this profile'
-        : profileScope === 'global'
-            ? 'Installed globally for all profiles'
-            : 'Not installed for this profile';
-    const gitLabel = gitInfo.canCheck
-        ? (gitInfo.hasUpdate ? 'Behind origin' : 'Synced to origin')
-        : 'Git unavailable';
-    const gitMessage = gitInfo.message || 'Git tracking unavailable for this install.';
 
     return `
         <div class="rm-release-card__header">
             <span class="rm-release-card__status ${updateStateClass}">${escapeHtml(updateLabel)}</span>
         </div>
         <div class="rm-release-card__line">${escapeHtml(updateMessage)}</div>
-        <div class="rm-release-card__line">${escapeHtml(gitMessage)}</div>
         <div class="rm-release-card__grid">
-            <div><strong>Backend</strong><span>${escapeHtml(backendVersion)} → ${escapeHtml(latestBackend)}</span></div>
-            <div><strong>Frontend</strong><span>${escapeHtml(frontendVersion)} → ${escapeHtml(latestFrontend)}</span></div>
-            <div><strong>Scope</strong><span>${escapeHtml(profileLabel)}</span></div>
-            <div><strong>Git</strong><span>${escapeHtml(gitLabel)}</span></div>
+            <div><strong>Version</strong><span>${escapeHtml(localVersion)} → ${escapeHtml(latestVersion)}</span></div>
         </div>
     `;
 }
