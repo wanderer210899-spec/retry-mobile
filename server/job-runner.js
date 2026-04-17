@@ -1,7 +1,7 @@
 const { acquireWakeLock, notify, releaseWakeLock } = require('./notifier');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { validateAcceptedText } = require('./validation');
-const { touchJob } = require('./state');
+const { appendAttemptLog, touchJob } = require('./state');
 const { writeAcceptedResult } = require('./chat-writer');
 
 async function runJob(job, environment) {
@@ -9,6 +9,11 @@ async function runJob(job, environment) {
     try {
         while (!job.cancelRequested && job.acceptedCount < job.targetAcceptedCount && job.attemptCount < job.maxAttempts) {
             job.attemptCount += 1;
+            const attemptRecord = {
+                attemptNumber: job.attemptCount,
+                startedAt: new Date().toISOString(),
+                phase: 'requesting_generation',
+            };
             touchJob(job, {
                 phase: 'requesting_generation',
                 structuredError: null,
@@ -23,12 +28,28 @@ async function runJob(job, environment) {
                     job.lastError = structuredError.message;
                     job.structuredError = null;
                     job.lastValidation = null;
+                    appendAttemptLog(job, {
+                        ...attemptRecord,
+                        finishedAt: new Date().toISOString(),
+                        outcome: 'timed_out',
+                        reason: structuredError.code,
+                        message: structuredError.message,
+                        phase: 'attempt_timed_out',
+                    });
                     touchJob(job, {
                         phase: 'attempt_timed_out',
                     });
                     continue;
                 }
 
+                appendAttemptLog(job, {
+                    ...attemptRecord,
+                    finishedAt: new Date().toISOString(),
+                    outcome: 'failed',
+                    reason: structuredError.code,
+                    message: structuredError.message,
+                    phase: 'request_failed',
+                });
                 throw error;
             }
 
@@ -39,6 +60,16 @@ async function runJob(job, environment) {
                 job.lastError = `Rejected response: ${formatValidationRejection(validation)}`;
                 job.structuredError = null;
                 job.lastValidation = validation;
+                appendAttemptLog(job, {
+                    ...attemptRecord,
+                    finishedAt: new Date().toISOString(),
+                    outcome: 'rejected',
+                    reason: validation.reason,
+                    message: formatValidationRejection(validation),
+                    phase: 'validation_rejected',
+                    characterCount: validation.metrics.characterCount,
+                    tokenCount: validation.metrics.tokenCount,
+                });
                 touchJob(job, {
                     phase: 'validation_rejected',
                 });
@@ -48,7 +79,23 @@ async function runJob(job, environment) {
             touchJob(job, {
                 phase: 'writing_chat',
             });
-            await writeAcceptedResult(job, validation.metrics);
+            let writeResult = null;
+            try {
+                writeResult = await writeAcceptedResult(job, validation.metrics);
+            } catch (error) {
+                const structuredError = toStructuredError(error, 'backend_write_failed', 'Retry Mobile could not write an accepted result back to chat.');
+                appendAttemptLog(job, {
+                    ...attemptRecord,
+                    finishedAt: new Date().toISOString(),
+                    outcome: 'write_failed',
+                    reason: structuredError.code,
+                    message: structuredError.message,
+                    phase: 'writing_chat',
+                    characterCount: validation.metrics.characterCount,
+                    tokenCount: validation.metrics.tokenCount,
+                });
+                throw error;
+            }
             job.acceptedResults.push({
                 text: validation.metrics.text,
                 characterCount: validation.metrics.characterCount,
@@ -62,6 +109,18 @@ async function runJob(job, environment) {
             job.structuredError = null;
             touchJob(job, {
                 phase: 'awaiting_retry_results',
+            });
+            appendAttemptLog(job, {
+                ...attemptRecord,
+                finishedAt: new Date().toISOString(),
+                outcome: 'accepted',
+                reason: validation.reason,
+                message: `Accepted and wrote swipe ${job.acceptedCount}/${job.targetAcceptedCount}.`,
+                phase: 'awaiting_retry_results',
+                characterCount: validation.metrics.characterCount,
+                tokenCount: validation.metrics.tokenCount,
+                targetMessageVersion: writeResult?.targetMessageVersion,
+                targetMessageIndex: writeResult?.targetMessageIndex,
             });
 
             notify(job.runConfig, 'success', {
@@ -99,6 +158,7 @@ async function runJob(job, environment) {
         const structuredError = toStructuredError(createStructuredError(
             'backend_write_failed',
             'Maximum attempts reached before the accepted target was met.',
+            buildAttemptSummary(job),
         ));
         touchJob(job, {
             state: 'failed',
@@ -113,7 +173,10 @@ async function runJob(job, environment) {
             state: 'failed',
             phase: 'failed',
             lastError: structuredError.message,
-            structuredError,
+            structuredError: {
+                ...structuredError,
+                detail: structuredError.detail || buildAttemptSummary(job),
+            },
         });
         console.error('[retry-mobile:backend] Job failed:', job.jobId, error);
         releaseWakeLock();
@@ -265,4 +328,16 @@ function formatValidationRejection(validation) {
     }
 
     return validation?.reason || 'validation failed';
+}
+
+function buildAttemptSummary(job) {
+    const latest = Array.isArray(job?.attemptLog) && job.attemptLog.length > 0
+        ? job.attemptLog[job.attemptLog.length - 1]
+        : null;
+    if (!latest) {
+        return '';
+    }
+
+    const latestReason = latest.message || latest.reason || latest.outcome || 'unknown';
+    return `Accepted ${job.acceptedCount || 0}/${job.targetAcceptedCount || 0} after ${job.attemptCount || 0} attempts. Last attempt: ${latestReason}`;
 }

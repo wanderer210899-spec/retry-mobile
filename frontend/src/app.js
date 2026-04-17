@@ -48,14 +48,15 @@ const runtime = {
     panel: null,
     statusText: null,
     stats: null,
-    diagnosticsContainer: null,
-    debugContainer: null,
+    retryLogContainer: null,
     releaseInfoContainer: null,
     errorBox: null,
     noteBox: null,
     actionToggleButton: null,
     quickReplyStatusLine: null,
     quickReplyToggleButton: null,
+    mainPane: null,
+    systemPane: null,
     machine: createStateMachine(),
     captureSession: null,
     activeJobId: null,
@@ -72,6 +73,8 @@ const runtime = {
     assistantMessageIndex: null,
     termuxAvailable: false,
     releaseInfo: null,
+    showRetryLog: false,
+    activeTab: 'main',
 };
 
 export function bootRetryMobile() {
@@ -111,144 +114,165 @@ function mountPanel() {
     drawer.className = 'inline-drawer';
     drawer.innerHTML = `
         <div class="inline-drawer-toggle inline-drawer-header">
-            <b><a class="rm-title-link" href="${REPOSITORY_URL}" target="_blank" rel="noopener noreferrer">${EXTENSION_NAME}</a></b>
+            <b>${EXTENSION_NAME}</b>
             <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
             <div class="rm-panel__body">
-                <section class="rm-panel__status">
+                <!-- ── TAB BAR + STATUS ROW ───────────────────── -->
+                <div class="rm-topbar">
+                    <nav class="rm-tabbar" aria-label="Retry Mobile panels">
+                        <button class="menu_button rm-tab" data-action="show-tab" data-tab="main" type="button">Main</button>
+                        <button class="menu_button rm-tab" data-action="show-tab" data-tab="system" type="button">System</button>
+                    </nav>
                     <div class="rm-status-pill" data-role="state-pill" data-state="${RUN_STATE.IDLE}">Idle</div>
-                    <div class="rm-stat-grid" data-role="stats"></div>
-                </section>
-                <section class="rm-fieldset">
-                    <div class="rm-fieldset__title">Install & Update</div>
-                    <div class="rm-release-card" data-role="release-info">Checking Retry Mobile install status...</div>
-                </section>
-                <section class="rm-settings-grid">
-                    <div class="rm-field rm-field--wide">
-                        <label>Run mode</label>
-                        <div class="rm-choice-grid" role="radiogroup" aria-label="Retry Mobile run mode">
-                            <label class="rm-choice">
-                                <input type="radio" name="${EXTENSION_ID}-run-mode" value="${RUN_MODE.SINGLE}" />
-                                <span class="rm-choice__copy">
+                </div>
+
+                <!-- ── STATS STRIP ───────────────────────────────── -->
+                <div class="rm-stats-strip" data-role="stats"></div>
+
+                <!-- ── MAIN PANE ─────────────────────────────────── -->
+                <div class="rm-panel__pane" data-role="main-pane">
+
+                    <!-- Configuration -->
+                    <section class="rm-fieldset">
+                        <div class="rm-fieldset__title">Configuration</div>
+
+                        <!-- Run mode -->
+                        <div class="rm-inline-row">
+                            <span class="rm-inline-row__label">Run mode</span>
+                            <div class="rm-mode-toggle" role="radiogroup" aria-label="Retry Mobile run mode">
+                                <label class="rm-mode-toggle__option">
+                                    <input type="radio" name="${EXTENSION_ID}-run-mode" value="${RUN_MODE.SINGLE}" />
                                     <span>Single</span>
-                                    <small>Capture one qualifying generation, finish that message, then stop.</small>
-                                </span>
-                            </label>
-                            <label class="rm-choice">
-                                <input type="radio" name="${EXTENSION_ID}-run-mode" value="${RUN_MODE.TOGGLE}" />
-                                <span class="rm-choice__copy">
+                                </label>
+                                <label class="rm-mode-toggle__option">
+                                    <input type="radio" name="${EXTENSION_ID}-run-mode" value="${RUN_MODE.TOGGLE}" />
                                     <span>Toggle</span>
-                                    <small>Keep re-arming after each finished run until you press Stop.</small>
-                                </span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Number inputs -->
+                        <div class="rm-number-rows">
+                            <div class="rm-inline-row">
+                                <label class="rm-inline-row__label" for="${EXTENSION_ID}-target">Accepted outputs goal</label>
+                                <input id="${EXTENSION_ID}-target" class="rm-number-input" type="number" min="1" step="1" />
+                            </div>
+                            <div class="rm-inline-row">
+                                <label class="rm-inline-row__label" for="${EXTENSION_ID}-attempts">Maximum attempts</label>
+                                <input id="${EXTENSION_ID}-attempts" class="rm-number-input" type="number" min="1" step="1" />
+                            </div>
+                            <div class="rm-inline-row">
+                                <label class="rm-inline-row__label" for="${EXTENSION_ID}-timeout">Attempt timeout (s)</label>
+                                <input id="${EXTENSION_ID}-timeout" class="rm-number-input" type="number" min="1" step="1" />
+                            </div>
+                        </div>
+
+                        <!-- Acceptance hard block -->
+                        <div class="rm-field rm-field--wide">
+                            <label class="rm-field__label">Min. length block</label>
+                            <div class="rm-block-grid" role="radiogroup" aria-label="Retry Mobile acceptance hard block">
+                                <label class="rm-block-option">
+                                    <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.CHARACTERS}" />
+                                    <span>Characters</span>
+                                </label>
+                                <label class="rm-block-option">
+                                    <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.TOKENS}" />
+                                    <span>Tokens</span>
+                                </label>
+                            </div>
+                            <div class="rm-number-rows">
+                                <div class="rm-inline-row">
+                                    <label class="rm-inline-row__label" for="${EXTENSION_ID}-characters">Minimum characters</label>
+                                    <input id="${EXTENSION_ID}-characters" class="rm-number-input" type="number" min="0" step="1" />
+                                </div>
+                                <div class="rm-inline-row">
+                                    <label class="rm-inline-row__label" for="${EXTENSION_ID}-tokens">Minimum tokens</label>
+                                    <input id="${EXTENSION_ID}-tokens" class="rm-number-input" type="number" min="0" step="1" />
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <!-- Notifications -->
+                    <section class="rm-fieldset">
+                        <div class="rm-fieldset__title">Notifications</div>
+                        <div class="rm-field">
+                            <label for="${EXTENSION_ID}-notification-template">Termux notification template</label>
+                            <textarea id="${EXTENSION_ID}-notification-template" rows="2" placeholder="Leave blank for default."></textarea>
+                        </div>
+                        <div class="rm-checkbox-grid">
+                            <label class="rm-checkbox">
+                                <input data-setting="notifyOnSuccess" type="checkbox" />
+                                <span>Notify on accepted</span>
+                            </label>
+                            <label class="rm-checkbox">
+                                <input data-setting="notifyOnComplete" type="checkbox" />
+                                <span>Notify on complete</span>
+                            </label>
+                            <label class="rm-checkbox">
+                                <input data-setting="vibrateOnSuccess" type="checkbox" />
+                                <span>Vibrate on accepted</span>
+                            </label>
+                            <label class="rm-checkbox">
+                                <input data-setting="vibrateOnComplete" type="checkbox" />
+                                <span>Vibrate on complete</span>
                             </label>
                         </div>
-                    </div>
-                    <div class="rm-field">
-                        <label for="${EXTENSION_ID}-target">Accepted outputs goal</label>
-                        <input id="${EXTENSION_ID}-target" type="number" min="1" step="1" />
-                        <small>How many accepted swipes the backend should keep for this one captured turn.</small>
-                    </div>
-                    <div class="rm-field">
-                        <label for="${EXTENSION_ID}-attempts">Maximum attempts</label>
-                        <input id="${EXTENSION_ID}-attempts" type="number" min="1" step="1" />
-                        <small>The backend stops early as soon as the accepted goal is reached. This must be at least as large as the accepted outputs goal.</small>
-                    </div>
-                    <div class="rm-field">
-                        <label for="${EXTENSION_ID}-timeout">Attempt timeout (seconds)</label>
-                        <input id="${EXTENSION_ID}-timeout" type="number" min="1" step="1" />
-                        <small>If one generation attempt produces no response before this limit, that attempt fails and Retry Mobile moves on to the next retry.</small>
-                    </div>
-                    <div class="rm-field rm-field--wide">
-                        <label>Acceptance hard block</label>
-                        <div class="rm-choice-grid" role="radiogroup" aria-label="Retry Mobile acceptance hard block">
-                            <label class="rm-choice">
-                                <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.CHARACTERS}" />
-                                <span class="rm-choice__copy">
-                                    <span>Character count</span>
-                                    <small>Reject any response below the minimum character count for this run.</small>
-                                </span>
-                            </label>
-                            <label class="rm-choice">
-                                <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.TOKENS}" />
-                                <span class="rm-choice__copy">
-                                    <span>Token count</span>
-                                    <small>Reject any response below the minimum heuristic token count for this run.</small>
-                                </span>
-                            </label>
+                    </section>
+
+                    <!-- Quick Replies -->
+                    <section class="rm-fieldset">
+                        <div class="rm-inline-row">
+                            <span class="rm-inline-row__label">Quick Replies</span>
+                            <button class="menu_button rm-qr-toggle" data-action="toggle-qr">Inject</button>
                         </div>
-                        <small>Only one hard block is active at a time. Rejected responses do not increase the accepted count.</small>
-                    </div>
-                    <div class="rm-field">
-                        <label for="${EXTENSION_ID}-characters">Minimum characters</label>
-                        <input id="${EXTENSION_ID}-characters" type="number" min="0" step="1" />
-                        <small>Active only while character-count blocking is selected. Spaces and line breaks do not count toward this total.</small>
-                    </div>
-                    <div class="rm-field">
-                        <label for="${EXTENSION_ID}-tokens">Minimum tokens</label>
-                        <input id="${EXTENSION_ID}-tokens" type="number" min="0" step="1" />
-                        <small>Active only while token-count blocking is selected. This is a backend heuristic token count, not ST's exact tokenizer.</small>
-                    </div>
-                </section>
-                <section class="rm-fieldset">
-                    <div class="rm-fieldset__title">Notifications</div>
-                    <div class="rm-field rm-field--wide">
-                        <label for="${EXTENSION_ID}-notification-template">Termux notification message</label>
-                        <textarea id="${EXTENSION_ID}-notification-template" rows="3" placeholder="Leave blank to use Retry Mobile's default message."></textarea>
-                        <small>Optional template. You can use {stage}, {acceptedCount}, {targetAcceptedCount}, {attemptCount}, {characterCount}, {wordCount}, {tokenCount}, {reason}, and {timeoutSeconds}.</small>
-                    </div>
-                    <div class="rm-checkbox-grid">
-                        <label class="rm-checkbox">
-                            <input data-setting="notifyOnSuccess" type="checkbox" />
-                            <span class="rm-checkbox__copy">
-                                <span>Notify on each accepted result</span>
-                                <small>Useful when the backend is saving multiple swipe candidates.</small>
-                            </span>
-                        </label>
-                        <label class="rm-checkbox">
-                            <input data-setting="notifyOnComplete" type="checkbox" />
-                            <span class="rm-checkbox__copy">
-                                <span>Notify when the run completes</span>
-                                <small>Fires only when the accepted goal is reached, not for rejected or failed runs.</small>
-                            </span>
-                        </label>
-                        <label class="rm-checkbox">
-                            <input data-setting="vibrateOnSuccess" type="checkbox" />
-                            <span class="rm-checkbox__copy">
-                                <span>Vibrate on each accepted result</span>
-                                <small>Only matters when the backend host supports Termux vibration commands.</small>
-                            </span>
-                        </label>
-                        <label class="rm-checkbox">
-                            <input data-setting="vibrateOnComplete" type="checkbox" />
-                            <span class="rm-checkbox__copy">
-                                <span>Vibrate when the run completes</span>
-                                <small>Fires only on successful completion so you can keep failure cases quiet.</small>
-                            </span>
-                        </label>
-                    </div>
-                </section>
-                <section class="rm-fieldset">
-                    <div class="rm-fieldset__title">Quick Reply Controls</div>
-                    <div class="rm-inline-actions">
-                        <button class="menu_button" data-action="toggle-qr">Inject Quick Replies</button>
-                        <div class="rm-inline-status" data-role="qr-status">Quick Reply status unknown.</div>
-                    </div>
-                    <div class="rm-note rm-note--compact">
-                        Inject adds a dedicated Retry Mobile Quick Reply set. Uninject removes that set from the active global/chat toolbar without deleting the saved button definitions.
-                    </div>
-                </section>
-                <section class="rm-actions">
-                    <button class="menu_button rm-button--primary" data-action="toggle-run">Start</button>
-                    <button class="menu_button" data-action="diagnostics">Run diagnostics</button>
-                </section>
-                <div class="rm-error" data-role="error-box" hidden></div>
-                <div class="rm-note" data-role="note-box"></div>
-                <section class="rm-diagnostics" data-role="diagnostics"></section>
-                <section class="rm-diagnostics" data-role="debug-box"></section>
-                <div class="rm-panel__meta">
-                    <span>Backend route: <code>/api/plugins/${BACKEND_PLUGIN_ID}/*</code></span>
-                    <span>Owner model: native ST first, Retry Mobile top-up second</span>
+                        <div class="rm-qr-status" data-role="qr-status"></div>
+                    </section>
+
+                    <!-- Actions -->
+                    <button class="menu_button rm-button--primary rm-button--full" data-action="toggle-run">Start</button>
+
+                    <div class="rm-error" data-role="error-box" hidden></div>
+                </div>
+
+                <!-- ── SYSTEM PANE ────────────────────────────────── -->
+                <div class="rm-panel__pane" data-role="system-pane" hidden>
+
+                    <!-- Diagnostics -->
+                    <section class="rm-fieldset">
+                        <div class="rm-fieldset__title rm-section-row">
+                            <span>Diagnostics</span>
+                            <button class="menu_button rm-button--inline" data-action="diagnostics">Run</button>
+                        </div>
+                        <div class="rm-diagnostics-output" data-role="diagnostics-output">
+                            <div class="rm-diagnostics__line">No diagnostics have run yet.</div>
+                        </div>
+                    </section>
+
+                    <!-- Install & Update -->
+                    <section class="rm-fieldset">
+                        <div class="rm-fieldset__title rm-section-row">
+                            <span>Install &amp; Update</span>
+                            <a class="rm-github-link" href="${REPOSITORY_URL}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github"></i> GitHub</a>
+                        </div>
+                        <div class="rm-release-card" data-role="release-info">Checking...</div>
+                    </section>
+
+                    <!-- Retry Log -->
+                    <section class="rm-fieldset">
+                        <div class="rm-fieldset__title rm-section-row">
+                            <span>Retry Log</span>
+                            <div class="rm-header-actions">
+                                <button class="menu_button rm-button--inline" data-action="toggle-log">Show</button>
+                                <button class="menu_button rm-button--inline" data-action="copy-log">Copy</button>
+                            </div>
+                        </div>
+                        <div class="rm-log-window" data-role="retry-log-shell" hidden>
+                            <div data-role="retry-log-box"></div>
+                        </div>
+                    </section>
                 </div>
             </div>
         </div>
@@ -258,14 +282,16 @@ function mountPanel() {
     runtime.panel = drawer;
     runtime.statusText = drawer.querySelector('[data-role="state-pill"]');
     runtime.stats = drawer.querySelector('[data-role="stats"]');
-    runtime.diagnosticsContainer = drawer.querySelector('[data-role="diagnostics"]');
-    runtime.debugContainer = drawer.querySelector('[data-role="debug-box"]');
+    runtime.diagnosticsOutput = drawer.querySelector('[data-role="diagnostics-output"]');
+    runtime.retryLogShell = drawer.querySelector('[data-role="retry-log-shell"]');
+    runtime.retryLogContainer = drawer.querySelector('[data-role="retry-log-box"]');
     runtime.releaseInfoContainer = drawer.querySelector('[data-role="release-info"]');
     runtime.errorBox = drawer.querySelector('[data-role="error-box"]');
-    runtime.noteBox = drawer.querySelector('[data-role="note-box"]');
     runtime.actionToggleButton = drawer.querySelector('[data-action="toggle-run"]');
     runtime.quickReplyStatusLine = drawer.querySelector('[data-role="qr-status"]');
     runtime.quickReplyToggleButton = drawer.querySelector('[data-action="toggle-qr"]');
+    runtime.mainPane = drawer.querySelector('[data-role="main-pane"]');
+    runtime.systemPane = drawer.querySelector('[data-role="system-pane"]');
 
     bindPanelEvents(drawer);
     hydrateForm();
@@ -304,11 +330,6 @@ async function refreshReleaseInfo() {
 
 function bindPanelEvents(drawer) {
     drawer.addEventListener('click', async (event) => {
-        if (event.target?.closest?.('.rm-title-link')) {
-            event.stopPropagation();
-            return;
-        }
-
         const action = event.target?.closest?.('[data-action]')?.dataset?.action;
         if (!action) {
             const header = event.target?.closest?.('.inline-drawer-toggle');
@@ -329,11 +350,33 @@ function bindPanelEvents(drawer) {
 
         if (action === 'diagnostics') {
             await refreshDiagnostics(true);
+            runtime.activeTab = 'system';
+            render();
             return;
         }
 
         if (action === 'toggle-qr') {
             await toggleQuickRepliesFromUi();
+            return;
+        }
+
+        if (action === 'show-tab') {
+            runtime.activeTab = event.target?.closest?.('[data-tab]')?.dataset?.tab === 'system'
+                ? 'system'
+                : 'main';
+            render();
+            return;
+        }
+
+        if (action === 'toggle-log') {
+            runtime.showRetryLog = !runtime.showRetryLog;
+            runtime.activeTab = 'system';
+            render();
+            return;
+        }
+
+        if (action === 'copy-log') {
+            await copyRetryLogFromUi();
         }
     });
 
@@ -778,6 +821,17 @@ async function pollStatus(runId, pollSessionId) {
     } catch (error) {
         backendLog.warn('Status poll failed.', error);
         runtime.machine.recordEvent('backend', 'poll_failed', error?.message || 'Status poll failed.');
+        if (error?.status === 404 && runtime.machine.isCurrentRun(runId) && runtime.activeJobId === requestedJobId) {
+            await applyTerminalState(runId, RUN_STATE.FAILED, {
+                error: createStructuredError(
+                    'backend_job_missing',
+                    'Retry Mobile lost the backend job while polling. The backend process may have restarted or been suspended.',
+                ),
+                toastKind: 'warning',
+                toastMessage: 'Retry Mobile lost the backend job while polling.',
+            });
+            return;
+        }
         render();
     }
 }
@@ -946,6 +1000,22 @@ async function toggleQuickRepliesFromUi() {
     render();
 }
 
+async function copyRetryLogFromUi() {
+    const text = formatRetryLogText(runtime.activeJobStatus);
+    if (!text.trim()) {
+        showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
+        return;
+    }
+
+    try {
+        await navigator.clipboard.writeText(text);
+        showToast('success', EXTENSION_NAME, 'Retry log copied to clipboard.');
+    } catch (error) {
+        backendLog.warn('Retry log copy failed.', error);
+        showToast('warning', EXTENSION_NAME, 'Retry log copy failed in this browser session.');
+    }
+}
+
 function stopCaptureSession() {
     if (!runtime.captureSession) {
         return;
@@ -1016,26 +1086,34 @@ function render() {
         renderStat('Attempts', activeStatus?.attemptCount ?? 0),
         renderStat('Target', runtime.settings.targetAcceptedCount),
         renderStat('Timeout', `${runtime.settings.attemptTimeoutSeconds}s`),
-        renderStat('Hard Block', formatValidationSummary(runtime.settings)),
-        renderStat('Mode', runtime.settings.runMode === RUN_MODE.TOGGLE ? 'Toggle' : 'Single'),
-        renderStat('Owns Turn', snapshot.ownsTurn ? 'Yes' : 'No'),
-        renderStat('Quick Replies', formatQuickReplyBadge(runtime.quickReplyStatus)),
-        renderStat('Termux', runtime.termuxAvailable ? 'Active' : 'Off'),
     ].join('');
 
     runtime.errorBox.hidden = !errorText;
     runtime.errorBox.textContent = errorText;
-    if (runtime.noteBox) {
-        runtime.noteBox.textContent = buildNoteText(snapshot);
-    }
     if (runtime.quickReplyStatusLine) {
         runtime.quickReplyStatusLine.textContent = renderQuickReplyStatusLine(runtime.quickReplyStatus);
     }
     if (runtime.releaseInfoContainer) {
         runtime.releaseInfoContainer.innerHTML = renderReleaseInfo();
     }
-    runtime.diagnosticsContainer.innerHTML = renderDiagnostics();
-    runtime.debugContainer.innerHTML = renderDebugPanel(snapshot);
+    if (runtime.retryLogContainer) {
+        runtime.retryLogContainer.textContent = formatRetryLogText(runtime.activeJobStatus);
+    }
+    if (runtime.retryLogShell) {
+        runtime.retryLogShell.hidden = !runtime.showRetryLog;
+    }
+    if (runtime.diagnosticsOutput) {
+        runtime.diagnosticsOutput.innerHTML = renderDiagnostics();
+    }
+    if (runtime.mainPane && runtime.systemPane) {
+        const showSystem = runtime.activeTab === 'system';
+        runtime.mainPane.hidden = showSystem;
+        runtime.systemPane.hidden = !showSystem;
+    }
+    runtime.panel.querySelectorAll('.rm-tab').forEach((button) => {
+        const tab = button.dataset.tab === 'system' ? 'system' : 'main';
+        button.classList.toggle('rm-tab--active', runtime.activeTab === tab);
+    });
     syncValidationControls(runtime.panel);
 
     if (runtime.actionToggleButton) {
@@ -1046,7 +1124,12 @@ function render() {
     }
     if (runtime.quickReplyToggleButton) {
         const attached = Boolean(runtime.quickReplyStatus?.attached);
-        runtime.quickReplyToggleButton.textContent = attached ? 'Uninject Quick Replies' : 'Inject Quick Replies';
+        runtime.quickReplyToggleButton.textContent = attached ? 'Uninject' : 'Inject';
+        runtime.quickReplyToggleButton.classList.toggle('rm-qr-toggle--active', attached);
+    }
+    const toggleLogButton = runtime.panel.querySelector('[data-action="toggle-log"]');
+    if (toggleLogButton) {
+        toggleLogButton.textContent = runtime.showRetryLog ? 'Hide' : 'Show';
     }
 }
 
@@ -1101,7 +1184,7 @@ function renderDiagnostics() {
 
 function renderReleaseInfo() {
     if (!runtime.releaseInfo) {
-        return '<div class="rm-diagnostics__line">Checking Retry Mobile install status...</div>';
+        return '<div class="rm-release-card__line">Checking Retry Mobile install status...</div>';
     }
 
     const info = runtime.releaseInfo;
@@ -1123,21 +1206,19 @@ function renderReleaseInfo() {
 
     return `
         <div class="rm-release-card__header">
-            <a class="rm-release-card__link" href="${escapeHtml(info.repositoryUrl || REPOSITORY_URL)}" target="_blank" rel="noopener noreferrer">GitHub</a>
             <span class="rm-release-card__status ${updateStateClass}">${escapeHtml(updateLabel)}</span>
         </div>
-        <div class="rm-diagnostics__line">${escapeHtml(updateMessage)}</div>
+        <div class="rm-release-card__line">${escapeHtml(updateMessage)}</div>
         <div class="rm-release-card__grid">
             <div><strong>Backend</strong><span>${escapeHtml(backendVersion)} → ${escapeHtml(latestBackend)}</span></div>
             <div><strong>Frontend</strong><span>${escapeHtml(frontendVersion)} → ${escapeHtml(latestFrontend)}</span></div>
             <div><strong>Scope</strong><span>${escapeHtml(profileLabel)}</span></div>
-            <div><strong>Update</strong><span>${escapeHtml(info.instructions?.updateNow || 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.')}</span></div>
         </div>
-        <div class="rm-diagnostics__line">${escapeHtml(info.instructions?.addProfile || 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now to add another profile or install for everyone.')}</div>
     `;
 }
 
 function renderDebugPanel(snapshot) {
+    const backendStatus = runtime.activeJobStatus;
     const events = (snapshot.debugEvents || []).map((entry) => `
         <li class="rm-diagnostics__item" data-icon="•">
             <span><code>${escapeHtml(entry.source)}</code> ${escapeHtml(entry.event)}: ${escapeHtml(entry.summary)}</span>
@@ -1150,9 +1231,20 @@ function renderDebugPanel(snapshot) {
         <div class="rm-diagnostics__line">Active chat: ${escapeHtml(formatChatIdentity(snapshot.chatIdentity))}</div>
         <div class="rm-diagnostics__line">Last native event: ${escapeHtml(formatEventSummary(snapshot.lastNativeEvent))}</div>
         <div class="rm-diagnostics__line">Last backend event: ${escapeHtml(formatEventSummary(snapshot.lastBackendEvent))}</div>
+        <div class="rm-diagnostics__line">Backend phase: ${escapeHtml(backendStatus?.phase || 'none')}</div>
+        <div class="rm-diagnostics__line">Target message version: ${escapeHtml(String(backendStatus?.targetMessageVersion ?? 0))}</div>
+        <div class="rm-diagnostics__line">Last backend error: ${escapeHtml(backendStatus?.lastError || 'none')}</div>
         <div class="rm-diagnostics__line">Current owner: ${snapshot.ownsTurn ? 'Retry Mobile' : 'SillyTavern/native'}</div>
         <div class="rm-diagnostics__line">Last error: ${escapeHtml(snapshot.error ? formatStructuredError(snapshot.error) : 'none')}</div>
         <ul class="rm-diagnostics__list">${events || '<li class="rm-diagnostics__item" data-icon="•"><span>No run events recorded yet.</span></li>'}</ul>
+    `;
+}
+
+function renderRetryLogPanel() {
+    return `
+        <div class="rm-diagnostics__title">Retry Log</div>
+        <div class="rm-diagnostics__line">Copy-friendly backend attempt history.</div>
+        <textarea class="rm-retry-log" readonly>${escapeHtml(formatRetryLogText(runtime.activeJobStatus))}</textarea>
     `;
 }
 
@@ -1364,6 +1456,74 @@ function formatEventSummary(eventRecord) {
     return eventRecord.summary
         ? `${eventRecord.name}: ${eventRecord.summary}`
         : eventRecord.name;
+}
+
+function formatRetryLogText(status) {
+    if (!status) {
+        return 'No backend job is active.';
+    }
+
+    const lines = [
+        `runId: ${status.runId || 'none'}`,
+        `jobId: ${status.jobId || 'none'}`,
+        `state: ${status.state || 'unknown'}`,
+        `phase: ${status.phase || 'unknown'}`,
+        `accepted: ${Number(status.acceptedCount) || 0}/${Number(status.targetAcceptedCount) || 0}`,
+        `attempts: ${Number(status.attemptCount) || 0}/${Number(status.maxAttempts) || 0}`,
+        `targetMessageVersion: ${Number(status.targetMessageVersion) || 0}`,
+        `lastError: ${status.lastError || 'none'}`,
+        '',
+        'Attempts:',
+    ];
+
+    const attempts = Array.isArray(status.attemptLog) ? status.attemptLog : [];
+    if (attempts.length === 0) {
+        lines.push('No attempts recorded yet.');
+        return lines.join('\n');
+    }
+
+    for (const entry of attempts) {
+        lines.push(formatAttemptLogEntry(entry));
+    }
+
+    return lines.join('\n');
+}
+
+function formatAttemptLogEntry(entry) {
+    const parts = [
+        `#${Number(entry?.attemptNumber) || 0}`,
+        entry?.outcome || 'unknown',
+    ];
+
+    if (entry?.phase) {
+        parts.push(`phase=${entry.phase}`);
+    }
+    if (entry?.reason) {
+        parts.push(`reason=${entry.reason}`);
+    }
+    if (entry?.characterCount != null) {
+        parts.push(`chars=${entry.characterCount}`);
+    }
+    if (entry?.tokenCount != null) {
+        parts.push(`tokens=${entry.tokenCount}`);
+    }
+    if (entry?.targetMessageVersion != null) {
+        parts.push(`version=${entry.targetMessageVersion}`);
+    }
+    if (entry?.targetMessageIndex != null) {
+        parts.push(`index=${entry.targetMessageIndex}`);
+    }
+    if (entry?.startedAt) {
+        parts.push(`started=${entry.startedAt}`);
+    }
+    if (entry?.finishedAt) {
+        parts.push(`finished=${entry.finishedAt}`);
+    }
+    if (entry?.message) {
+        parts.push(`message=${entry.message}`);
+    }
+
+    return parts.join(' | ');
 }
 
 function escapeHtml(value) {

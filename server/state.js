@@ -1,4 +1,5 @@
 const jobs = new Map();
+const ATTEMPT_LOG_LIMIT = 24;
 
 function buildChatKey(chatIdentity = {}) {
     return [
@@ -27,6 +28,7 @@ function createJob(input) {
         targetMessage: null,
         lastAcceptedAt: null,
         lastValidation: null,
+        attemptLog: [],
         ...input,
     };
 
@@ -56,6 +58,27 @@ function touchJob(job, patch = {}) {
     return job;
 }
 
+function appendAttemptLog(job, entry = {}) {
+    const nextEntry = {
+        attemptNumber: Number(entry.attemptNumber) || 0,
+        startedAt: typeof entry.startedAt === 'string' ? entry.startedAt : new Date().toISOString(),
+        finishedAt: typeof entry.finishedAt === 'string' ? entry.finishedAt : new Date().toISOString(),
+        outcome: typeof entry.outcome === 'string' ? entry.outcome : 'unknown',
+        reason: typeof entry.reason === 'string' ? entry.reason : '',
+        message: typeof entry.message === 'string' ? entry.message : '',
+        phase: typeof entry.phase === 'string' ? entry.phase : '',
+        characterCount: Number.isFinite(Number(entry.characterCount)) ? Number(entry.characterCount) : null,
+        tokenCount: Number.isFinite(Number(entry.tokenCount)) ? Number(entry.tokenCount) : null,
+        targetMessageVersion: Number.isFinite(Number(entry.targetMessageVersion)) ? Number(entry.targetMessageVersion) : null,
+        targetMessageIndex: Number.isFinite(Number(entry.targetMessageIndex)) ? Number(entry.targetMessageIndex) : null,
+    };
+
+    const current = Array.isArray(job.attemptLog) ? job.attemptLog : [];
+    job.attemptLog = [...current, nextEntry].slice(-ATTEMPT_LOG_LIMIT);
+    job.updatedAt = new Date().toISOString();
+    return nextEntry;
+}
+
 function serializeJob(job) {
     if (!job) {
         return null;
@@ -83,6 +106,7 @@ function serializeJob(job) {
         lastAcceptedMetrics: job.lastAcceptedMetrics ?? null,
         lastAcceptedAt: job.lastAcceptedAt ?? null,
         lastValidation: job.lastValidation ?? null,
+        attemptLog: Array.isArray(job.attemptLog) ? job.attemptLog : [],
     };
 }
 
@@ -92,6 +116,7 @@ module.exports = {
     getJob,
     getJobByChat,
     jobs,
+    appendAttemptLog,
     serializeJob,
     touchJob,
 };
