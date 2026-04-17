@@ -24,6 +24,20 @@ export async function confirmNativeJob(jobId, payload) {
     });
 }
 
+export async function reportNativeFailure(jobId, payload) {
+    if (!jobId) {
+        throw createStructuredError(
+            'handoff_request_failed',
+            'Retry Mobile could not report the native wait outcome because no backend job is active.',
+        );
+    }
+
+    return requestJson(`${BASE_URL}/native-failed/${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+}
+
 export async function cancelBackendJob(jobId) {
     if (!jobId) {
         return { ok: false };

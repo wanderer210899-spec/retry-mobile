@@ -1,6 +1,7 @@
 import {
     NATIVE_CONFIRM_POLL_MS,
     NATIVE_CONFIRM_TIMEOUT_MS,
+    NATIVE_HIDDEN_FAIL_DELAY_MS,
     NATIVE_WAIT_PROGRESS_TIMEOUT_MS,
     NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS,
     NATIVE_WAIT_TIMEOUT_MS,
@@ -10,7 +11,6 @@ import { confirmTargetTurn } from './st-chat.js';
 import { createStructuredError } from './retry-error.js';
 
 export function waitForNativeCompletion({
-    chatIdentity,
     fingerprint,
     timeoutMs = NATIVE_WAIT_TIMEOUT_MS,
     onEvent,
@@ -24,6 +24,7 @@ export function waitForNativeCompletion({
         let timeoutHandle = 0;
         let progressTimeoutHandle = 0;
         let renderedWithoutEndHandle = 0;
+        let hiddenTimeoutHandle = 0;
         let lastEndedMessageId = null;
         let lastRenderedMessageId = null;
         let lastRenderedType = '';
@@ -36,6 +37,8 @@ export function waitForNativeCompletion({
             ));
             return;
         }
+
+        document.addEventListener('visibilitychange', onVisibilityChange);
 
         stopListening.push(
             subscribeEvent(eventTypes.GENERATION_ENDED, (messageId) => {
@@ -97,20 +100,21 @@ export function waitForNativeCompletion({
         }
 
         timeoutHandle = window.setTimeout(() => {
-            fail(createStructuredError(
+            settleFailed(
                 'native_wait_timeout',
                 'Retry Mobile timed out while waiting for SillyTavern to finish the captured reply.',
                 lastEndedMessageId == null
                     ? ''
                     : `The last native completion event pointed at message ${lastEndedMessageId}. ${lastRenderedSummary}`.trim(),
-            ));
+            );
         }, timeoutMs);
+
         progressTimeoutHandle = window.setTimeout(() => {
-            fail(createStructuredError(
+            settleFailed(
                 'native_wait_stalled',
                 'Retry Mobile captured the request, but SillyTavern never reported native completion progress.',
                 describeObservedEvents() || 'No native lifecycle events arrived after capture.',
-            ));
+            );
         }, Math.min(timeoutMs, NATIVE_WAIT_PROGRESS_TIMEOUT_MS));
 
         async function confirmFromObservedEvents() {
@@ -124,9 +128,7 @@ export function waitForNativeCompletion({
                 while (!settled && Date.now() - startedAt < NATIVE_CONFIRM_TIMEOUT_MS) {
                     const attempt = confirmAgainstObservedCandidates();
                     if (attempt.kind === 'resolved') {
-                        settled = true;
-                        cleanup();
-                        resolve({
+                        settleSucceeded({
                             assistantMessageIndex: attempt.confirmation.assistantMessageIndex,
                             assistantMessage: attempt.confirmation.assistantMessage,
                             acceptedSeedCount: attempt.confirmation.acceptedSeedCount,
@@ -250,6 +252,70 @@ export function waitForNativeCompletion({
             );
         }
 
+        function onVisibilityChange() {
+            if (document.visibilityState === 'hidden') {
+                armHiddenTimeout();
+                return;
+            }
+
+            clearHiddenTimeout();
+        }
+
+        function armHiddenTimeout() {
+            if (hiddenTimeoutHandle) {
+                return;
+            }
+
+            hiddenTimeoutHandle = window.setTimeout(() => {
+                if (document.visibilityState !== 'hidden') {
+                    return;
+                }
+
+                settleFailed(
+                    'hidden_timeout',
+                    'Retry Mobile stopped waiting for native completion because the browser stayed hidden for too long.',
+                    describeObservedEvents() || 'The tab remained hidden for 20 seconds while native completion was pending.',
+                );
+            }, Math.min(timeoutMs, NATIVE_HIDDEN_FAIL_DELAY_MS));
+        }
+
+        function clearHiddenTimeout() {
+            if (!hiddenTimeoutHandle) {
+                return;
+            }
+
+            window.clearTimeout(hiddenTimeoutHandle);
+            hiddenTimeoutHandle = 0;
+        }
+
+        function settleSucceeded(payload) {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            cleanup();
+            resolve({
+                outcome: 'succeeded',
+                ...payload,
+            });
+        }
+
+        function settleFailed(reason, message, detail = '') {
+            if (settled) {
+                return;
+            }
+
+            settled = true;
+            cleanup();
+            resolve({
+                outcome: 'failed',
+                reason,
+                message,
+                detail,
+            });
+        }
+
         function fail(error) {
             if (settled) {
                 return;
@@ -268,6 +334,8 @@ export function waitForNativeCompletion({
 
             clearProgressTimeout();
             clearRenderedWithoutEndTimeout();
+            clearHiddenTimeout();
+            document.removeEventListener('visibilitychange', onVisibilityChange);
 
             stopListening.splice(0).forEach((stop) => {
                 try {
@@ -297,11 +365,11 @@ export function waitForNativeCompletion({
                     return;
                 }
 
-                fail(createStructuredError(
-                    'native_wait_stalled',
+                settleFailed(
+                    'rendered_without_end',
                     'Retry Mobile saw the native assistant render, but SillyTavern never emitted the matching completion event.',
                     describeObservedEvents() || lastRenderedSummary,
-                ));
+                );
             }, Math.min(timeoutMs, NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS));
         }
 

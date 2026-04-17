@@ -6,7 +6,7 @@ async function writeAcceptedResult(job, accepted) {
     const currentChat = await readCurrentChat(job);
     assertChatStillMatches(job, currentChat);
 
-    const targetIndex = ensureTargetAssistantMessage(job, currentChat);
+    const targetIndex = ensureAssistantSlotForWrite(job, currentChat);
     const targetMessage = currentChat[targetIndex];
     const timestamp = new Date().toISOString();
     const nextExtra = buildAcceptedExtra(job, targetMessage.extra, accepted);
@@ -169,7 +169,7 @@ function liveChatContainsTargetTurn(job, chat) {
     return resolveTargetUserState(job, chat).kind === 'present';
 }
 
-function ensureTargetAssistantMessage(job, chat) {
+function ensureAssistantSlotForWrite(job, chat) {
     ensureTargetUserMessage(job, chat);
     const state = inspectAdjacentAssistantState(job, chat);
 

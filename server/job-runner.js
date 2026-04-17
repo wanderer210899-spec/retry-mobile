@@ -5,6 +5,7 @@ const { appendAttemptLog, touchJob } = require('./state');
 const { confirmNativeAssistantTurn, inspectNativeAssistantState, writeAcceptedResult } = require('./chat-writer');
 
 const NATIVE_PENDING_POLL_MS = 1000;
+const FORCED_NATIVE_INSPECTION_DELAYS_MS = [0, 250, 500, 1000];
 
 async function runJob(job, environment) {
     acquireWakeLock();
@@ -65,6 +66,10 @@ async function runJob(job, environment) {
                 throw error;
             }
 
+            if (job.cancelRequested) {
+                break;
+            }
+
             const text = extractResponseText(responsePayload);
             const validation = validateAcceptedText(text, job.runConfig);
 
@@ -86,6 +91,10 @@ async function runJob(job, environment) {
                     phase: 'validation_rejected',
                 });
                 continue;
+            }
+
+            if (job.cancelRequested) {
+                break;
             }
 
             touchJob(job, {
@@ -226,76 +235,68 @@ async function awaitNativeOutcome(job) {
             return;
         }
 
+        if (job.nativeResolutionInProgress) {
+            await observeNativeResolution(job);
+            continue;
+        }
+
         const inspection = inspectNativeAssistantState(job);
         if (inspection.kind === 'filled') {
-            touchJob(job, {
-                nativeState: 'confirmed',
-                phase: 'native_confirmed',
-                recoveryMode: 'top_up_existing',
-                assistantMessageIndex: inspection.assistantMessageIndex,
-                targetMessageIndex: inspection.assistantMessageIndex,
-                targetMessage: clone(inspection.assistantMessage),
-                lastError: '',
-                structuredError: null,
-            });
-            appendLifecycleLog(job, 'native_confirmed', `Native first reply was confirmed at assistant message ${inspection.assistantMessageIndex}.`);
+            applyInspectionResolution(job, inspection, '');
             return;
         }
 
         if (Date.now() >= graceDeadlineMs) {
-            if (inspection.kind === 'empty_placeholder') {
-                touchJob(job, {
-                    nativeState: 'abandoned',
-                    phase: 'native_abandoned',
-                    recoveryMode: 'reuse_empty_placeholder',
-                    assistantMessageIndex: inspection.assistantMessageIndex,
-                    targetMessageIndex: inspection.assistantMessageIndex,
-                    targetMessage: clone(inspection.assistantMessage),
-                    lastError: '',
-                    structuredError: null,
-                });
-                appendLifecycleLog(job, 'native_abandoned', `Native first reply was abandoned. Backend will reuse empty assistant slot ${inspection.assistantMessageIndex}.`);
-                return;
-            }
-
-            if (inspection.kind === 'missing_assistant') {
-                touchJob(job, {
-                    nativeState: 'abandoned',
-                    phase: 'native_abandoned',
-                    recoveryMode: 'create_missing_turn',
-                    assistantMessageIndex: null,
-                    targetMessageIndex: null,
-                    targetMessage: null,
-                    lastError: '',
-                    structuredError: null,
-                });
-                appendLifecycleLog(job, 'native_abandoned', 'Native first reply was abandoned. Backend will create the missing assistant turn.');
-                return;
-            }
-
-            if (inspection.kind === 'missing_user_anchor') {
-                touchJob(job, {
-                    nativeState: 'abandoned',
-                    phase: 'native_abandoned',
-                    recoveryMode: 'create_missing_turn',
-                    assistantMessageIndex: null,
-                    targetMessageIndex: null,
-                    targetMessage: null,
-                    lastError: '',
-                    structuredError: null,
-                });
-                appendLifecycleLog(job, 'native_abandoned', 'Native first reply was abandoned before SillyTavern saved the captured user turn. Backend will recreate the user and assistant anchor.');
-                return;
-            }
-
-            throw createStructuredError(
-                'backend_turn_missing',
-                'Retry Mobile could not resolve the captured user turn on disk before native recovery.',
-            );
+            await resolvePendingNativeState(job, 'grace_expired');
+            continue;
         }
 
         await sleep(NATIVE_PENDING_POLL_MS);
     }
+}
+
+async function resolvePendingNativeState(job, cause) {
+    job.nativeResolutionInProgress = true;
+    job.nativeResolutionPromise = (async () => {
+        try {
+            if (job.state !== 'running' || job.cancelRequested) {
+                return { outcome: 'cancelled' };
+            }
+
+            if (job.nativeState === 'confirmed' || job.nativeState === 'abandoned') {
+                return { outcome: job.nativeState };
+            }
+
+            const inspection = await inspectPendingNativeState(job, cause);
+            if (!inspection || job.state !== 'running' || job.cancelRequested) {
+                return { outcome: 'cancelled' };
+            }
+
+            applyInspectionResolution(job, inspection, cause);
+            return {
+                outcome: job.nativeState,
+                inspection,
+            };
+        } finally {
+            job.nativeResolutionPromise = null;
+            job.nativeResolutionInProgress = false;
+        }
+    })();
+
+    return await job.nativeResolutionPromise;
+}
+
+async function waitForNativeResolutionIdle(job, timeoutMs) {
+    if (!job?.nativeResolutionInProgress || !job.nativeResolutionPromise) {
+        return true;
+    }
+
+    const result = await Promise.race([
+        job.nativeResolutionPromise.then(() => 'resolved'),
+        sleep(timeoutMs).then(() => 'timed_out'),
+    ]);
+
+    return result === 'resolved';
 }
 
 async function confirmNativeAssistant(job, assistantMessageIndex) {
@@ -312,6 +313,109 @@ async function confirmNativeAssistant(job, assistantMessageIndex) {
     });
     appendLifecycleLog(job, 'native_confirmed', `Frontend confirmed native assistant turn ${confirmation.assistantMessageIndex}.`);
     return confirmation;
+}
+
+function applyInspectionResolution(job, inspection, cause) {
+    if (inspection.kind === 'filled') {
+        touchJob(job, {
+            nativeState: 'confirmed',
+            phase: 'native_confirmed',
+            recoveryMode: 'top_up_existing',
+            nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            assistantMessageIndex: inspection.assistantMessageIndex,
+            targetMessageIndex: inspection.assistantMessageIndex,
+            targetMessage: clone(inspection.assistantMessage),
+            lastError: '',
+            structuredError: null,
+        });
+        appendLifecycleLog(job, 'native_confirmed', `Native first reply was confirmed at assistant message ${inspection.assistantMessageIndex}.`);
+        return;
+    }
+
+    if (inspection.kind === 'empty_placeholder') {
+        touchJob(job, {
+            nativeState: 'abandoned',
+            phase: 'native_abandoned',
+            recoveryMode: 'reuse_empty_placeholder',
+            nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            assistantMessageIndex: inspection.assistantMessageIndex,
+            targetMessageIndex: inspection.assistantMessageIndex,
+            targetMessage: clone(inspection.assistantMessage),
+            lastError: '',
+            structuredError: null,
+        });
+        appendLifecycleLog(job, 'native_abandoned', `Native first reply was abandoned. Backend will reuse empty assistant slot ${inspection.assistantMessageIndex}.`);
+        return;
+    }
+
+    if (inspection.kind === 'missing_assistant') {
+        touchJob(job, {
+            nativeState: 'abandoned',
+            phase: 'native_abandoned',
+            recoveryMode: 'create_missing_turn',
+            nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            assistantMessageIndex: null,
+            targetMessageIndex: null,
+            targetMessage: null,
+            lastError: '',
+            structuredError: null,
+        });
+        appendLifecycleLog(job, 'native_abandoned', 'Native first reply was abandoned. Backend will create the missing assistant turn.');
+        return;
+    }
+
+    if (inspection.kind === 'missing_user_anchor') {
+        touchJob(job, {
+            nativeState: 'abandoned',
+            phase: 'native_abandoned',
+            recoveryMode: 'create_missing_turn',
+            nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            assistantMessageIndex: null,
+            targetMessageIndex: null,
+            targetMessage: null,
+            lastError: '',
+            structuredError: null,
+        });
+        appendLifecycleLog(job, 'native_abandoned', 'Native first reply was abandoned before SillyTavern saved the captured user turn. Backend will recreate the user and assistant anchor.');
+        return;
+    }
+
+    throw createStructuredError(
+        'backend_turn_missing',
+        'Retry Mobile could not resolve the captured user turn on disk before native recovery.',
+    );
+}
+
+async function inspectPendingNativeState(job, cause) {
+    const delays = cause === 'grace_expired'
+        ? [0]
+        : FORCED_NATIVE_INSPECTION_DELAYS_MS;
+
+    let latestInspection = null;
+    for (const delayMs of delays) {
+        if (delayMs > 0) {
+            await sleep(delayMs);
+        }
+
+        if (job.state !== 'running' || job.cancelRequested) {
+            return null;
+        }
+
+        latestInspection = inspectNativeAssistantState(job);
+        if (latestInspection.kind !== 'target_pending') {
+            return latestInspection;
+        }
+    }
+
+    return latestInspection;
+}
+
+async function observeNativeResolution(job) {
+    if (!job?.nativeResolutionPromise) {
+        return;
+    }
+
+    await job.nativeResolutionPromise;
 }
 
 function appendLifecycleLog(job, reason, message) {
@@ -468,7 +572,9 @@ function sleep(ms) {
 
 module.exports = {
     confirmNativeAssistant,
+    resolvePendingNativeState,
     runJob,
+    waitForNativeResolutionIdle,
 };
 
 function formatValidationRejection(validation) {

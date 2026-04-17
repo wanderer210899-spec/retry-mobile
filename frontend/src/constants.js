@@ -12,11 +12,8 @@ export const RUN_STATE = Object.freeze({
     IDLE: 'idle',
     ARMED: 'armed',
     CAPTURED_PENDING_NATIVE: 'captured_pending_native',
-    WAITING_FOR_NATIVE: 'waiting_for_native',
     NATIVE_CONFIRMED: 'native_confirmed',
     NATIVE_ABANDONED: 'native_abandoned',
-    HANDING_OFF: 'handing_off',
-    RUNNING: 'running',
     BACKEND_RUNNING: 'backend_running',
     COMPLETED: 'completed',
     FAILED: 'failed',
@@ -66,6 +63,7 @@ export const POLL_INTERVAL_MS = 1800;
 export const NATIVE_WAIT_TIMEOUT_MS = 180000;
 export const NATIVE_WAIT_PROGRESS_TIMEOUT_MS = 60000;
 export const NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS = 12000;
+export const NATIVE_HIDDEN_FAIL_DELAY_MS = 20000;
 export const NATIVE_CONFIRM_TIMEOUT_MS = 4000;
 export const NATIVE_CONFIRM_POLL_MS = 120;
 export const DEBUG_EVENT_LIMIT = 16;

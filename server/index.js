@@ -1,6 +1,6 @@
 const crypto = require('node:crypto');
 
-const { confirmNativeAssistant, runJob } = require('./job-runner');
+const { confirmNativeAssistant, resolvePendingNativeState, runJob, waitForNativeResolutionIdle } = require('./job-runner');
 const { isTermuxAvailable, debugNotifier } = require('./notifier');
 const { PLUGIN_ID, PLUGIN_NAME } = require('./plugin-meta');
 const { createStructuredError, toStructuredError } = require('./retry-error');
@@ -9,6 +9,13 @@ const { buildChatKey, createJob, getJob, getJobByChat, serializeJob, touchJob } 
 const { validateRunConfig } = require('./validation');
 
 const NATIVE_PENDING_GRACE_MS = 15000;
+const NATIVE_RESOLUTION_WAIT_MS = 2500;
+const ALLOWED_NATIVE_FAILURE_REASONS = new Set([
+    'hidden_timeout',
+    'native_wait_timeout',
+    'native_wait_stalled',
+    'rendered_without_end',
+]);
 
 function init(router, config) {
     const app = router;
@@ -167,16 +174,9 @@ function init(router, config) {
                 });
             }
 
-            if (typeof request.body?.runId === 'string' && request.body.runId && request.body.runId !== job.runId) {
-                const structuredError = toStructuredError(createStructuredError(
-                    'handoff_request_failed',
-                    'The native confirmation did not match the active Retry Mobile run.',
-                ));
-                return response.status(409).send({
-                    error: structuredError.message,
-                    structuredError,
-                    job: serializeJob(job),
-                });
+            const runIdMismatch = getRunIdMismatchError(job, request.body?.runId, 'The native confirmation did not match the active Retry Mobile run.');
+            if (runIdMismatch) {
+                return response.status(409).send(runIdMismatch);
             }
 
             if (job.state !== 'running') {
@@ -191,16 +191,35 @@ function init(router, config) {
                 });
             }
 
+            if (job.nativeResolutionInProgress) {
+                const resolved = await waitForNativeResolutionIdle(job, NATIVE_RESOLUTION_WAIT_MS);
+                if (job.nativeState === 'confirmed') {
+                    return response.send({
+                        ok: true,
+                        job: serializeJob(job),
+                    });
+                }
+
+                if (job.nativeState === 'abandoned') {
+                    return response.status(409).send(buildConflictResponse(
+                        job,
+                        'The backend already recovered this native turn before frontend confirmation arrived.',
+                    ));
+                }
+
+                if (!resolved && job.nativeResolutionInProgress) {
+                    return response.status(409).send(buildConflictResponse(
+                        job,
+                        'Native resolution is still in progress. Retry Mobile will reconcile this run from backend status.',
+                    ));
+                }
+            }
+
             if (job.nativeState === 'abandoned') {
-                const structuredError = toStructuredError(createStructuredError(
-                    'handoff_request_failed',
+                return response.status(409).send(buildConflictResponse(
+                    job,
                     'The backend already recovered this native turn before frontend confirmation arrived.',
                 ));
-                return response.status(409).send({
-                    error: structuredError.message,
-                    structuredError,
-                    job: serializeJob(job),
-                });
             }
 
             if (job.nativeState === 'confirmed') {
@@ -218,6 +237,75 @@ function init(router, config) {
         } catch (error) {
             console.error('[retry-mobile:backend] Native confirm failed:', error);
             const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not confirm the native turn on the backend.');
+            return response.status(500).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+    });
+
+    app.post('/native-failed/:jobId', async (request, response) => {
+        try {
+            const job = getJob(request.params.jobId);
+            if (!job) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'Job not found.',
+                ));
+                return response.status(404).send({
+                    error: structuredError.message,
+                    structuredError,
+                });
+            }
+
+            const runIdMismatch = getRunIdMismatchError(job, request.body?.runId, 'The native wait report did not match the active Retry Mobile run.');
+            if (runIdMismatch) {
+                return response.status(409).send(runIdMismatch);
+            }
+
+            const reason = typeof request.body?.reason === 'string'
+                ? request.body.reason.trim()
+                : '';
+            if (!ALLOWED_NATIVE_FAILURE_REASONS.has(reason)) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'Retry Mobile received an unknown native failure reason.',
+                ));
+                return response.status(400).send({
+                    error: structuredError.message,
+                    structuredError,
+                });
+            }
+
+            if (job.state !== 'running') {
+                return response.send({
+                    ok: true,
+                    ignored: true,
+                    job: serializeJob(job),
+                });
+            }
+
+            if (job.nativeState === 'confirmed' || job.nativeState === 'abandoned' || job.nativeResolutionInProgress) {
+                return response.send({
+                    ok: true,
+                    ignored: true,
+                    job: serializeJob(job),
+                });
+            }
+
+            touchJob(job, {
+                nativeFailureHintedAt: new Date().toISOString(),
+                nativeResolutionCause: reason,
+            });
+
+            await resolvePendingNativeState(job, reason);
+            return response.send({
+                ok: true,
+                job: serializeJob(job),
+            });
+        } catch (error) {
+            console.error('[retry-mobile:backend] Native failure report failed:', error);
+            const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not process the native failure report on the backend.');
             return response.status(500).send({
                 error: structuredError.message,
                 structuredError,
@@ -287,6 +375,26 @@ function buildAuthHeaders(request) {
     }
 
     return headers;
+}
+
+function buildConflictResponse(job, message) {
+    const structuredError = toStructuredError(createStructuredError(
+        'handoff_request_failed',
+        message,
+    ));
+    return {
+        error: structuredError.message,
+        structuredError,
+        job: serializeJob(job),
+    };
+}
+
+function getRunIdMismatchError(job, runId, message) {
+    if (typeof runId !== 'string' || !runId || runId === job.runId) {
+        return null;
+    }
+
+    return buildConflictResponse(job, message);
 }
 
 function normalizeFingerprint(fingerprint, chatIdentity) {

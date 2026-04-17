@@ -28,6 +28,7 @@ import {
     fetchJobStatus,
     fetchReleaseInfo,
     getStructuredErrorFromApi,
+    reportNativeFailure,
     startBackendJob,
 } from './backend-api.js';
 import { runDiagnostics } from './diagnostics.js';
@@ -77,6 +78,7 @@ const runtime = {
     releaseInfo: null,
     showRetryLog: false,
     activeTab: 'main',
+    nativeFailureCompatWarned: false,
 };
 
 export function bootRetryMobile() {
@@ -611,7 +613,6 @@ async function handleCaptureResult(runId, result) {
 
     try {
         const nativeResult = await waitForNativeCompletion({
-            chatIdentity: runtime.machine.getSnapshot().chatIdentity,
             fingerprint: runtime.fingerprint,
             onEvent: (name, summary) => {
                 if (!runtime.machine.isCurrentRun(runId)) {
@@ -625,6 +626,11 @@ async function handleCaptureResult(runId, result) {
         });
 
         if (!runtime.machine.isCurrentRun(runId)) {
+            return;
+        }
+
+        if (nativeResult?.outcome === 'failed') {
+            await reportRecoverableNativeFailure(runId, nativeResult);
             return;
         }
 
@@ -647,11 +653,6 @@ async function handleCaptureResult(runId, result) {
             'native_wait_timeout',
             'Retry Mobile could not confirm the native assistant turn.',
         );
-        const recovered = await reconcileNativeWaitFailure(runId, structured);
-        if (recovered) {
-            return;
-        }
-
         await applyTerminalState(runId, RUN_STATE.FAILED, {
             error: structured,
             toastKind: 'warning',
@@ -746,6 +747,15 @@ async function confirmNativeHandoff(runId, nativeResult) {
         render();
         showToast('success', EXTENSION_NAME, 'Retry Mobile confirmed the native first reply. Backend retries are ready for this turn.');
     } catch (error) {
+        if (error?.status === 409) {
+            runtime.machine.recordEvent('backend', 'native_confirm_conflict', error?.message || 'Backend reported a native confirmation conflict.');
+            render();
+            await adoptBackendStatus(runId, error, {
+                announceTransitions: true,
+            });
+            return;
+        }
+
         const recovered = await adoptBackendStatus(runId, error, {
             announceTransitions: true,
         });
@@ -762,21 +772,62 @@ async function confirmNativeHandoff(runId, nativeResult) {
     }
 }
 
-async function reconcileNativeWaitFailure(runId, structured) {
-    runtime.machine.recordEvent('st', 'native_wait_failed', structured.message);
-    const adopted = await adoptBackendStatus(runId, null, {
-        announceTransitions: true,
-    });
-    if (!adopted) {
-        return false;
+async function reportRecoverableNativeFailure(runId, nativeResult) {
+    if (!runtime.machine.isCurrentRun(runId) || !runtime.activeJobId) {
+        return;
     }
 
-    const status = runtime.activeJobStatus;
-    if (status?.state === 'running') {
-        return true;
-    }
+    runtime.machine.recordEvent('st', nativeResult.reason || 'native_wait_failed', nativeResult.message || 'Retry Mobile stopped waiting for native completion.');
+    render();
 
-    return false;
+    try {
+        const result = await reportNativeFailure(runtime.activeJobId, {
+            runId,
+            reason: nativeResult.reason,
+            detail: nativeResult.detail || nativeResult.message || '',
+        });
+
+        if (!runtime.machine.isCurrentRun(runId)) {
+            return;
+        }
+
+        runtime.activeJobStatus = result.job ?? runtime.activeJobStatus;
+        syncRuntimeStateFromStatus(runId, runtime.activeJobStatus, {
+            previousStatus: null,
+            announceTransitions: true,
+        });
+        runtime.machine.setBackendEvent('native_failed', `Backend accepted native failure hint: ${nativeResult.reason || 'unknown'}.`);
+        runtime.machine.recordEvent('backend', 'native_failed', `Backend accepted native failure hint: ${nativeResult.reason || 'unknown'}.`);
+        render();
+    } catch (error) {
+        if (!runtime.machine.isCurrentRun(runId)) {
+            return;
+        }
+
+        if (error?.status === 404) {
+            if (!runtime.nativeFailureCompatWarned) {
+                runtime.nativeFailureCompatWarned = true;
+                runtime.machine.recordEvent('backend', 'native_failed_unsupported', 'The backend does not support /native-failed yet. Waiting for grace-expiry recovery via status polling.');
+                showToast('warning', EXTENSION_NAME, 'This backend is older and cannot accept native failure hints yet. Retry Mobile will keep polling backend status.');
+                render();
+            }
+            return;
+        }
+
+        const adopted = await adoptBackendStatus(runId, error, {
+            announceTransitions: true,
+        });
+        if (adopted) {
+            return;
+        }
+
+        const structured = getStructuredErrorFromApi(error, 'Retry Mobile could not report the native wait outcome to the backend.');
+        await applyTerminalState(runId, RUN_STATE.FAILED, {
+            error: structured,
+            toastKind: 'warning',
+            toastMessage: formatStructuredError(structured),
+        });
+    }
 }
 
 async function stopPlugin() {
@@ -1242,6 +1293,7 @@ function resetRunBuffers(options = {}) {
     runtime.fingerprint = null;
     runtime.assistantMessageIndex = null;
     runtime.lastAppliedVersion = 0;
+    runtime.nativeFailureCompatWarned = false;
     if (!options.preserveStatus) {
         runtime.activeJobId = null;
         runtime.activeJobStatus = null;
@@ -1432,6 +1484,8 @@ function renderDebugPanel(snapshot) {
         <div class="rm-diagnostics__line">Backend phase: ${escapeHtml(backendStatus?.phase || 'none')}</div>
         <div class="rm-diagnostics__line">Backend phase text: ${escapeHtml(backendStatus?.phaseText || 'none')}</div>
         <div class="rm-diagnostics__line">Native state: ${escapeHtml(backendStatus?.nativeState || 'none')}</div>
+        <div class="rm-diagnostics__line">Native resolution cause: ${escapeHtml(backendStatus?.nativeResolutionCause || 'none')}</div>
+        <div class="rm-diagnostics__line">Native failure hinted at: ${escapeHtml(backendStatus?.nativeFailureHintedAt || 'none')}</div>
         <div class="rm-diagnostics__line">Recovery mode: ${escapeHtml(formatRecoveryMode(backendStatus?.recoveryMode))}</div>
         <div class="rm-diagnostics__line">Native grace deadline: ${escapeHtml(formatGraceDeadline(backendStatus?.nativeGraceDeadline))}</div>
         <div class="rm-diagnostics__line">Target message version: ${escapeHtml(String(backendStatus?.targetMessageVersion ?? 0))}</div>
@@ -1510,15 +1564,10 @@ function formatStateLabel(state) {
             return 'Armed for next qualifying request';
         case RUN_STATE.CAPTURED_PENDING_NATIVE:
             return 'Waiting for native first reply';
-        case RUN_STATE.WAITING_FOR_NATIVE:
-            return 'Waiting for native completion';
         case RUN_STATE.NATIVE_CONFIRMED:
             return 'Native first reply confirmed';
         case RUN_STATE.NATIVE_ABANDONED:
             return 'Native abandoned, backend recovered the turn';
-        case RUN_STATE.HANDING_OFF:
-            return 'Handing off to backend';
-        case RUN_STATE.RUNNING:
         case RUN_STATE.BACKEND_RUNNING:
             return 'Retry loop active';
         case RUN_STATE.COMPLETED:
@@ -1535,11 +1584,8 @@ function formatStateLabel(state) {
 function isRunningLikeState(state) {
     return state === RUN_STATE.ARMED
         || state === RUN_STATE.CAPTURED_PENDING_NATIVE
-        || state === RUN_STATE.WAITING_FOR_NATIVE
         || state === RUN_STATE.NATIVE_CONFIRMED
         || state === RUN_STATE.NATIVE_ABANDONED
-        || state === RUN_STATE.HANDING_OFF
-        || state === RUN_STATE.RUNNING
         || state === RUN_STATE.BACKEND_RUNNING;
 }
 
@@ -1761,6 +1807,8 @@ function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
         `phase: ${status.phase || 'unknown'}`,
         `phaseText: ${formatRetryPhase(status)}`,
         `nativeState: ${status.nativeState || 'unknown'}`,
+        `nativeResolutionCause: ${status.nativeResolutionCause || 'none'}`,
+        `nativeFailureHintedAt: ${status.nativeFailureHintedAt || 'none'}`,
         `recoveryMode: ${formatRecoveryMode(status.recoveryMode)}`,
         `nativeGraceDeadline: ${formatGraceDeadline(status.nativeGraceDeadline)}`,
         `assistantMessageIndex: ${status.assistantMessageIndex == null ? 'none' : (Number.isFinite(Number(status.assistantMessageIndex)) ? Number(status.assistantMessageIndex) : 'none')}`,
