@@ -7,7 +7,7 @@ const TERMUX_BIN_DIRS = [
     '/data/user/0/com.termux/files/usr/bin',
 ];
 
-const NOTIFICATION_ID = 47382;
+let notificationSequence = 0;
 
 const _termuxBinDir = TERMUX_BIN_DIRS.find((dir) => {
     try {
@@ -51,7 +51,7 @@ function notify(runConfig, stage, payload = {}) {
         const bin = resolveBin('termux-notification');
         if (bin) {
             runTermuxCommand(bin, [
-                '--id', String(NOTIFICATION_ID),
+                '--id', nextNotificationId(),
                 '--title', 'Retry Mobile',
                 '--content', buildMessage(runConfig, stage, payload),
                 '--priority', stage === 'completed' ? 'high' : 'default',
@@ -82,6 +82,12 @@ function releaseWakeLock() {
     if (bin) {
         runTermuxCommand(bin, []);
     }
+}
+
+function nextNotificationId() {
+    notificationSequence = (notificationSequence + 1) % 1000;
+    const base = Date.now() % 2147482647;
+    return String(base + notificationSequence);
 }
 
 function buildMessage(runConfig, stage, payload) {
