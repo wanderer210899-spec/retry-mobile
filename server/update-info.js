@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./plugin-meta');
 
@@ -8,6 +9,7 @@ const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https
 async function getReleaseInfo(request) {
     const backendPackage = readJsonFile(path.join(__dirname, 'package.json')) || {};
     const frontendInstall = resolveFrontendInstall(request);
+    const git = readGitUpdateInfo(__dirname);
     const latest = {
         backendVersion: '',
         frontendVersion: '',
@@ -44,6 +46,7 @@ async function getReleaseInfo(request) {
         pluginName: PLUGIN_NAME,
         repositoryUrl: REPOSITORY_URL,
         branch: DEFAULT_BRANCH,
+        git,
         installed: {
             backend: {
                 installed: true,
@@ -126,6 +129,51 @@ function readJsonFile(filePath) {
     }
 
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function readGitUpdateInfo(repoPath) {
+    const result = {
+        canCheck: false,
+        hasUpdate: false,
+        branch: DEFAULT_BRANCH,
+        localHead: '',
+        remoteHead: '',
+        message: 'Git tracking unavailable for this install.',
+    };
+
+    try {
+        const inside = runGit(repoPath, ['rev-parse', '--is-inside-work-tree']);
+        if (inside !== 'true') {
+            result.message = 'This install is not a Git checkout.';
+            return result;
+        }
+
+        const localHead = runGit(repoPath, ['rev-parse', 'HEAD']);
+        const remoteLine = runGit(repoPath, ['ls-remote', 'origin', `refs/heads/${DEFAULT_BRANCH}`]);
+        const remoteHead = String(remoteLine || '').split(/\s+/)[0] || '';
+
+        result.canCheck = Boolean(localHead && remoteHead);
+        result.localHead = localHead;
+        result.remoteHead = remoteHead;
+        result.hasUpdate = result.canCheck && localHead !== remoteHead;
+        result.message = result.canCheck
+            ? (result.hasUpdate
+                ? 'Git reports this checkout is behind origin.'
+                : 'Git reports this checkout matches origin.')
+            : 'Git tracking could not resolve local and remote heads.';
+        return result;
+    } catch (error) {
+        result.message = error instanceof Error ? error.message : String(error);
+        return result;
+    }
+}
+
+function runGit(repoPath, args) {
+    return execFileSync('git', ['-C', repoPath, ...args], {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+    }).trim();
 }
 
 function compareVersions(left, right) {

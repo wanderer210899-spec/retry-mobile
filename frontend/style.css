@@ -522,6 +522,7 @@
     font-size: 0.86rem;
     line-height: 1.45;
     opacity: 0.82;
+    overflow-wrap: anywhere;
 }
 
 .rm-release-card__status {
@@ -559,6 +560,11 @@
     font-size: 0.86rem;
 }
 
+.rm-release-card__grid > div span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
 /* ── Retry log window ───────────────────────────────────────────── */
 .rm-log-window {
     max-height: 320px;
@@ -579,4 +585,86 @@
     gap: 8px;
     font-size: 0.82rem;
     opacity: 0.72;
+}
+
+@media (max-width: 520px) {
+    .rm-panel__body {
+        gap: 10px;
+        padding: 10px;
+    }
+
+    .rm-topbar {
+        margin: -10px -10px 0;
+        padding: 6px 6px 0;
+        flex-wrap: wrap;
+        gap: 6px;
+    }
+
+    .rm-tabbar {
+        min-width: 0;
+        width: 100%;
+    }
+
+    .rm-tab {
+        flex: 1 1 0;
+        justify-content: center;
+        padding: 6px 8px;
+        font-size: 0.82rem;
+    }
+
+    .rm-topbar .rm-status-pill {
+        margin-left: 0;
+        margin-bottom: 0;
+    }
+
+    .rm-stats-strip {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        margin: 0 -10px;
+        padding: 8px 10px;
+    }
+
+    .rm-fieldset {
+        padding: 10px;
+    }
+
+    .rm-inline-row {
+        flex-wrap: wrap;
+        align-items: stretch;
+    }
+
+    .rm-inline-row__label {
+        width: 100%;
+    }
+
+    .rm-number-input {
+        width: 100%;
+        text-align: left;
+    }
+
+    .rm-mode-toggle,
+    .rm-block-grid {
+        width: 100%;
+        flex-wrap: wrap;
+    }
+
+    .rm-mode-toggle__option,
+    .rm-block-option {
+        flex: 1 1 100%;
+    }
+
+    .rm-checkbox-grid,
+    .rm-release-card__grid {
+        grid-template-columns: 1fr;
+    }
+
+    .rm-section-row,
+    .rm-header-actions {
+        flex-wrap: wrap;
+    }
+
+    .rm-github-link,
+    .rm-button--inline,
+    .rm-qr-toggle {
+        max-width: 100%;
+    }
 }

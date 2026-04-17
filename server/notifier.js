@@ -148,8 +148,45 @@ function runTermuxCommand(bin, args) {
     });
 }
 
+function probeTermuxBin(name, args) {
+    return new Promise((resolve) => {
+        const bin = resolveBin(name);
+        if (!bin) {
+            resolve({ name, found: false, reason: 'binary not found or not executable' });
+            return;
+        }
+        const { execFile: ef } = require('node:child_process');
+        ef(bin, args, { timeout: 5000 }, (error, stdout, stderr) => {
+            resolve({
+                name,
+                found: true,
+                path: bin,
+                exitCode: error?.code ?? 0,
+                signal: error?.signal ?? null,
+                stdout: (stdout || '').trim().slice(0, 500),
+                stderr: (stderr || '').trim().slice(0, 500),
+                error: error ? error.message.slice(0, 300) : null,
+            });
+        });
+    });
+}
+
+async function debugNotifier() {
+    return {
+        binDir: _termuxBinDir,
+        isTermuxAvailable: isTermuxAvailable(),
+        probes: await Promise.all([
+            probeTermuxBin('termux-notification', ['--id', '99999', '--title', 'RM-test', '--content', 'debug probe']),
+            probeTermuxBin('termux-vibrate', ['-d', '200']),
+            probeTermuxBin('termux-wake-lock', []),
+            probeTermuxBin('termux-wake-unlock', []),
+        ]),
+    };
+}
+
 module.exports = {
     acquireWakeLock,
+    debugNotifier,
     isTermuxAvailable,
     notify,
     releaseWakeLock,

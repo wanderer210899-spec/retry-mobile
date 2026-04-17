@@ -1,7 +1,7 @@
 const crypto = require('node:crypto');
 
 const { runJob } = require('./job-runner');
-const { isTermuxAvailable } = require('./notifier');
+const { isTermuxAvailable, debugNotifier } = require('./notifier');
 const { PLUGIN_ID, PLUGIN_NAME } = require('./plugin-meta');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { getReleaseInfo } = require('./update-info');
@@ -18,6 +18,15 @@ function init(router, config) {
         return response.send({
             termux: isTermuxAvailable(),
         });
+    });
+
+    app.get('/debug-notifier', async (_request, response) => {
+        try {
+            const result = await debugNotifier();
+            return response.send(result);
+        } catch (error) {
+            return response.status(500).send({ error: error.message });
+        }
     });
 
     app.get('/release-info', async (request, response) => {

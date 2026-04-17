@@ -1,9 +1,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const process = require('node:process');
+const { execFileSync } = require('node:child_process');
 const readline = require('node:readline/promises');
 
-const { PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./server/plugin-meta');
+const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./server/plugin-meta');
 
 const LEGACY_PLUGIN_ID = 'auto-reroll';
 const SOURCE_ROOT = __dirname;
@@ -28,6 +29,7 @@ async function main() {
         let keepRunning = true;
         while (keepRunning) {
             refreshProfiles(layout);
+            refreshInstallerGitStatus(layout);
             renderMenu(layout, platform);
             const choice = await promptMainMenuChoice(rl);
             switch (choice) {
@@ -93,6 +95,7 @@ function resolveLocalLayout(startDir, platform) {
         globalExtensionsDir: path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party'),
         globalFrontendTarget: path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party', PLUGIN_ID),
         globalFrontendInstalled: false,
+        gitUpdate: null,
         profiles: [],
     };
 
@@ -206,7 +209,7 @@ function renderMenu(layout, platform) {
     console.log(' ==============================================================');
     console.log(' ______________________________________________________________');
     console.log(' | What would you like to do?');
-    console.log(' |   1. Enable server plugin (prerequisite) / auto-update (optional)');
+    console.log(' |   1. Server plugin / auto-update');
     console.log(' |   2. Install / Update now');
     console.log(' |   3. Uninstall');
     console.log(' ______________________________________________________________');
@@ -214,9 +217,10 @@ function renderMenu(layout, platform) {
     console.log(' |   0. Exit');
     console.log(' ______________________________________________________________');
     console.log(' | Local Install:');
-    console.log(` |   Working directory: ${layout.workingDir}`);
-    console.log(` |   SillyTavern root:  ${layout.stRoot}`);
-    console.log(` |   Repository:        ${REPOSITORY_URL}`);
+    console.log(` |   Working dir: ${truncateMiddle(layout.workingDir, 42)}`);
+    console.log(` |   ST root:     ${truncateMiddle(layout.stRoot, 42)}`);
+    console.log(` |   Repository:  ${truncateMiddle(REPOSITORY_URL, 42)}`);
+    console.log(` |   Source Git:  ${truncateMiddle(formatInstallerGitStatus(layout.gitUpdate), 42)}`);
     console.log(' ______________________________________________________________');
     console.log(' | Retry Mobile Status:');
     console.log(` |   Server plugins: ${layout.config.enableServerPlugins ? 'Enabled' : 'Disabled'}`);
@@ -227,7 +231,7 @@ function renderMenu(layout, platform) {
         console.log(' |   Profiles:       None detected in data root');
     } else {
         for (const profile of layout.profiles) {
-            console.log(` |   Profile ${profile.handle}: ${profile.hasFrontend ? 'Installed' : 'Not installed'}`);
+            console.log(` |   ${truncateMiddle(`Profile ${profile.handle}`, 28)}: ${profile.hasFrontend ? 'Installed' : 'Not installed'}`);
         }
     }
     if (fs.existsSync(layout.legacyBackendTarget)) {
@@ -551,6 +555,63 @@ function findExistingPath(targetPath) {
         current = parent;
     }
     return current;
+}
+
+function refreshInstallerGitStatus(layout) {
+    layout.gitUpdate = readInstallerGitUpdateInfo(SOURCE_ROOT);
+}
+
+function readInstallerGitUpdateInfo(repoPath) {
+    const result = {
+        canCheck: false,
+        hasUpdate: false,
+        message: 'Git unavailable',
+    };
+
+    try {
+        const inside = runGit(repoPath, ['rev-parse', '--is-inside-work-tree']);
+        if (inside !== 'true') {
+            result.message = 'Not a Git checkout';
+            return result;
+        }
+
+        const localHead = runGit(repoPath, ['rev-parse', '--short', 'HEAD']);
+        const remoteLine = runGit(repoPath, ['ls-remote', 'origin', `refs/heads/${DEFAULT_BRANCH}`]);
+        const remoteHead = String(remoteLine || '').split(/\s+/)[0] || '';
+        const remoteShort = remoteHead ? remoteHead.slice(0, 7) : '';
+
+        result.canCheck = Boolean(localHead && remoteShort);
+        result.hasUpdate = result.canCheck && localHead !== remoteShort;
+        result.message = result.canCheck
+            ? (result.hasUpdate ? `Update available (${localHead} → ${remoteShort})` : `Up to date (${localHead})`)
+            : 'Remote check unavailable';
+        return result;
+    } catch (error) {
+        result.message = error instanceof Error ? error.message : String(error);
+        return result;
+    }
+}
+
+function runGit(repoPath, args) {
+    return execFileSync('git', ['-C', repoPath, ...args], {
+        encoding: 'utf8',
+        timeout: 5000,
+        windowsHide: true,
+    }).trim();
+}
+
+function formatInstallerGitStatus(gitUpdate) {
+    return gitUpdate?.message || 'Git unavailable';
+}
+
+function truncateMiddle(value, maxLength) {
+    const text = String(value || '');
+    if (text.length <= maxLength) {
+        return text;
+    }
+
+    const edge = Math.max(8, Math.floor((maxLength - 3) / 2));
+    return `${text.slice(0, edge)}...${text.slice(-edge)}`;
 }
 
 async function confirm(rl, prompt, defaultValue) {

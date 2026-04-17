@@ -35,7 +35,7 @@ import { syncRemoteStatus } from './chat-sync.js';
 import { createStateMachine } from './state-machine.js';
 import { createArmCaptureSession } from './st-capture.js';
 import { waitForNativeCompletion } from './st-lifecycle.js';
-import { isSameChat } from './st-chat.js';
+import { isSameChat, reloadCurrentChatSafe } from './st-chat.js';
 import { createStructuredError, formatStructuredError, normalizeStructuredError } from './retry-error.js';
 
 const log = createLogger(LOG_PREFIX.APP);
@@ -305,6 +305,11 @@ async function refreshReleaseInfo() {
         backendLog.warn('Could not fetch release info.', error);
         runtime.releaseInfo = {
             repositoryUrl: REPOSITORY_URL,
+            git: {
+                canCheck: false,
+                hasUpdate: false,
+                message: 'Git tracking unavailable for this install.',
+            },
             update: {
                 canCheck: false,
                 hasUpdate: false,
@@ -364,6 +369,9 @@ function bindPanelEvents(drawer) {
             runtime.activeTab = event.target?.closest?.('[data-tab]')?.dataset?.tab === 'system'
                 ? 'system'
                 : 'main';
+            if (runtime.activeTab === 'system') {
+                void refreshReleaseInfo();
+            }
             render();
             return;
         }
@@ -822,6 +830,7 @@ async function pollStatus(runId, pollSessionId) {
         backendLog.warn('Status poll failed.', error);
         runtime.machine.recordEvent('backend', 'poll_failed', error?.message || 'Status poll failed.');
         if (error?.status === 404 && runtime.machine.isCurrentRun(runId) && runtime.activeJobId === requestedJobId) {
+            await reloadCurrentChatSafe();
             await applyTerminalState(runId, RUN_STATE.FAILED, {
                 error: createStructuredError(
                     'backend_job_missing',
@@ -891,6 +900,7 @@ async function restoreActiveJob() {
     try {
         const status = await fetchActiveJob(identity);
         if (!status?.jobId) {
+            await reloadCurrentChatSafe();
             return;
         }
 
@@ -1188,6 +1198,7 @@ function renderReleaseInfo() {
     }
 
     const info = runtime.releaseInfo;
+    const gitInfo = info.git || {};
     const backendVersion = info.installed?.backend?.version || 'unknown';
     const frontendVersion = info.installed?.frontend?.installed
         ? info.installed?.frontend?.version || 'unknown'
@@ -1195,24 +1206,31 @@ function renderReleaseInfo() {
     const latestBackend = info.latest?.backendVersion || 'unknown';
     const latestFrontend = info.latest?.frontendVersion || 'unknown';
     const updateMessage = info.update?.message || 'Update information unavailable.';
-    const updateStateClass = info.update?.hasUpdate ? 'rm-release-card__status--warning' : 'rm-release-card__status--ok';
-    const updateLabel = info.update?.hasUpdate ? 'Update available' : 'Up to date';
+    const hasUpdate = Boolean(info.update?.hasUpdate || gitInfo?.hasUpdate);
+    const updateStateClass = hasUpdate ? 'rm-release-card__status--warning' : 'rm-release-card__status--ok';
+    const updateLabel = hasUpdate ? 'Update available' : 'Up to date';
     const profileScope = info.installed?.frontend?.scope || 'missing';
     const profileLabel = profileScope === 'current-profile'
         ? 'Installed for this profile'
         : profileScope === 'global'
             ? 'Installed globally for all profiles'
             : 'Not installed for this profile';
+    const gitLabel = gitInfo.canCheck
+        ? (gitInfo.hasUpdate ? 'Behind origin' : 'Synced to origin')
+        : 'Git unavailable';
+    const gitMessage = gitInfo.message || 'Git tracking unavailable for this install.';
 
     return `
         <div class="rm-release-card__header">
             <span class="rm-release-card__status ${updateStateClass}">${escapeHtml(updateLabel)}</span>
         </div>
         <div class="rm-release-card__line">${escapeHtml(updateMessage)}</div>
+        <div class="rm-release-card__line">${escapeHtml(gitMessage)}</div>
         <div class="rm-release-card__grid">
             <div><strong>Backend</strong><span>${escapeHtml(backendVersion)} → ${escapeHtml(latestBackend)}</span></div>
             <div><strong>Frontend</strong><span>${escapeHtml(frontendVersion)} → ${escapeHtml(latestFrontend)}</span></div>
             <div><strong>Scope</strong><span>${escapeHtml(profileLabel)}</span></div>
+            <div><strong>Git</strong><span>${escapeHtml(gitLabel)}</span></div>
         </div>
     `;
 }
