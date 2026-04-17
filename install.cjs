@@ -209,7 +209,7 @@ function renderMenu(layout, platform) {
     console.log(` | > ${PLUGIN_NAME} Installer`);
     console.log(' ==============================================================');
     console.log(' ______________________________________________________________');
-    console.log(' | What would you like to do?');
+    console.log(' | **What would you like to do?**');
     console.log(' |   1. Server plugin / auto-update');
     console.log(' |   2. Install / Update now');
     console.log(' |   3. Uninstall');
