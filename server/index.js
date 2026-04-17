@@ -22,7 +22,8 @@ function init(router, config) {
 
     app.get('/debug-notifier', async (_request, response) => {
         try {
-            const result = await debugNotifier();
+            const includeProbes = _request.query?.includeProbes !== 'false';
+            const result = await debugNotifier({ includeProbes });
             return response.send(result);
         } catch (error) {
             return response.status(500).send({ error: error.message });

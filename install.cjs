@@ -262,19 +262,20 @@ async function configureServerPluginSettings(rl, layout, platform) {
     const choice = (await rl.question('Selection: ')).trim();
     if (choice === '1') {
         updateServerPluginSettings(layout, { enableServerPlugins: true });
-        console.log('\nServer plugins are now enabled in config.yaml.');
-        console.log('Plugin auto-update was left unchanged.');
-        logRestartMessage(platform);
+        logProcessComplete('Config change complete.', [
+            'Server plugins are now enabled in config.yaml.',
+            'Plugin auto-update was left unchanged.',
+        ], platform);
         return;
     }
 
     if (choice === '2') {
         updateServerPluginSettings(layout, { enableServerPluginsAutoUpdate: true });
-        console.log('\nServer plugin auto-update is now enabled in config.yaml.');
+        const lines = ['Server plugin auto-update is now enabled in config.yaml.'];
         if (!layout.config.enableServerPlugins) {
-            console.log('Server plugins are still disabled. Auto-update will only apply after server plugins are enabled.');
+            lines.push('Server plugins are still disabled. Auto-update will only apply after server plugins are enabled.');
         }
-        logRestartMessage(platform);
+        logProcessComplete('Config change complete.', lines, platform);
         return;
     }
 
@@ -283,8 +284,9 @@ async function configureServerPluginSettings(rl, layout, platform) {
             enableServerPlugins: true,
             enableServerPluginsAutoUpdate: true,
         });
-        console.log('\nServer plugins and plugin auto-update are now enabled in config.yaml.');
-        logRestartMessage(platform);
+        logProcessComplete('Config change complete.', [
+            'Server plugins and plugin auto-update are now enabled in config.yaml.',
+        ], platform);
         return;
     }
 
@@ -313,6 +315,16 @@ function logRestartMessage(platform) {
         : 'Restart SillyTavern in Termux for the change to take effect.');
 }
 
+function logProcessComplete(title, lines, platform) {
+    console.log(`\n${title}`);
+    for (const line of lines) {
+        console.log(line);
+    }
+    if (platform) {
+        logRestartMessage(platform);
+    }
+}
+
 async function installOrUpdateNow(rl, layout, platform) {
     if (!layout.config.enableServerPlugins) {
         console.log('Server plugins are disabled. Install / Update now will not change config.yaml.');
@@ -326,10 +338,14 @@ async function installOrUpdateNow(rl, layout, platform) {
     const target = await promptFrontendDestination(rl, layout);
     if (!target) {
         refreshProfiles(layout);
-        console.log('Backend installed or updated. Frontend selection was cancelled.');
+        logProcessComplete('Install / Update process complete.', [
+            'Backend installed or updated.',
+            'Frontend selection was cancelled.',
+        ], platform);
         return;
     }
 
+    const completionLines = ['Backend installed or updated.'];
     if (target.kind === 'global') {
         const installedProfiles = layout.profiles.filter((profile) => profile.hasFrontend);
         if (installedProfiles.length > 0) {
@@ -344,7 +360,7 @@ async function installOrUpdateNow(rl, layout, platform) {
 
         installGlobalFrontend(layout);
         refreshProfiles(layout);
-        console.log(`Installed ${PLUGIN_NAME} frontend for everyone in public/scripts/extensions/third-party/${PLUGIN_ID}.`);
+        completionLines.push(`Installed ${PLUGIN_NAME} frontend for everyone in public/scripts/extensions/third-party/${PLUGIN_ID}.`);
     } else {
         if (layout.globalFrontendInstalled) {
             console.log('A global third-party frontend install already exists. Remove it first from Uninstall before creating profile-local installs.');
@@ -353,14 +369,14 @@ async function installOrUpdateNow(rl, layout, platform) {
 
         installFrontendForProfiles(target.profiles);
         refreshProfiles(layout);
-        console.log(`Installed ${PLUGIN_NAME} frontend for ${target.profiles.map((profile) => profile.handle).join(', ')}.`);
+        completionLines.push(`Installed ${PLUGIN_NAME} frontend for ${target.profiles.map((profile) => profile.handle).join(', ')}.`);
     }
 
     if (fs.existsSync(layout.legacyBackendTarget)) {
-        console.log(`Legacy backend ${LEGACY_PLUGIN_ID} is still present. Remove it manually when you are done migrating.`);
+        completionLines.push(`Legacy backend ${LEGACY_PLUGIN_ID} is still present. Remove it manually when you are done migrating.`);
     }
 
-    console.log('Retry Mobile install/update completed. Restart SillyTavern if it is running.');
+    logProcessComplete('Install / Update process complete.', completionLines, platform);
 }
 
 async function promptFrontendDestination(rl, layout) {
