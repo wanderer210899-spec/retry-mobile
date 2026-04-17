@@ -1,7 +1,14 @@
+$RepoBranchArgument = if ($args.Count -gt 0) { [string]$args[0] } else { '' }
 $ErrorActionPreference = 'Stop'
 
 $RepoUrl = 'https://github.com/wanderer210899-spec/retry-mobile.git'
-$RepoBranch = 'main'
+$RepoBranch = if ($RepoBranchArgument) {
+    $RepoBranchArgument
+} elseif ($env:RETRY_MOBILE_BRANCH) {
+    [string]$env:RETRY_MOBILE_BRANCH
+} else {
+    'main'
+}
 $TempRoot = Join-Path $env:TEMP ('retry-mobile-installer-' + [guid]::NewGuid().ToString('N'))
 $RepoDir = Join-Path $TempRoot 'retry-mobile'
 $LaunchDirectory = (Get-Location).Path
@@ -20,6 +27,7 @@ try {
     git clone --depth 1 --branch $RepoBranch $RepoUrl $RepoDir | Out-Host
     Push-Location $LaunchDirectory
     try {
+        $env:RETRY_MOBILE_BRANCH = $RepoBranch
         & node (Join-Path $RepoDir 'install.cjs')
     }
     finally {

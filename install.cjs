@@ -11,6 +11,7 @@ const FRONTEND_SOURCE = path.join(SOURCE_ROOT, 'frontend');
 const BACKEND_SOURCE = path.join(SOURCE_ROOT, 'server');
 const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https://raw.githubusercontent.com/');
 const RELEASE_MANIFEST_FILE = 'release.json';
+const INSTALLER_BRANCH = resolveInstallerBranch();
 
 main().catch((error) => {
     console.error(`\n${PLUGIN_NAME} installer failed.`);
@@ -217,12 +218,13 @@ function renderMenu(layout, platform) {
     console.log(' | Menu Options:');
     console.log(' |   0. Exit');
     console.log(' ______________________________________________________________');
-    console.log(' | Local Install:');
-    console.log(` |   Working dir: ${truncateMiddle(layout.workingDir, 42)}`);
-    console.log(` |   ST root:     ${truncateMiddle(layout.stRoot, 42)}`);
-    console.log(` |   Repository:  ${truncateMiddle(REPOSITORY_URL, 42)}`);
-    console.log(` |   Source Ver:  ${truncateMiddle(formatInstallerReleaseStatus(layout.releaseUpdate), 42)}`);
-    console.log(' ______________________________________________________________');
+            console.log(' | Local Install:');
+            console.log(` |   Working dir: ${truncateMiddle(layout.workingDir, 42)}`);
+            console.log(` |   ST root:     ${truncateMiddle(layout.stRoot, 42)}`);
+            console.log(` |   Repository:  ${truncateMiddle(REPOSITORY_URL, 42)}`);
+            console.log(` |   Branch:      ${truncateMiddle(INSTALLER_BRANCH, 42)}`);
+            console.log(` |   Source Ver:  ${truncateMiddle(formatInstallerReleaseStatus(layout.releaseUpdate), 42)}`);
+            console.log(' ______________________________________________________________');
     console.log(' | Retry Mobile Status:');
     console.log(` |   Server plugins: ${layout.config.enableServerPlugins ? 'Enabled' : 'Disabled'}`);
     console.log(` |   Auto-update:    ${layout.config.enableServerPluginsAutoUpdate ? 'Enabled' : 'Disabled'}`);
@@ -590,7 +592,7 @@ async function readInstallerReleaseUpdateInfo(repoPath) {
 
     try {
         const localRelease = readJsonFile(path.join(repoPath, RELEASE_MANIFEST_FILE)) || {};
-        const remoteRelease = await fetchJson(`${RAW_REPOSITORY_BASE}/${DEFAULT_BRANCH}/${RELEASE_MANIFEST_FILE}`);
+        const remoteRelease = await fetchJson(`${RAW_REPOSITORY_BASE}/${INSTALLER_BRANCH}/${RELEASE_MANIFEST_FILE}`);
         result.localVersion = typeof localRelease.version === 'string' ? localRelease.version : '';
         result.remoteVersion = typeof remoteRelease?.version === 'string' ? remoteRelease.version : '';
         result.canCheck = Boolean(result.localVersion && result.remoteVersion);
@@ -605,6 +607,11 @@ async function readInstallerReleaseUpdateInfo(repoPath) {
         result.message = error instanceof Error ? error.message : String(error);
         return result;
     }
+}
+
+function resolveInstallerBranch() {
+    const value = String(process.env.RETRY_MOBILE_BRANCH || DEFAULT_BRANCH || '').trim();
+    return value || 'main';
 }
 
 async function fetchJson(url) {

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/wanderer210899-spec/retry-mobile.git"
-REPO_BRANCH="main"
+REPO_BRANCH="${1:-${RETRY_MOBILE_BRANCH:-main}}"
 TEMP_ROOT="$(mktemp -d -t retry-mobile-installer-XXXXXX)"
 REPO_DIR="$TEMP_ROOT/retry-mobile"
 LAUNCH_DIRECTORY="$PWD"
@@ -25,7 +25,7 @@ fi
 git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
 cd "$LAUNCH_DIRECTORY"
 if [ -r /dev/tty ]; then
-  node "$REPO_DIR/install.cjs" < /dev/tty
+  RETRY_MOBILE_BRANCH="$REPO_BRANCH" node "$REPO_DIR/install.cjs" < /dev/tty
 else
   echo "Retry Mobile installer requires interactive terminal input (/dev/tty was not available)."
   exit 1
