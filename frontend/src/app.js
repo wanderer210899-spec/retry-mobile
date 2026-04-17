@@ -1201,7 +1201,7 @@ async function toggleQuickRepliesFromUi() {
 }
 
 async function copyRetryLogFromUi() {
-    const text = formatRetryLogText(runtime.activeJobStatus);
+    const text = formatRetryLogText(runtime.activeJobStatus, runtime.machine.getSnapshot());
     if (!text.trim()) {
         showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
         return;
@@ -1297,7 +1297,7 @@ function render() {
         runtime.releaseInfoContainer.innerHTML = renderReleaseInfo();
     }
     if (runtime.retryLogContainer) {
-        runtime.retryLogContainer.textContent = formatRetryLogText(runtime.activeJobStatus);
+        runtime.retryLogContainer.textContent = formatRetryLogText(runtime.activeJobStatus, snapshot);
     }
     if (runtime.retryLogShell) {
         runtime.retryLogShell.hidden = !runtime.showRetryLog;
@@ -1437,7 +1437,7 @@ function renderRetryLogPanel() {
     return `
         <div class="rm-diagnostics__title">Retry Log</div>
         <div class="rm-diagnostics__line">Copy-friendly backend attempt history.</div>
-        <textarea class="rm-retry-log" readonly>${escapeHtml(formatRetryLogText(runtime.activeJobStatus))}</textarea>
+        <textarea class="rm-retry-log" readonly>${escapeHtml(formatRetryLogText(runtime.activeJobStatus, runtime.machine.getSnapshot()))}</textarea>
     `;
 }
 
@@ -1692,13 +1692,27 @@ function formatRetryPhase(status) {
     return status.phaseText || formatStateLabel(resolveRunStateFromStatus(status) || RUN_STATE.IDLE);
 }
 
-function formatRetryLogText(status) {
+function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
+    const lines = [
+        `runId: ${status?.runId || snapshot?.runId || 'none'}`,
+        `frontendState: ${snapshot?.state || 'unknown'}`,
+        `frontendLabel: ${formatVisibleStateLabel(snapshot?.state || RUN_STATE.IDLE, status)}`,
+        `activeChat: ${formatChatIdentity(snapshot?.chatIdentity)}`,
+        `ownsTurn: ${snapshot?.ownsTurn ? 'retry-mobile' : 'native'}`,
+        `lastFrontendError: ${snapshot?.error ? formatStructuredError(snapshot.error) : 'none'}`,
+        `lastNativeEvent: ${formatEventSummary(snapshot?.lastNativeEvent)}`,
+        `lastBackendEvent: ${formatEventSummary(snapshot?.lastBackendEvent)}`,
+        '',
+    ];
+
     if (!status) {
-        return 'No backend job is active.';
+        lines.push('backend: no backend job was reserved or restorable for this run.');
+        lines.push('');
+        lines.push('Recent Events:');
+        return appendDebugEventLines(lines, snapshot);
     }
 
-    const lines = [
-        `runId: ${status.runId || 'none'}`,
+    lines.push(
         `jobId: ${status.jobId || 'none'}`,
         `state: ${status.state || 'unknown'}`,
         `phase: ${status.phase || 'unknown'}`,
@@ -1713,19 +1727,51 @@ function formatRetryLogText(status) {
         `lastError: ${status.lastError || 'none'}`,
         '',
         'Attempts:',
-    ];
+    );
 
     const attempts = Array.isArray(status.attemptLog) ? status.attemptLog : [];
     if (attempts.length === 0) {
         lines.push('No attempts recorded yet.');
+    } else {
+        for (const entry of attempts) {
+            lines.push(formatAttemptLogEntry(entry));
+        }
+    }
+
+    lines.push('');
+    lines.push('Recent Events:');
+    return appendDebugEventLines(lines, snapshot);
+}
+
+function appendDebugEventLines(lines, snapshot) {
+    const events = Array.isArray(snapshot?.debugEvents) ? snapshot.debugEvents : [];
+    if (events.length === 0) {
+        lines.push('No frontend run events recorded yet.');
         return lines.join('\n');
     }
 
-    for (const entry of attempts) {
-        lines.push(formatAttemptLogEntry(entry));
+    for (const entry of events) {
+        lines.push(formatDebugEventLine(entry));
     }
 
     return lines.join('\n');
+}
+
+function formatDebugEventLine(entry) {
+    const parts = [
+        entry?.at || 'unknown-time',
+        entry?.source || 'state',
+        entry?.event || 'event',
+    ];
+
+    if (entry?.phase) {
+        parts.push(`phase=${entry.phase}`);
+    }
+    if (entry?.summary) {
+        parts.push(`summary=${entry.summary}`);
+    }
+
+    return parts.join(' | ');
 }
 
 function formatAttemptLogEntry(entry) {
