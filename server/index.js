@@ -1,12 +1,14 @@
 const crypto = require('node:crypto');
 
-const { runJob } = require('./job-runner');
+const { confirmNativeAssistant, runJob } = require('./job-runner');
 const { isTermuxAvailable, debugNotifier } = require('./notifier');
 const { PLUGIN_ID, PLUGIN_NAME } = require('./plugin-meta');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { getReleaseInfo } = require('./update-info');
 const { buildChatKey, createJob, getJob, getJobByChat, serializeJob, touchJob } = require('./state');
 const { validateRunConfig } = require('./validation');
+
+const NATIVE_PENDING_GRACE_MS = 15000;
 
 function init(router, config) {
     const app = router;
@@ -95,10 +97,11 @@ function init(router, config) {
 
             const targetFingerprint = normalizeFingerprint(request.body.targetFingerprint, request.body.chatIdentity);
             const assistantMessageIndex = Number(request.body.assistantMessageIndex);
-            if (!targetFingerprint || !Number.isFinite(assistantMessageIndex) || assistantMessageIndex < 0) {
+            const hasConfirmedAssistant = Number.isFinite(assistantMessageIndex) && assistantMessageIndex >= 0;
+            if (!targetFingerprint) {
                 const structuredError = toStructuredError(createStructuredError(
                     'handoff_request_failed',
-                    'The backend did not receive a confirmed target turn for this run.',
+                    'The backend did not receive a valid captured target turn for this run.',
                 ));
                 return response.status(400).send({
                     error: structuredError.message,
@@ -119,8 +122,13 @@ function init(router, config) {
                 runConfig: normalizeRunConfig(request.body.runConfig, targetAcceptedCount, maxAttempts, runConfigValidation.mode),
                 capturedRequest: request.body.capturedRequest,
                 captureMeta: request.body.captureMeta || {},
-                assistantMessageIndex,
+                assistantMessageIndex: hasConfirmedAssistant ? assistantMessageIndex : null,
                 targetFingerprint,
+                nativeState: hasConfirmedAssistant ? 'confirmed' : 'pending',
+                phase: hasConfirmedAssistant ? 'native_confirmed' : 'pending_native',
+                recoveryMode: hasConfirmedAssistant ? 'top_up_existing' : '',
+                captureConfirmedAt: new Date().toISOString(),
+                nativeGraceDeadline: new Date(Date.now() + NATIVE_PENDING_GRACE_MS).toISOString(),
                 userContext: {
                     handle: request.user.profile.handle,
                     directories: request.user.directories,
@@ -138,6 +146,78 @@ function init(router, config) {
         } catch (error) {
             console.error('[retry-mobile:backend] Start failed:', error);
             const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not start the backend job.');
+            return response.status(500).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+    });
+
+    app.post('/confirm-native/:jobId', async (request, response) => {
+        try {
+            const job = getJob(request.params.jobId);
+            if (!job) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'Job not found.',
+                ));
+                return response.status(404).send({
+                    error: structuredError.message,
+                    structuredError,
+                });
+            }
+
+            if (typeof request.body?.runId === 'string' && request.body.runId && request.body.runId !== job.runId) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'The native confirmation did not match the active Retry Mobile run.',
+                ));
+                return response.status(409).send({
+                    error: structuredError.message,
+                    structuredError,
+                    job: serializeJob(job),
+                });
+            }
+
+            if (job.state !== 'running') {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'The backend job is no longer running.',
+                ));
+                return response.status(409).send({
+                    error: structuredError.message,
+                    structuredError,
+                    job: serializeJob(job),
+                });
+            }
+
+            if (job.nativeState === 'abandoned') {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'The backend already recovered this native turn before frontend confirmation arrived.',
+                ));
+                return response.status(409).send({
+                    error: structuredError.message,
+                    structuredError,
+                    job: serializeJob(job),
+                });
+            }
+
+            if (job.nativeState === 'confirmed') {
+                return response.send({
+                    ok: true,
+                    job: serializeJob(job),
+                });
+            }
+
+            await confirmNativeAssistant(job, request.body?.assistantMessageIndex);
+            return response.send({
+                ok: true,
+                job: serializeJob(job),
+            });
+        } catch (error) {
+            console.error('[retry-mobile:backend] Native confirm failed:', error);
+            const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not confirm the native turn on the backend.');
             return response.status(500).send({
                 error: structuredError.message,
                 structuredError,

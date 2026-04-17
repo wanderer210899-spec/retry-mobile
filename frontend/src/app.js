@@ -22,6 +22,7 @@ import {
 } from './st-context.js';
 import {
     cancelBackendJob,
+    confirmNativeJob,
     fetchActiveJob,
     fetchCapabilities,
     fetchJobStatus,
@@ -597,9 +598,14 @@ async function handleCaptureResult(runId, result) {
     runtime.assistantMessageIndex = null;
 
     runtime.machine.clearError();
-    runtime.machine.transition(RUN_STATE.WAITING_FOR_NATIVE);
     runtime.machine.setNativeEvent('CHAT_COMPLETION_SETTINGS_READY', `Captured ${result.requestType || 'normal'} request for user turn ${result.fingerprint.userMessageIndex}.`);
-    runtime.machine.recordEvent('st', 'capture_confirmed', 'Captured a qualifying ST request and switched to native wait.');
+    runtime.machine.recordEvent('st', 'capture_confirmed', 'Captured a qualifying ST request.');
+
+    const reserved = await reserveBackendJob(runId);
+    if (!reserved || !runtime.machine.isCurrentRun(runId)) {
+        return;
+    }
+
     render();
     showToast('info', EXTENSION_NAME, 'Retry Mobile captured this generation. SillyTavern is creating the first reply.');
 
@@ -623,14 +629,14 @@ async function handleCaptureResult(runId, result) {
         }
 
         runtime.assistantMessageIndex = nativeResult.assistantMessageIndex;
-        runtime.machine.transition(RUN_STATE.HANDING_OFF);
+        runtime.machine.transition(RUN_STATE.NATIVE_CONFIRMED);
         runtime.machine.recordEvent(
             'st',
             'native_confirmed',
             `Confirmed native assistant turn ${nativeResult.assistantMessageIndex}.`,
         );
         render();
-        await handoffToBackend(runId, nativeResult);
+        await confirmNativeHandoff(runId, nativeResult);
     } catch (error) {
         if (!runtime.machine.isCurrentRun(runId)) {
             return;
@@ -641,6 +647,11 @@ async function handleCaptureResult(runId, result) {
             'native_wait_timeout',
             'Retry Mobile could not confirm the native assistant turn.',
         );
+        const recovered = await reconcileNativeWaitFailure(runId, structured);
+        if (recovered) {
+            return;
+        }
+
         await applyTerminalState(runId, RUN_STATE.FAILED, {
             error: structured,
             toastKind: 'warning',
@@ -649,9 +660,9 @@ async function handleCaptureResult(runId, result) {
     }
 }
 
-async function handoffToBackend(runId, nativeResult) {
+async function reserveBackendJob(runId) {
     if (!runtime.machine.isCurrentRun(runId)) {
-        return;
+        return false;
     }
 
     const snapshot = runtime.machine.getSnapshot();
@@ -674,7 +685,6 @@ async function handoffToBackend(runId, nativeResult) {
         },
         capturedRequest: runtime.capturedRequest,
         targetFingerprint: runtime.fingerprint,
-        assistantMessageIndex: nativeResult.assistantMessageIndex,
         captureMeta: {
             capturedAt: runtime.fingerprint?.capturedAt || new Date().toISOString(),
             assistantName: snapshot.chatIdentity?.assistantName || 'Assistant',
@@ -684,27 +694,86 @@ async function handoffToBackend(runId, nativeResult) {
     try {
         const result = await startBackendJob(body);
         if (!runtime.machine.isCurrentRun(runId)) {
-            return;
+            return false;
         }
 
         runtime.activeJobId = result.jobId;
         runtime.activeJobStatus = result.job ?? null;
         runtime.lastAppliedVersion = 0;
-        runtime.machine.setOwnsTurn(true);
-        runtime.machine.setBackendEvent('handoff_started', `Started backend job ${result.jobId}.`);
-        runtime.machine.recordEvent('backend', 'handoff_started', `Started backend job ${result.jobId}.`);
-        runtime.machine.transition(RUN_STATE.RUNNING);
+        runtime.machine.setOwnsTurn(false);
+        runtime.machine.setBackendEvent('pending_native', `Reserved backend job ${result.jobId} while native generation tries the first reply.`);
+        runtime.machine.recordEvent('backend', 'pending_native', `Reserved backend job ${result.jobId} while native generation is pending.`);
+        runtime.machine.transition(RUN_STATE.CAPTURED_PENDING_NATIVE);
         startPolling(runId);
         render();
-        showToast('success', EXTENSION_NAME, 'Retry Mobile is now handling retry generations for this turn.');
+        return true;
     } catch (error) {
-        const structured = getStructuredErrorFromApi(error, 'Retry Mobile could not hand this turn off to the backend.');
+        const structured = getStructuredErrorFromApi(error, 'Retry Mobile could not reserve the backend recovery job for this turn.');
+        await applyTerminalState(runId, RUN_STATE.FAILED, {
+            error: structured,
+            toastKind: 'warning',
+            toastMessage: formatStructuredError(structured),
+        });
+        return false;
+    }
+}
+
+async function confirmNativeHandoff(runId, nativeResult) {
+    if (!runtime.machine.isCurrentRun(runId) || !runtime.activeJobId) {
+        return;
+    }
+
+    try {
+        const result = await confirmNativeJob(runtime.activeJobId, {
+            runId,
+            assistantMessageIndex: nativeResult.assistantMessageIndex,
+        });
+
+        if (!runtime.machine.isCurrentRun(runId)) {
+            return;
+        }
+
+        runtime.activeJobStatus = result.job ?? runtime.activeJobStatus;
+        syncRuntimeStateFromStatus(runId, runtime.activeJobStatus, {
+            previousStatus: null,
+            announceTransitions: false,
+        });
+        runtime.machine.setBackendEvent('native_confirmed', `Backend confirmed native assistant turn ${nativeResult.assistantMessageIndex}.`);
+        runtime.machine.recordEvent('backend', 'native_confirmed', `Backend confirmed native assistant turn ${nativeResult.assistantMessageIndex}.`);
+        render();
+        showToast('success', EXTENSION_NAME, 'Retry Mobile confirmed the native first reply. Backend retries are ready for this turn.');
+    } catch (error) {
+        const recovered = await adoptBackendStatus(runId, error, {
+            announceTransitions: true,
+        });
+        if (recovered) {
+            return;
+        }
+
+        const structured = getStructuredErrorFromApi(error, 'Retry Mobile could not confirm the native assistant turn with the backend.');
         await applyTerminalState(runId, RUN_STATE.FAILED, {
             error: structured,
             toastKind: 'warning',
             toastMessage: formatStructuredError(structured),
         });
     }
+}
+
+async function reconcileNativeWaitFailure(runId, structured) {
+    runtime.machine.recordEvent('st', 'native_wait_failed', structured.message);
+    const adopted = await adoptBackendStatus(runId, null, {
+        announceTransitions: true,
+    });
+    if (!adopted) {
+        return false;
+    }
+
+    const status = runtime.activeJobStatus;
+    if (status?.state === 'running') {
+        return true;
+    }
+
+    return false;
 }
 
 async function stopPlugin() {
@@ -775,8 +844,13 @@ async function pollStatus(runId, pollSessionId) {
             return;
         }
 
-        const previousAccepted = Number(runtime.activeJobStatus?.acceptedCount) || 0;
+        const previousStatus = runtime.activeJobStatus;
+        const previousAccepted = Number(previousStatus?.acceptedCount) || 0;
         runtime.activeJobStatus = status;
+        syncRuntimeStateFromStatus(runId, status, {
+            previousStatus,
+            announceTransitions: true,
+        });
         runtime.machine.setBackendEvent(status.phase || status.state || 'status', `Backend reported ${status.state || 'unknown'}.`);
         runtime.machine.recordEvent('backend', 'status', `Backend reported ${status.state || 'unknown'} (${status.acceptedCount || 0}/${status.targetAcceptedCount || 0}).`);
 
@@ -838,6 +912,129 @@ async function pollStatus(runId, pollSessionId) {
     }
 }
 
+function syncRuntimeStateFromStatus(runId, status, options = {}) {
+    if (!runtime.machine.isCurrentRun(runId) || !status?.jobId) {
+        return;
+    }
+
+    const previousStatus = options.previousStatus || null;
+    const nextState = resolveRunStateFromStatus(status);
+    const snapshot = runtime.machine.getSnapshot();
+
+    if (nextState && snapshot.state !== nextState) {
+        runtime.machine.transition(nextState);
+    }
+
+    runtime.machine.setOwnsTurn(Boolean(status.nativeState && status.nativeState !== 'pending'));
+
+    if (!options.announceTransitions) {
+        return;
+    }
+
+    const previousNativeState = previousStatus?.nativeState || '';
+    const nextNativeState = status.nativeState || '';
+    if (previousNativeState === nextNativeState) {
+        return;
+    }
+
+    runtime.machine.recordEvent('backend', 'native_state', `Backend native state changed: ${previousNativeState || 'none'} -> ${nextNativeState || 'none'}.`);
+
+    if (nextNativeState === 'abandoned') {
+        const message = status.recoveryMode === 'reuse_empty_placeholder'
+            ? 'Native first reply was abandoned. Retry Mobile reused the empty native placeholder.'
+            : 'Native first reply was abandoned. Retry Mobile created the missing assistant turn.';
+        showToast('info', EXTENSION_NAME, message);
+        return;
+    }
+
+    if (previousNativeState === 'pending' && nextNativeState === 'confirmed') {
+        showToast('info', EXTENSION_NAME, 'Native first reply was confirmed. Retry Mobile will handle the remaining retries.');
+    }
+}
+
+function resolveRunStateFromStatus(status) {
+    if (!status || status.state !== 'running') {
+        return null;
+    }
+
+    if (status.nativeState === 'pending') {
+        return RUN_STATE.CAPTURED_PENDING_NATIVE;
+    }
+
+    if (status.nativeState === 'confirmed') {
+        return Number(status.attemptCount) > 0 || Number(status.acceptedCount) > 0
+            ? RUN_STATE.BACKEND_RUNNING
+            : RUN_STATE.NATIVE_CONFIRMED;
+    }
+
+    if (status.nativeState === 'abandoned') {
+        return Number(status.attemptCount) > 0 || Number(status.acceptedCount) > 0
+            ? RUN_STATE.BACKEND_RUNNING
+            : RUN_STATE.NATIVE_ABANDONED;
+    }
+
+    return RUN_STATE.BACKEND_RUNNING;
+}
+
+async function adoptBackendStatus(runId, sourceError = null, options = {}) {
+    const requestedJobId = runtime.activeJobId;
+    if (!requestedJobId) {
+        return false;
+    }
+
+    let status = sourceError?.payload?.job || null;
+    if (!status) {
+        try {
+            status = await fetchJobStatus(requestedJobId);
+        } catch {
+            return false;
+        }
+    }
+
+    if (!status?.jobId || !runtime.machine.isCurrentRun(runId) || runtime.activeJobId !== requestedJobId) {
+        return false;
+    }
+
+    const previousStatus = runtime.activeJobStatus;
+    runtime.activeJobStatus = status;
+    syncRuntimeStateFromStatus(runId, status, {
+        previousStatus,
+        announceTransitions: Boolean(options.announceTransitions),
+    });
+    render();
+
+    if (status.state === 'completed') {
+        await applyTerminalState(runId, RUN_STATE.COMPLETED, {
+            toastKind: 'success',
+            toastMessage: 'Retry Mobile finished this turn.',
+        });
+        return true;
+    }
+
+    if (status.state === 'failed') {
+        const structured = status.structuredError || createStructuredError(
+            'backend_write_failed',
+            status.lastError || 'The backend job failed.',
+        );
+        await applyTerminalState(runId, RUN_STATE.FAILED, {
+            error: structured,
+            toastKind: 'warning',
+            toastMessage: formatStructuredError(structured),
+        });
+        return true;
+    }
+
+    if (status.state === 'cancelled') {
+        await applyTerminalState(runId, RUN_STATE.CANCELLED, {
+            toastKind: 'info',
+            toastMessage: 'Retry Mobile stopped.',
+        });
+        return true;
+    }
+
+    return status.state === 'running';
+}
+
 async function applyTerminalState(runId, nextState, options = {}) {
     if (runId && !runtime.machine.isCurrentRun(runId) && runtime.machine.getSnapshot().runId !== runId) {
         return;
@@ -860,9 +1057,7 @@ async function applyTerminalState(runId, nextState, options = {}) {
     runtime.machine.transition(nextState);
     runtime.machine.releaseRun();
 
-    if (nextState !== RUN_STATE.RUNNING) {
-        runtime.activeJobId = null;
-    }
+    runtime.activeJobId = null;
 
     render();
 
@@ -901,8 +1096,10 @@ async function restoreActiveJob() {
             runId: status.runId || status.jobId,
             chatIdentity: status.chatIdentity || identity,
         });
-        runtime.machine.transition(normalizeServerState(status.state));
-        runtime.machine.setOwnsTurn(status.state === 'running');
+        syncRuntimeStateFromStatus(status.runId || status.jobId, status, {
+            previousStatus: null,
+            announceTransitions: false,
+        });
         runtime.machine.setBackendEvent('restored', `Restored backend job ${status.jobId}.`);
         runtime.machine.recordEvent('backend', 'restored', `Restored backend job ${status.jobId}.`);
         runtime.activeJobId = status.jobId;
@@ -1081,7 +1278,7 @@ function render() {
     const activeStatus = runtime.activeJobStatus;
     const errorText = formatStructuredError(snapshot.error);
 
-    runtime.statusText.textContent = formatStateLabel(state);
+    runtime.statusText.textContent = formatVisibleStateLabel(state, activeStatus);
     runtime.statusText.dataset.state = state;
 
     runtime.stats.innerHTML = [
@@ -1224,6 +1421,10 @@ function renderDebugPanel(snapshot) {
         <div class="rm-diagnostics__line">Last native event: ${escapeHtml(formatEventSummary(snapshot.lastNativeEvent))}</div>
         <div class="rm-diagnostics__line">Last backend event: ${escapeHtml(formatEventSummary(snapshot.lastBackendEvent))}</div>
         <div class="rm-diagnostics__line">Backend phase: ${escapeHtml(backendStatus?.phase || 'none')}</div>
+        <div class="rm-diagnostics__line">Backend phase text: ${escapeHtml(backendStatus?.phaseText || 'none')}</div>
+        <div class="rm-diagnostics__line">Native state: ${escapeHtml(backendStatus?.nativeState || 'none')}</div>
+        <div class="rm-diagnostics__line">Recovery mode: ${escapeHtml(formatRecoveryMode(backendStatus?.recoveryMode))}</div>
+        <div class="rm-diagnostics__line">Native grace deadline: ${escapeHtml(formatGraceDeadline(backendStatus?.nativeGraceDeadline))}</div>
         <div class="rm-diagnostics__line">Target message version: ${escapeHtml(String(backendStatus?.targetMessageVersion ?? 0))}</div>
         <div class="rm-diagnostics__line">Last backend error: ${escapeHtml(backendStatus?.lastError || 'none')}</div>
         <div class="rm-diagnostics__line">Current owner: ${snapshot.ownsTurn ? 'Retry Mobile' : 'SillyTavern/native'}</div>
@@ -1249,7 +1450,7 @@ function buildNoteText(snapshot) {
 
     const ownerLine = snapshot.ownsTurn
         ? 'Retry Mobile currently owns retry generations for this turn.'
-        : 'SillyTavern owns the current native turn until handoff happens.';
+        : 'SillyTavern still owns the native first-reply attempt for this turn.';
 
     return `${modeLine} ${validationLine} ${timeoutLine} ${ownerLine}`;
 }
@@ -1265,18 +1466,23 @@ function getCurrentState() {
     return runtime.machine.getSnapshot().state;
 }
 
-function normalizeServerState(state) {
+function formatVisibleStateLabel(state, status) {
+    if (!status) {
+        return formatStateLabel(state);
+    }
+
     switch (state) {
-        case 'running':
-            return RUN_STATE.RUNNING;
-        case 'completed':
-            return RUN_STATE.COMPLETED;
-        case 'failed':
-            return RUN_STATE.FAILED;
-        case 'cancelled':
-            return RUN_STATE.CANCELLED;
+        case RUN_STATE.CAPTURED_PENDING_NATIVE:
+        case RUN_STATE.NATIVE_CONFIRMED:
+        case RUN_STATE.NATIVE_ABANDONED:
+        case RUN_STATE.BACKEND_RUNNING:
+            return status.phaseText || formatStateLabel(state);
+        case RUN_STATE.COMPLETED:
+        case RUN_STATE.FAILED:
+        case RUN_STATE.CANCELLED:
+            return status.phaseText || formatStateLabel(state);
         default:
-            return RUN_STATE.IDLE;
+            return formatStateLabel(state);
     }
 }
 
@@ -1284,11 +1490,18 @@ function formatStateLabel(state) {
     switch (state) {
         case RUN_STATE.ARMED:
             return 'Armed for next qualifying request';
+        case RUN_STATE.CAPTURED_PENDING_NATIVE:
+            return 'Waiting for native first reply';
         case RUN_STATE.WAITING_FOR_NATIVE:
             return 'Waiting for native completion';
+        case RUN_STATE.NATIVE_CONFIRMED:
+            return 'Native first reply confirmed';
+        case RUN_STATE.NATIVE_ABANDONED:
+            return 'Native abandoned, backend recovered the turn';
         case RUN_STATE.HANDING_OFF:
             return 'Handing off to backend';
         case RUN_STATE.RUNNING:
+        case RUN_STATE.BACKEND_RUNNING:
             return 'Retry loop active';
         case RUN_STATE.COMPLETED:
             return 'Completed';
@@ -1303,9 +1516,13 @@ function formatStateLabel(state) {
 
 function isRunningLikeState(state) {
     return state === RUN_STATE.ARMED
+        || state === RUN_STATE.CAPTURED_PENDING_NATIVE
         || state === RUN_STATE.WAITING_FOR_NATIVE
+        || state === RUN_STATE.NATIVE_CONFIRMED
+        || state === RUN_STATE.NATIVE_ABANDONED
         || state === RUN_STATE.HANDING_OFF
-        || state === RUN_STATE.RUNNING;
+        || state === RUN_STATE.RUNNING
+        || state === RUN_STATE.BACKEND_RUNNING;
 }
 
 async function maybeAutoRearmAfterRun(resultState) {
@@ -1450,6 +1667,31 @@ function formatEventSummary(eventRecord) {
         : eventRecord.name;
 }
 
+function formatRecoveryMode(recoveryMode) {
+    switch (recoveryMode) {
+        case 'top_up_existing':
+            return 'Top up existing assistant turn';
+        case 'reuse_empty_placeholder':
+            return 'Reuse empty native placeholder';
+        case 'create_missing_turn':
+            return 'Create missing assistant turn';
+        default:
+            return 'none';
+    }
+}
+
+function formatGraceDeadline(value) {
+    return value || 'none';
+}
+
+function formatRetryPhase(status) {
+    if (!status) {
+        return 'No backend job is active.';
+    }
+
+    return status.phaseText || formatStateLabel(resolveRunStateFromStatus(status) || RUN_STATE.IDLE);
+}
+
 function formatRetryLogText(status) {
     if (!status) {
         return 'No backend job is active.';
@@ -1460,6 +1702,11 @@ function formatRetryLogText(status) {
         `jobId: ${status.jobId || 'none'}`,
         `state: ${status.state || 'unknown'}`,
         `phase: ${status.phase || 'unknown'}`,
+        `phaseText: ${formatRetryPhase(status)}`,
+        `nativeState: ${status.nativeState || 'unknown'}`,
+        `recoveryMode: ${formatRecoveryMode(status.recoveryMode)}`,
+        `nativeGraceDeadline: ${formatGraceDeadline(status.nativeGraceDeadline)}`,
+        `assistantMessageIndex: ${Number.isFinite(Number(status.assistantMessageIndex)) ? Number(status.assistantMessageIndex) : 'none'}`,
         `accepted: ${Number(status.acceptedCount) || 0}/${Number(status.targetAcceptedCount) || 0}`,
         `attempts: ${Number(status.attemptCount) || 0}/${Number(status.maxAttempts) || 0}`,
         `targetMessageVersion: ${Number(status.targetMessageVersion) || 0}`,

@@ -11,9 +11,13 @@ export const REPOSITORY_URL = 'https://github.com/wanderer210899-spec/retry-mobi
 export const RUN_STATE = Object.freeze({
     IDLE: 'idle',
     ARMED: 'armed',
+    CAPTURED_PENDING_NATIVE: 'captured_pending_native',
     WAITING_FOR_NATIVE: 'waiting_for_native',
+    NATIVE_CONFIRMED: 'native_confirmed',
+    NATIVE_ABANDONED: 'native_abandoned',
     HANDING_OFF: 'handing_off',
     RUNNING: 'running',
+    BACKEND_RUNNING: 'backend_running',
     COMPLETED: 'completed',
     FAILED: 'failed',
     CANCELLED: 'cancelled',

@@ -14,7 +14,7 @@ function createJob(input) {
         jobId: input.jobId,
         runId: input.runId || input.jobId,
         state: 'running',
-        phase: 'awaiting_retry_results',
+        phase: 'pending_native',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         acceptedCount: 0,
@@ -26,6 +26,10 @@ function createJob(input) {
         targetMessageIndex: null,
         targetMessageVersion: 0,
         targetMessage: null,
+        nativeState: 'pending',
+        recoveryMode: '',
+        captureConfirmedAt: new Date().toISOString(),
+        nativeGraceDeadline: '',
         lastAcceptedAt: null,
         lastValidation: null,
         attemptLog: [],
@@ -89,6 +93,7 @@ function serializeJob(job) {
         runId: job.runId,
         state: job.state,
         phase: job.phase,
+        phaseText: describePhase(job),
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
         acceptedCount: job.acceptedCount,
@@ -103,11 +108,66 @@ function serializeJob(job) {
         targetMessageVersion: job.targetMessageVersion,
         targetMessage: job.targetMessage,
         targetFingerprint: job.targetFingerprint,
+        nativeState: job.nativeState,
+        recoveryMode: job.recoveryMode,
+        captureConfirmedAt: job.captureConfirmedAt,
+        nativeGraceDeadline: job.nativeGraceDeadline,
+        assistantMessageIndex: Number.isFinite(Number(job.assistantMessageIndex)) ? Number(job.assistantMessageIndex) : null,
         lastAcceptedMetrics: job.lastAcceptedMetrics ?? null,
         lastAcceptedAt: job.lastAcceptedAt ?? null,
         lastValidation: job.lastValidation ?? null,
         attemptLog: Array.isArray(job.attemptLog) ? job.attemptLog : [],
     };
+}
+
+function describePhase(job) {
+    if (!job) {
+        return 'Idle';
+    }
+
+    if (job.state === 'completed') {
+        return 'Completed';
+    }
+
+    if (job.state === 'failed') {
+        return 'Failed';
+    }
+
+    if (job.state === 'cancelled') {
+        return 'Cancelled';
+    }
+
+    if (job.nativeState === 'pending') {
+        return 'Waiting for native first reply';
+    }
+
+    if (job.phase === 'native_confirmed' && Number(job.attemptCount) === 0 && Number(job.acceptedCount) === 0) {
+        return 'Native first reply confirmed';
+    }
+
+    if (job.phase === 'native_abandoned') {
+        if (job.recoveryMode === 'reuse_empty_placeholder') {
+            return 'Native abandoned, backend reused empty native placeholder';
+        }
+        if (job.recoveryMode === 'create_missing_turn') {
+            return 'Native abandoned, backend created the missing assistant turn';
+        }
+        return 'Native abandoned, backend recovered the turn';
+    }
+
+    if (job.phase === 'requesting_generation' || job.phase === 'writing_chat' || job.phase === 'awaiting_retry_results') {
+        return 'Retry loop active';
+    }
+
+    if (job.nativeState === 'abandoned' && job.recoveryMode === 'reuse_empty_placeholder') {
+        return 'Backend reused empty native placeholder';
+    }
+
+    if (job.nativeState === 'abandoned' && job.recoveryMode === 'create_missing_turn') {
+        return 'Backend created missing assistant turn';
+    }
+
+    return 'Retry loop active';
 }
 
 module.exports = {

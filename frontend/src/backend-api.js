@@ -10,6 +10,20 @@ export async function startBackendJob(payload) {
     });
 }
 
+export async function confirmNativeJob(jobId, payload) {
+    if (!jobId) {
+        throw createStructuredError(
+            'handoff_request_failed',
+            'Retry Mobile could not confirm the native turn because no backend job is active.',
+        );
+    }
+
+    return requestJson(`${BASE_URL}/confirm-native/${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+}
+
 export async function cancelBackendJob(jobId) {
     if (!jobId) {
         return { ok: false };
