@@ -62,6 +62,7 @@ const runtime = {
     captureSession: null,
     activeJobId: null,
     activeJobStatus: null,
+    lastRunLog: null,
     quickReplyStatus: null,
     pollHandle: 0,
     lastAppliedVersion: 0,
@@ -895,6 +896,9 @@ async function pollStatus(runId, pollSessionId) {
         render();
     } catch (error) {
         backendLog.warn('Status poll failed.', error);
+        if (!runtime.machine.isCurrentRun(runId) || !runtime.machine.isCurrentPollSession(pollSessionId) || runtime.activeJobId !== requestedJobId) {
+            return;
+        }
         runtime.machine.recordEvent('backend', 'poll_failed', error?.message || 'Status poll failed.');
         if (error?.status === 404 && runtime.machine.isCurrentRun(runId) && runtime.activeJobId === requestedJobId) {
             await reloadCurrentChatSafe();
@@ -1056,6 +1060,7 @@ async function applyTerminalState(runId, nextState, options = {}) {
     runtime.machine.setOwnsTurn(false);
     runtime.machine.transition(nextState);
     runtime.machine.releaseRun();
+    rememberRunLog();
 
     runtime.activeJobId = null;
 
@@ -1201,7 +1206,8 @@ async function toggleQuickRepliesFromUi() {
 }
 
 async function copyRetryLogFromUi() {
-    const text = formatRetryLogText(runtime.activeJobStatus, runtime.machine.getSnapshot());
+    const logContext = getRetryLogContext();
+    const text = formatRetryLogText(logContext.status, logContext.snapshot);
     if (!text.trim()) {
         showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
         return;
@@ -1297,7 +1303,8 @@ function render() {
         runtime.releaseInfoContainer.innerHTML = renderReleaseInfo();
     }
     if (runtime.retryLogContainer) {
-        runtime.retryLogContainer.textContent = formatRetryLogText(runtime.activeJobStatus, snapshot);
+        const logContext = getRetryLogContext(snapshot);
+        runtime.retryLogContainer.textContent = formatRetryLogText(logContext.status, logContext.snapshot);
     }
     if (runtime.retryLogShell) {
         runtime.retryLogShell.hidden = !runtime.showRetryLog;
@@ -1434,10 +1441,11 @@ function renderDebugPanel(snapshot) {
 }
 
 function renderRetryLogPanel() {
+    const logContext = getRetryLogContext();
     return `
         <div class="rm-diagnostics__title">Retry Log</div>
         <div class="rm-diagnostics__line">Copy-friendly backend attempt history.</div>
-        <textarea class="rm-retry-log" readonly>${escapeHtml(formatRetryLogText(runtime.activeJobStatus, runtime.machine.getSnapshot()))}</textarea>
+        <textarea class="rm-retry-log" readonly>${escapeHtml(formatRetryLogText(logContext.status, logContext.snapshot))}</textarea>
     `;
 }
 
@@ -1692,6 +1700,31 @@ function formatRetryPhase(status) {
     return status.phaseText || formatStateLabel(resolveRunStateFromStatus(status) || RUN_STATE.IDLE);
 }
 
+function getRetryLogContext(currentSnapshot = runtime.machine.getSnapshot()) {
+    const shouldUseLastRun = (!runtime.activeJobStatus && isIdleLikeState(currentSnapshot?.state))
+        && runtime.lastRunLog?.snapshot;
+
+    if (shouldUseLastRun) {
+        return runtime.lastRunLog;
+    }
+
+    return {
+        status: runtime.activeJobStatus,
+        snapshot: currentSnapshot,
+    };
+}
+
+function rememberRunLog() {
+    runtime.lastRunLog = {
+        status: cloneValue(runtime.activeJobStatus),
+        snapshot: cloneValue(runtime.machine.getSnapshot()),
+    };
+}
+
+function isIdleLikeState(state) {
+    return state === RUN_STATE.IDLE || state === RUN_STATE.ARMED;
+}
+
 function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
     const lines = [
         `runId: ${status?.runId || snapshot?.runId || 'none'}`,
@@ -1772,6 +1805,12 @@ function formatDebugEventLine(entry) {
     }
 
     return parts.join(' | ');
+}
+
+function cloneValue(value) {
+    return value == null
+        ? value
+        : JSON.parse(JSON.stringify(value));
 }
 
 function formatAttemptLogEntry(entry) {
