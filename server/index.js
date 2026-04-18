@@ -20,6 +20,11 @@ const {
     writeJobSnapshot,
 } = require('./job-store');
 const {
+    appendJobLog,
+    ensureJobLog,
+    renderJobLog,
+} = require('./job-log-store');
+const {
     getCompatibilitySnapshot,
     getUserDirectories,
     getUserDirectoriesList,
@@ -136,6 +141,65 @@ async function init(router) {
         }
 
         return response.send(serializeJob(job));
+    });
+
+    router.get('/log/:jobId', (request, response) => {
+        const job = getJob(request.params.jobId);
+        if (!job) {
+            const structuredError = toStructuredError(createStructuredError(
+                'backend_job_missing',
+                'Retry Mobile could not find the requested backend job.',
+            ));
+            return response.status(404).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+
+        const compatibility = getCompatibilitySnapshot();
+        const breaker = job?.userContext?.handle && job?.chatKey
+            ? getCircuitBreakerState(job.userContext.handle, job.userContext.directories, job.chatKey)
+            : null;
+        const cursor = ensureJobLog(job);
+        return response.send({
+            jobId: job.jobId,
+            runId: job.runId,
+            title: cursor.title,
+            updatedAt: cursor.updatedAt,
+            entryCount: cursor.entryCount,
+            text: renderJobLog(job, {
+                compatibility,
+                circuitBreaker: breaker,
+            }),
+        });
+    });
+
+    router.post('/log-event/:jobId', (request, response) => {
+        const job = getJob(request.params.jobId);
+        if (!job) {
+            return response.status(404).send(buildMissingJobResponse());
+        }
+
+        const entry = appendJobLog(job, {
+            source: 'frontend',
+            event: typeof request.body?.event === 'string' && request.body.event
+                ? request.body.event
+                : 'frontend_event',
+            summary: typeof request.body?.summary === 'string' && request.body.summary
+                ? request.body.summary
+                : 'Frontend reported a retry-log event.',
+            detail: request.body?.detail ?? null,
+            at: typeof request.body?.at === 'string' && request.body.at
+                ? request.body.at
+                : new Date().toISOString(),
+        });
+
+        return response.send({
+            ok: true,
+            updatedAt: entry?.at || job.logUpdatedAt || null,
+            entryCount: Number(job.logEntryCount) || 0,
+            title: job.logTitle || '',
+        });
     });
 
     router.get('/orphans/:jobId', (request, response) => {
@@ -300,6 +364,19 @@ async function init(router) {
                     ? 'Toggle mode circuit breaker is active for this chat.'
                     : '',
             });
+            ensureJobLog(job);
+            appendJobLog(job, {
+                source: 'backend',
+                event: 'job_started',
+                summary: `Reserved backend job ${job.jobId} for chat ${identity.chatId}.`,
+                detail: {
+                    runMode: normalizedRunConfig.runMode,
+                    targetAcceptedCount: normalizedRunConfig.targetAcceptedCount,
+                    maxAttempts: normalizedRunConfig.maxAttempts,
+                    validationMode: normalizedRunConfig.validationMode,
+                    nativeGraceSeconds,
+                },
+            });
 
             void runJob(job, {
                 baseUrl: getRequestBaseUrl(request),
@@ -384,6 +461,11 @@ async function init(router) {
             }
 
             await confirmNativeAssistant(job, request.body?.assistantMessageIndex);
+            appendJobLog(job, {
+                source: 'backend',
+                event: 'confirm_native',
+                summary: `Backend accepted native confirmation for assistant index ${request.body?.assistantMessageIndex}.`,
+            });
             return response.send({
                 ok: true,
                 job: serializeJob(job),
@@ -434,6 +516,14 @@ async function init(router) {
                 nativeResolutionCause: reason,
                 nativeFailureHintedAt: new Date().toISOString(),
             });
+            appendJobLog(job, {
+                source: 'backend',
+                event: 'native_failed_hint',
+                summary: `Backend accepted native failure hint: ${reason}.`,
+                detail: typeof request.body?.detail === 'string' && request.body.detail
+                    ? request.body.detail
+                    : null,
+            });
             await resolvePendingNativeState(job, reason);
             return response.send({
                 ok: true,
@@ -458,6 +548,11 @@ async function init(router) {
         touchJob(job, {
             cancelRequested: true,
             lastError: 'Retry Mobile cancellation requested.',
+        });
+        appendJobLog(job, {
+            source: 'backend',
+            event: 'cancel_requested',
+            summary: 'Frontend requested backend cancellation for this job.',
         });
         job.jobController?.abort?.();
         return response.send({
@@ -503,6 +598,7 @@ async function restorePersistedJobs() {
             ...snapshot,
             skipPersist: true,
         });
+        ensureJobLog(job);
 
         if (job.state !== 'running') {
             continue;
@@ -526,6 +622,17 @@ async function restorePersistedJobs() {
                 : job.acceptedCount,
             lastError: completed ? '' : structuredError.message,
             structuredError,
+        });
+        appendJobLog(job, {
+            source: 'backend',
+            event: 'restored_after_restart',
+            summary: completed
+                ? 'Retry Mobile restored this job as completed after backend restart.'
+                : 'Retry Mobile restored this job as failed after backend restart.',
+            detail: {
+                recoveryReason: recovery.reason,
+                detail: recovery.detail,
+            },
         });
         pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
     }

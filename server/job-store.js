@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const { deleteJobLog } = require('./job-log-store');
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const TERMINAL_JOB_RETENTION = 50;
@@ -129,6 +130,7 @@ function pruneTerminalJobUnits(handle, directories) {
         try {
             fs.rmSync(path.join(paths.jobsDir, `${unit.baseName}.recovery.json`), { force: true });
         } catch {}
+        deleteJobLog(unit.baseName, handle, directories);
     }
 }
 

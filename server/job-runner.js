@@ -1,4 +1,5 @@
 const { acquireWakeLock, notify, releaseWakeLock } = require('./notifier');
+const { appendJobLog } = require('./job-log-store');
 const { incrementCircuitBreaker, pruneTerminalJobUnits, resetCircuitBreaker } = require('./job-store');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { validateAcceptedText } = require('./validation');
@@ -19,6 +20,11 @@ async function runJob(job, environment) {
     acquireWakeLock();
     job.jobController ??= new AbortController();
     job.transportFailureCount = 0;
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'run_loop_started',
+        summary: 'Backend retry loop started.',
+    });
 
     try {
         await awaitNativeOutcome(job);
@@ -41,6 +47,15 @@ async function runJob(job, environment) {
 
             let responsePayload = null;
             try {
+                appendJobLog(job, {
+                    source: 'backend',
+                    event: 'attempt_started',
+                    summary: `Started retry attempt ${job.attemptCount}/${job.maxAttempts}.`,
+                    detail: {
+                        attemptNumber: job.attemptCount,
+                        phase: 'requesting_generation',
+                    },
+                });
                 responsePayload = await replayCapturedRequest(job, environment);
                 job.transportFailureCount = 0;
             } catch (error) {
@@ -66,6 +81,14 @@ async function runJob(job, environment) {
                     touchJob(job, {
                         phase: 'attempt_timed_out',
                     });
+                    appendJobLog(job, {
+                        source: 'backend',
+                        event: 'attempt_timed_out',
+                        summary: structuredError.message,
+                        detail: {
+                            attemptNumber: job.attemptCount,
+                        },
+                    });
                     await waitBeforeNextAttempt(job, 'transport');
                     continue;
                 }
@@ -77,6 +100,15 @@ async function runJob(job, environment) {
                     reason: structuredError.code,
                     message: structuredError.message,
                     phase: 'request_failed',
+                });
+                appendJobLog(job, {
+                    source: 'backend',
+                    event: 'attempt_request_failed',
+                    summary: structuredError.message,
+                    detail: {
+                        attemptNumber: job.attemptCount,
+                        code: structuredError.code,
+                    },
                 });
                 throw error;
             }
@@ -104,6 +136,17 @@ async function runJob(job, environment) {
                 });
                 touchJob(job, {
                     phase: 'validation_rejected',
+                });
+                appendJobLog(job, {
+                    source: 'backend',
+                    event: 'attempt_rejected',
+                    summary: formatValidationRejection(validation),
+                    detail: {
+                        attemptNumber: job.attemptCount,
+                        reason: validation.reason,
+                        characterCount: validation.metrics.characterCount,
+                        tokenCount: validation.metrics.tokenCount,
+                    },
                 });
                 await waitBeforeNextAttempt(job, 'validation');
                 continue;
@@ -176,6 +219,17 @@ async function runJob(job, environment) {
                         characterCount: validation.metrics.characterCount,
                         tokenCount: validation.metrics.tokenCount,
                     });
+                    appendJobLog(job, {
+                        source: 'backend',
+                        event: 'attempt_write_failed',
+                        summary: structuredError.message,
+                        detail: {
+                            attemptNumber: job.attemptCount,
+                            code: structuredError.code,
+                            characterCount: validation.metrics.characterCount,
+                            tokenCount: validation.metrics.tokenCount,
+                        },
+                    });
                     throw error;
                 }
             }
@@ -206,6 +260,18 @@ async function runJob(job, environment) {
                 targetMessageVersion: writeResult?.targetMessageVersion,
                 targetMessageIndex: writeResult?.targetMessageIndex,
             });
+            appendJobLog(job, {
+                source: 'backend',
+                event: 'attempt_accepted',
+                summary: `Accepted and wrote swipe ${job.acceptedCount}/${job.targetAcceptedCount}.`,
+                detail: {
+                    attemptNumber: job.attemptCount,
+                    characterCount: validation.metrics.characterCount,
+                    tokenCount: validation.metrics.tokenCount,
+                    targetMessageVersion: writeResult?.targetMessageVersion ?? null,
+                    targetMessageIndex: writeResult?.targetMessageIndex ?? null,
+                },
+            });
 
             notify(job.runConfig, 'success', {
                 acceptedCount: job.acceptedCount,
@@ -225,6 +291,11 @@ async function runJob(job, environment) {
             touchJob(job, {
                 state: 'completed',
                 phase: 'completed',
+            });
+            appendJobLog(job, {
+                source: 'backend',
+                event: 'job_completed',
+                summary: `Retry Mobile completed with ${job.acceptedCount}/${job.targetAcceptedCount} accepted outputs.`,
             });
             resetCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
             pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
@@ -247,6 +318,12 @@ async function runJob(job, environment) {
             lastError: structuredError.message,
             structuredError,
         });
+        appendJobLog(job, {
+            source: 'backend',
+            event: 'job_failed',
+            summary: structuredError.message,
+            detail: structuredError.detail || buildAttemptSummary(job),
+        });
         incrementCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
         pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
     } catch (error) {
@@ -259,6 +336,12 @@ async function runJob(job, environment) {
                 ...structuredError,
                 detail: structuredError.detail || buildAttemptSummary(job),
             },
+        });
+        appendJobLog(job, {
+            source: 'backend',
+            event: 'job_failed',
+            summary: structuredError.message,
+            detail: structuredError.detail || buildAttemptSummary(job),
         });
         incrementCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
         pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
@@ -578,6 +661,15 @@ function appendLifecycleLog(job, reason, message) {
         phase: job.phase,
         targetMessageIndex: job.targetMessageIndex,
     });
+    appendJobLog(job, {
+        source: 'backend',
+        event: reason,
+        summary: message,
+        detail: {
+            reason,
+            phase: job.phase,
+        },
+    });
 }
 
 async function replayCapturedRequest(job, environment) {
@@ -762,6 +854,11 @@ function finalizeCancelled(job) {
     touchJob(job, {
         state: 'cancelled',
         phase: 'cancelled',
+    });
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'job_cancelled',
+        summary: 'Retry Mobile cancelled this backend job.',
     });
     resetCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
     pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);

@@ -28,6 +28,7 @@ import {
     formatStructuredError,
     normalizeStructuredError,
 } from '../retry-error.js';
+import { syncRetryLogForStatus } from '../logs/retry-log.js';
 import { isRunningLikeState, resolveRunStateFromStatus } from '../core/run-state.js';
 
 const log = createLogger(LOG_PREFIX.APP);
@@ -356,6 +357,10 @@ export function createRunController({ runtime, render, statusController }) {
             runtime.machine.setBackendEvent('pending_native', `Reserved backend job ${result.jobId} while native generation tries the first reply.`);
             runtime.machine.recordEvent('backend', 'pending_native', `Reserved backend job ${result.jobId} while native generation is pending.`);
             runtime.machine.transition(RUN_STATE.CAPTURED_PENDING_NATIVE);
+            await syncRetryLogForStatus(runtime, runtime.activeJobStatus, {
+                force: true,
+                clearWhenMissing: false,
+            });
             statusController.startPolling(runId);
             render();
             return true;
@@ -368,6 +373,10 @@ export function createRunController({ runtime, render, statusController }) {
                 runtime.machine.setBackendEvent('attached', 'Attached to an existing backend run for this chat.');
                 runtime.machine.recordEvent('backend', 'attached', 'Attached to an existing backend run for this chat.');
                 runtime.machine.transition(resolveRunStateFromStatus(error.payload.job) || RUN_STATE.CAPTURED_PENDING_NATIVE);
+                await syncRetryLogForStatus(runtime, runtime.activeJobStatus, {
+                    force: true,
+                    clearWhenMissing: false,
+                });
                 statusController.startPolling(runId);
                 render();
                 showToast('info', EXTENSION_NAME, 'Attached to the existing Retry Mobile run for this chat.');
@@ -422,6 +431,10 @@ export function createRunController({ runtime, render, statusController }) {
             });
             runtime.machine.setBackendEvent('native_confirmed', `Backend confirmed native assistant turn ${nativeResult.assistantMessageIndex}.`);
             runtime.machine.recordEvent('backend', 'native_confirmed', `Backend confirmed native assistant turn ${nativeResult.assistantMessageIndex}.`);
+            await syncRetryLogForStatus(runtime, runtime.activeJobStatus, {
+                force: false,
+                clearWhenMissing: false,
+            });
             render();
             showToast('success', EXTENSION_NAME, 'Retry Mobile confirmed the native first reply. Backend retries are ready for this turn.');
         } catch (error) {
@@ -490,6 +503,10 @@ export function createRunController({ runtime, render, statusController }) {
             });
             runtime.machine.setBackendEvent('native_failed', `Backend accepted native failure hint: ${nativeResult.reason || 'unknown'}.`);
             runtime.machine.recordEvent('backend', 'native_failed', `Backend accepted native failure hint: ${nativeResult.reason || 'unknown'}.`);
+            await syncRetryLogForStatus(runtime, runtime.activeJobStatus, {
+                force: false,
+                clearWhenMissing: false,
+            });
             render();
         } catch (error) {
             if (!runtime.machine.isCurrentRun(runId)) {

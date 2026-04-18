@@ -4,7 +4,7 @@ import { fetchActiveJob, fetchLatestJob } from '../backend-api.js';
 import { syncRestoredStatus, clearCommittedReloads } from '../chat-sync.js';
 import { getChatIdentity, getContext } from '../st-context.js';
 import { reloadCurrentChatSafe } from '../st-chat.js';
-import { restoreLatestRunLog } from '../logs/retry-log.js';
+import { clearRetryLog, sendFrontendLogEvent, syncRetryLogForStatus } from '../logs/retry-log.js';
 import { isRunningLikeState } from '../core/run-state.js';
 
 const backendLog = createLogger(LOG_PREFIX.BACKEND);
@@ -42,7 +42,9 @@ export function createRecoveryController({ runtime, render, statusController, en
 
             const latestStatus = await fetchLatestJob(identity);
             if (latestStatus?.jobId) {
-                restoreLatestRunLog(runtime, latestStatus, identity);
+                runtime.activeJobId = null;
+                statusController.clearActiveBackendStatus();
+                await syncRetryLogForStatus(runtime, latestStatus, { force: true, clearWhenMissing: false });
                 clearCommittedReloads(runtime);
                 await reloadCurrentChatSafe();
                 render();
@@ -50,6 +52,7 @@ export function createRecoveryController({ runtime, render, statusController, en
             }
 
             if (options.reloadWhenMissing) {
+                clearRetryLog(runtime);
                 await reloadCurrentChatSafe();
                 render();
             }
@@ -71,14 +74,31 @@ export function createRecoveryController({ runtime, render, statusController, en
 
         runtime.recoverySignalsBound = true;
         document.addEventListener('visibilitychange', () => {
+            void sendFrontendLogEvent(runtime, {
+                event: 'visibility_changed',
+                summary: `Frontend visibility changed to ${document.visibilityState}.`,
+                detail: {
+                    visibilityState: document.visibilityState,
+                },
+            });
             if (document.visibilityState === 'visible') {
                 scheduleBackendRecovery('page_visible');
             }
         });
         window.addEventListener('focus', () => {
+            void sendFrontendLogEvent(runtime, {
+                event: 'window_focus',
+                summary: 'Frontend window regained focus.',
+                detail: null,
+            });
             scheduleBackendRecovery('window_focus');
         });
         window.addEventListener('online', () => {
+            void sendFrontendLogEvent(runtime, {
+                event: 'browser_online',
+                summary: 'Frontend browser reported an online transition.',
+                detail: null,
+            });
             scheduleBackendRecovery('browser_online');
         });
     }
@@ -152,6 +172,14 @@ export function createRecoveryController({ runtime, render, statusController, en
         clearCommittedReloads(runtime);
         runtime.lastAppliedVersion = 0;
         await syncRestoredStatus(status, runtime);
+        await syncRetryLogForStatus(runtime, status, { force: true, clearWhenMissing: false });
+        void sendFrontendLogEvent(runtime, {
+            event: 'frontend_restored',
+            summary: `Frontend restored backend job ${status.jobId} after ${reason}.`,
+            detail: {
+                reason,
+            },
+        });
 
         if (status.state === 'running') {
             statusController.ensurePolling(status.runId || status.jobId, 0);
@@ -165,7 +193,7 @@ export function createRecoveryController({ runtime, render, statusController, en
     function shouldAttemptFrontendRecovery() {
         const state = statusController.getCurrentState();
         return Boolean(runtime.activeJobId)
-            || Boolean(runtime.lastRunLog?.status?.jobId)
+            || Boolean(runtime.retryLogJobId)
             || isRunningLikeState(state)
             || state === RUN_STATE.FAILED;
     }

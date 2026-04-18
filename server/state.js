@@ -65,6 +65,9 @@ function createJob(input = {}) {
         capturedChatLength: Number.isFinite(Number(input.capturedChatLength)) ? Number(input.capturedChatLength) : 0,
         tokenizerDescriptor: input.tokenizerDescriptor ?? null,
         nativeGraceSeconds: Number.isFinite(Number(input.nativeGraceSeconds)) ? Number(input.nativeGraceSeconds) : 30,
+        logTitle: typeof input.logTitle === 'string' ? input.logTitle : '',
+        logUpdatedAt: typeof input.logUpdatedAt === 'string' ? input.logUpdatedAt : null,
+        logEntryCount: Number.isFinite(Number(input.logEntryCount)) ? Number(input.logEntryCount) : 0,
         jobController: null,
         skipPersist: Boolean(input.skipPersist),
     };
@@ -141,6 +144,12 @@ function appendAttemptLog(job, entry = {}) {
     return nextEntry;
 }
 
+function updateJobLogState(job, patch = {}) {
+    Object.assign(job, patch);
+    persistJobSnapshot(job);
+    return job;
+}
+
 function serializeJob(job) {
     if (!job) {
         return null;
@@ -181,6 +190,9 @@ function serializeJob(job) {
         generationNumber: Number(job.generationNumber) || 0,
         inspectionAttempts: Number(job.inspectionAttempts) || 0,
         orphanedAcceptedPreview: buildOrphanPreview(job.orphanedAcceptedResults),
+        logTitle: typeof job.logTitle === 'string' ? job.logTitle : '',
+        logUpdatedAt: typeof job.logUpdatedAt === 'string' ? job.logUpdatedAt : null,
+        logEntryCount: Number(job.logEntryCount) || 0,
     };
 }
 
@@ -234,6 +246,9 @@ function snapshotJobForPersistence(job) {
         capturedChatLength: job.capturedChatLength,
         tokenizerDescriptor: cloneValue(job.tokenizerDescriptor),
         nativeGraceSeconds: job.nativeGraceSeconds,
+        logTitle: job.logTitle,
+        logUpdatedAt: job.logUpdatedAt,
+        logEntryCount: job.logEntryCount,
     };
 }
 
@@ -348,6 +363,7 @@ module.exports = {
     appendAttemptLog,
     serializeJob,
     touchJob,
+    updateJobLogState,
     setPersistenceHandler,
     snapshotJobForPersistence,
 };

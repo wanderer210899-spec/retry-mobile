@@ -14,7 +14,11 @@ import {
     registerSlashCommand,
     showToast,
 } from '../st-context.js';
-import { getRetryLogContext, formatRetryLogText, buildRetryLogFileName } from '../logs/retry-log.js';
+import {
+    buildRetryLogFileName,
+    getRetryLogContext,
+    syncRetryLogForStatus,
+} from '../logs/retry-log.js';
 import { createStructuredError } from '../retry-error.js';
 
 const backendLog = createLogger(LOG_PREFIX.BACKEND);
@@ -130,8 +134,12 @@ export function createSystemController({
     }
 
     async function copyRetryLogFromUi() {
+        await syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
+            force: Boolean(runtime.activeJobStatus?.jobId),
+            clearWhenMissing: false,
+        });
         const logContext = getRetryLogContext(runtime);
-        const text = formatRetryLogText(runtime, logContext);
+        const text = logContext.text || '';
         if (!text.trim()) {
             showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
             return;
@@ -147,8 +155,12 @@ export function createSystemController({
     }
 
     async function downloadRetryLogFromUi() {
+        await syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
+            force: Boolean(runtime.activeJobStatus?.jobId),
+            clearWhenMissing: false,
+        });
         const logContext = getRetryLogContext(runtime);
-        const text = formatRetryLogText(runtime, logContext);
+        const text = logContext.text || '';
         if (!text.trim()) {
             showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
             return;
@@ -162,7 +174,7 @@ export function createSystemController({
         try {
             const anchor = document.createElement('a');
             anchor.href = url;
-            anchor.download = buildRetryLogFileName(logContext.status, logContext.snapshot);
+            anchor.download = buildRetryLogFileName(runtime);
             anchor.style.display = 'none';
             document.body.append(anchor);
             anchor.click();
@@ -216,6 +228,10 @@ export function createSystemController({
         runtime.activeTab = tab === 'system' ? 'system' : 'main';
         if (runtime.activeTab === 'system') {
             void refreshReleaseInfo();
+            void syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
+                force: Boolean(runtime.activeJobStatus?.jobId),
+                clearWhenMissing: false,
+            }).then(() => render());
         }
         render();
     }
@@ -223,6 +239,12 @@ export function createSystemController({
     function toggleRetryLog() {
         runtime.showRetryLog = !runtime.showRetryLog;
         runtime.activeTab = 'system';
+        if (runtime.showRetryLog) {
+            void syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
+                force: Boolean(runtime.activeJobStatus?.jobId),
+                clearWhenMissing: false,
+            }).then(() => render());
+        }
         render();
     }
 }

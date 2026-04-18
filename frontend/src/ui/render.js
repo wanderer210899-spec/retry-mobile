@@ -1,5 +1,4 @@
 import { formatStructuredError } from '../retry-error.js';
-import { getRetryLogContext, formatRetryLogText } from '../logs/retry-log.js';
 import { formatVisibleStateLabel, isRunningLikeState } from '../core/run-state.js';
 import { syncValidationControls } from './panel-bindings.js';
 
@@ -34,8 +33,7 @@ export function createRenderer({ runtime }) {
             runtime.releaseInfoContainer.innerHTML = renderReleaseInfo(runtime.releaseInfo);
         }
         if (runtime.retryLogContainer) {
-            const logContext = getRetryLogContext(runtime, snapshot);
-            runtime.retryLogContainer.textContent = formatRetryLogText(runtime, logContext);
+            runtime.retryLogContainer.textContent = runtime.retryLogText || 'No retry log is available yet.';
         }
         if (runtime.retryLogShell) {
             runtime.retryLogShell.hidden = !runtime.showRetryLog;

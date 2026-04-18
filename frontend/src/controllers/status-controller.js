@@ -25,7 +25,11 @@ import {
     formatStructuredError,
     normalizeStructuredError,
 } from '../retry-error.js';
-import { rememberRunLog } from '../logs/retry-log.js';
+import {
+    clearRetryLog,
+    sendFrontendLogEvent,
+    syncRetryLogForStatus,
+} from '../logs/retry-log.js';
 import { isRunningLikeState, resolveRunStateFromStatus } from '../core/run-state.js';
 
 const backendLog = createLogger(LOG_PREFIX.BACKEND);
@@ -78,6 +82,7 @@ export function createStatusController({ runtime, render }) {
     async function refreshChatState(identity = getChatIdentity(getContext())) {
         if (!identity?.chatId) {
             runtime.chatState = null;
+            clearRetryLog(runtime);
             render();
             return null;
         }
@@ -287,7 +292,10 @@ export function createStatusController({ runtime, render }) {
             }
         }
 
-        rememberRunLog(runtime);
+        await syncRetryLogForStatus(runtime, runtime.activeJobStatus, {
+            force: true,
+            clearWhenMissing: false,
+        });
 
         runtime.activeJobId = null;
         runtime.nativeFailureReported = false;
@@ -307,15 +315,9 @@ export function createStatusController({ runtime, render }) {
         runtime.activeJobStatus = status || null;
         runtime.activeJobStatusSource = status ? source : 'none';
         runtime.activeJobStatusObservedAt = status ? getStatusObservedAt(status) : null;
-
-        if (!status) {
-            return null;
+        if (status) {
+            clearTransportErrorIfRecovered(status);
         }
-
-        runtime.lastKnownJobStatus = cloneValue(status);
-        runtime.lastKnownJobStatusSource = source;
-        runtime.lastKnownJobStatusAt = runtime.activeJobStatusObservedAt;
-        clearTransportErrorIfRecovered(status);
         return runtime.activeJobStatus;
     }
 
@@ -346,6 +348,11 @@ export function createStatusController({ runtime, render }) {
         }
 
         runtime.machine.recordEvent(source, eventName, summary, transportContext);
+        void sendFrontendLogEvent(runtime, {
+            event: eventName,
+            summary,
+            detail: transportContext,
+        });
     }
 
     function shouldDeferBackendDisconnect(error) {
@@ -361,6 +368,13 @@ export function createStatusController({ runtime, render }) {
         runtime.machine.clearError();
         runtime.machine.setBackendEvent('connection_lost', summary);
         runtime.machine.recordEvent('backend', eventName, summary);
+        void sendFrontendLogEvent(runtime, {
+            event: eventName,
+            summary,
+            detail: {
+                disconnectPolicy: 'deferred_to_backend_truth',
+            },
+        });
 
         const fallbackState = resolveRunStateFromStatus(runtime.activeJobStatus) || RUN_STATE.BACKEND_RUNNING;
         if (!isRunningLikeState(runtime.machine.getSnapshot().state)) {
@@ -416,6 +430,13 @@ export function createStatusController({ runtime, render }) {
 
             if (Number(status.acceptedCount) > previousAccepted && runtime.settings.notifyOnSuccess) {
                 showToast('success', EXTENSION_NAME, `Retry Mobile accepted ${status.acceptedCount}/${status.targetAcceptedCount} generations.`);
+            }
+
+            if (signatureChanged || runtime.retryLogJobId !== status.jobId) {
+                await syncRetryLogForStatus(runtime, status, {
+                    force: false,
+                    clearWhenMissing: false,
+                });
             }
 
             if (status.state === 'completed') {
@@ -539,6 +560,8 @@ export function createStatusController({ runtime, render }) {
     function updatePollSignature(status) {
         const nextSignature = JSON.stringify({
             updatedAt: status?.updatedAt || '',
+            logUpdatedAt: status?.logUpdatedAt || '',
+            logEntryCount: Number(status?.logEntryCount) || 0,
             state: status?.state || '',
             phase: status?.phase || '',
             nativeState: status?.nativeState || '',
@@ -616,11 +639,5 @@ export function createStatusController({ runtime, render }) {
 
     function getStatusObservedAt(status) {
         return status?.updatedAt || status?.createdAt || null;
-    }
-
-    function cloneValue(value) {
-        return value == null
-            ? value
-            : JSON.parse(JSON.stringify(value));
     }
 }

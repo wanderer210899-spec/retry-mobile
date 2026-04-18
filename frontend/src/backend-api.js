@@ -137,6 +137,27 @@ export async function fetchJobOrphans(jobId) {
     });
 }
 
+export async function fetchJobLog(jobId) {
+    if (!jobId) {
+        return null;
+    }
+
+    return requestJson(`${BASE_URL}/log/${encodeURIComponent(jobId)}`, {
+        method: 'GET',
+    });
+}
+
+export async function postJobLogEvent(jobId, payload) {
+    if (!jobId) {
+        return { ok: false };
+    }
+
+    return requestJson(`${BASE_URL}/log-event/${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+        body: JSON.stringify(payload || {}),
+    });
+}
+
 async function requestJson(url, options) {
     const response = await fetch(url, {
         credentials: 'same-origin',

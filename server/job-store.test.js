@@ -97,6 +97,12 @@ test('pruning deletes job snapshots and their sidecars as a unit', () => {
                 phase: 'failed',
                 recoveredAt: new Date(2026, 0, 1).toISOString(),
             }));
+            fs.writeFileSync(path.join(paths.jobsDir, `${jobId}.log.jsonl`), `${JSON.stringify({
+                at: new Date(2026, 0, 1).toISOString(),
+                source: 'backend',
+                event: 'job_completed',
+                summary: 'Stored for pruning coverage.',
+            })}\n`);
         }
     }
 
@@ -104,6 +110,7 @@ test('pruning deletes job snapshots and their sidecars as a unit', () => {
 
     assert.equal(fs.existsSync(path.join(paths.jobsDir, 'job-00.json')), false);
     assert.equal(fs.existsSync(path.join(paths.jobsDir, 'job-00.recovery.json')), false);
+    assert.equal(fs.existsSync(path.join(paths.jobsDir, 'job-00.log.jsonl')), false);
     assert.equal(fs.existsSync(path.join(paths.jobsDir, 'job-54.json')), true);
 
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
