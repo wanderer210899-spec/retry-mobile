@@ -7,7 +7,7 @@ $RepoBranch = if ($RepoBranchArgument) {
 } elseif ($env:RETRY_MOBILE_BRANCH) {
     [string]$env:RETRY_MOBILE_BRANCH
 } else {
-    'main'
+    'feature/screen_off_initial_generation'
 }
 $TempRoot = Join-Path $env:TEMP ('retry-mobile-installer-' + [guid]::NewGuid().ToString('N'))
 $RepoDir = Join-Path $TempRoot 'retry-mobile'

@@ -328,6 +328,7 @@ async function refreshReleaseInfo() {
         backendLog.warn('Could not fetch release info.', error);
         runtime.releaseInfo = {
             repositoryUrl: REPOSITORY_URL,
+            branch: 'unknown',
             update: {
                 canCheck: false,
                 hasUpdate: false,
@@ -335,9 +336,12 @@ async function refreshReleaseInfo() {
             },
             installed: {
                 version: '',
+                branch: 'unknown',
+                commit: '',
             },
             latest: {
                 version: '',
+                branch: 'unknown',
             },
             instructions: {
                 updateNow: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.',
@@ -1650,6 +1654,10 @@ function renderReleaseInfo() {
     const info = runtime.releaseInfo;
     const localVersion = info.installed?.version || 'unknown';
     const latestVersion = info.latest?.version || 'unknown';
+    const branch = info.installed?.branch || info.branch || 'unknown';
+    const commit = typeof info.installed?.commit === 'string' && info.installed.commit
+        ? info.installed.commit.slice(0, 12)
+        : '';
     const updateMessage = info.update?.message || 'Update information unavailable.';
     const hasUpdate = Boolean(info.update?.hasUpdate);
     const updateStateClass = hasUpdate ? 'rm-release-card__status--warning' : 'rm-release-card__status--ok';
@@ -1662,6 +1670,7 @@ function renderReleaseInfo() {
         <div class="rm-release-card__line">${escapeHtml(updateMessage)}</div>
         <div class="rm-release-card__grid">
             <div><strong>Version</strong><span>${escapeHtml(localVersion)} → ${escapeHtml(latestVersion)}</span></div>
+            <div><strong>Branch</strong><span>${escapeHtml(branch)}${commit ? ` @ ${escapeHtml(commit)}` : ''}</span></div>
         </div>
     `;
 }

@@ -1,16 +1,30 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { readInstallSourceFromRoot, resolvePluginRuntimeRoot } = require('./install-source');
 const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./plugin-meta');
 
 const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https://raw.githubusercontent.com/');
 const RELEASE_MANIFEST_FILE = 'release.json';
 
 async function getReleaseInfo() {
-    const localRelease = readJsonFile(path.join(__dirname, '..', RELEASE_MANIFEST_FILE)) || {};
+    const runtimeRoot = resolvePluginRuntimeRoot(__dirname);
+    const installSource = readInstallSourceFromRoot(runtimeRoot, {
+        defaultBranch: DEFAULT_BRANCH,
+        repositoryUrl: REPOSITORY_URL,
+    }) || {
+        branch: DEFAULT_BRANCH,
+        commit: '',
+        installedAt: '',
+        repositoryUrl: REPOSITORY_URL,
+        selectedFrom: 'default',
+    };
+    const selectedBranch = installSource.branch || DEFAULT_BRANCH;
+    const localRelease = readJsonFile(path.join(runtimeRoot, RELEASE_MANIFEST_FILE)) || {};
     const localVersion = typeof localRelease.version === 'string' ? localRelease.version : '';
     const latest = {
         version: '',
+        branch: selectedBranch,
         checkedAt: new Date().toISOString(),
     };
 
@@ -21,7 +35,7 @@ async function getReleaseInfo() {
     };
 
     try {
-        const latestRelease = await fetchLatestReleaseManifest();
+        const latestRelease = await fetchLatestReleaseManifest(selectedBranch);
         latest.version = typeof latestRelease.version === 'string' ? latestRelease.version : '';
         latest.checkedAt = new Date().toISOString();
 
@@ -40,21 +54,25 @@ async function getReleaseInfo() {
         pluginId: PLUGIN_ID,
         pluginName: PLUGIN_NAME,
         repositoryUrl: REPOSITORY_URL,
-        branch: DEFAULT_BRANCH,
+        branch: selectedBranch,
         installed: {
             version: localVersion,
+            branch: selectedBranch,
+            commit: installSource.commit || '',
+            installedAt: installSource.installedAt || '',
+            selectedFrom: installSource.selectedFrom || '',
         },
         latest,
         update,
         instructions: {
-            updateNow: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.',
-            addProfile: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now to add another profile or install for everyone.',
+            updateNow: `From your local SillyTavern directory, run the Retry Mobile bootstrap installer for branch "${selectedBranch}" and choose Install / Update now.`,
+            addProfile: `From your local SillyTavern directory, run the Retry Mobile bootstrap installer for branch "${selectedBranch}" and choose Install / Update now to add another profile or install for everyone.`,
         },
     };
 }
 
-async function fetchLatestReleaseManifest() {
-    return fetchJson(`${RAW_REPOSITORY_BASE}/${DEFAULT_BRANCH}/${RELEASE_MANIFEST_FILE}`);
+async function fetchLatestReleaseManifest(branch) {
+    return fetchJson(`${RAW_REPOSITORY_BASE}/${branch}/${RELEASE_MANIFEST_FILE}`);
 }
 
 async function fetchJson(url) {

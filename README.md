@@ -24,7 +24,14 @@ Set-Location "C:\path\to\your\SillyTavern-Launcher"
 2. Run this command:
 
 ```powershell
-irm https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/main/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/feature/screen_off_initial_generation/bootstrap.ps1 | iex
+```
+
+To install a different branch on a later run, set `RETRY_MOBILE_BRANCH` first:
+
+```powershell
+$env:RETRY_MOBILE_BRANCH = 'main'
+irm https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/feature/screen_off_initial_generation/bootstrap.ps1 | iex
 ```
 
 3. Finished. The installer will:
@@ -55,7 +62,13 @@ cd ~/SillyTavern
 2. Run this command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/feature/screen_off_initial_generation/bootstrap.sh | bash
+```
+
+To install a different branch on a later run, set `RETRY_MOBILE_BRANCH` on the `bash` side:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/feature/screen_off_initial_generation/bootstrap.sh | RETRY_MOBILE_BRANCH=main bash
 ```
 
 3. Finished. The installer will:
@@ -83,14 +96,14 @@ Navigate to your local SillyTavern installation and run the same bootstrap comma
 
 ```powershell
 Set-Location "C:\path\to\your\SillyTavern"
-irm https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/main/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/feature/screen_off_initial_generation/bootstrap.ps1 | iex
 ```
 
 ### Android / Termux
 
 ```bash
 cd ~/SillyTavern
-curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/feature/screen_off_initial_generation/bootstrap.sh | bash
 ```
 
 Then choose:

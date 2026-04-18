@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/wanderer210899-spec/retry-mobile.git"
-REPO_BRANCH="${1:-${RETRY_MOBILE_BRANCH:-main}}"
+REPO_BRANCH="${1:-${RETRY_MOBILE_BRANCH:-feature/screen_off_initial_generation}}"
 TEMP_ROOT="$(mktemp -d -t retry-mobile-installer-XXXXXX)"
 REPO_DIR="$TEMP_ROOT/retry-mobile"
 LAUNCH_DIRECTORY="$PWD"

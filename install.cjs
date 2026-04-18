@@ -3,6 +3,7 @@ const path = require('node:path');
 const process = require('node:process');
 const readline = require('node:readline/promises');
 
+const { resolveInstallSource, writeInstallSource } = require('./server/install-source');
 const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./server/plugin-meta');
 
 const LEGACY_PLUGIN_ID = 'auto-reroll';
@@ -11,7 +12,6 @@ const FRONTEND_SOURCE = path.join(SOURCE_ROOT, 'frontend');
 const BACKEND_SOURCE = path.join(SOURCE_ROOT, 'server');
 const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https://raw.githubusercontent.com/');
 const RELEASE_MANIFEST_FILE = 'release.json';
-const INSTALLER_BRANCH = resolveInstallerBranch();
 
 main().catch((error) => {
     console.error(`\n${PLUGIN_NAME} installer failed.`);
@@ -31,6 +31,7 @@ async function main() {
         let keepRunning = true;
         while (keepRunning) {
             refreshProfiles(layout);
+            layout.installSource = resolveLayoutInstallSource(layout);
             await refreshInstallerReleaseStatus(layout);
             renderMenu(layout, platform);
             const choice = await promptMainMenuChoice(rl);
@@ -98,6 +99,7 @@ function resolveLocalLayout(startDir, platform) {
         globalFrontendTarget: path.join(stRoot, 'public', 'scripts', 'extensions', 'third-party', PLUGIN_ID),
         globalFrontendInstalled: false,
         releaseUpdate: null,
+        installSource: null,
         profiles: [],
     };
 
@@ -206,6 +208,7 @@ function createProfileRecord(root, handle = path.basename(root)) {
 }
 
 function renderMenu(layout, platform) {
+    const installSource = layout.installSource || resolveLayoutInstallSource(layout);
     console.log('\n ==============================================================');
     console.log(` | > ${PLUGIN_NAME} Installer`);
     console.log(' ==============================================================');
@@ -222,7 +225,7 @@ function renderMenu(layout, platform) {
             console.log(` |   Working dir: ${truncateMiddle(layout.workingDir, 42)}`);
             console.log(` |   ST root:     ${truncateMiddle(layout.stRoot, 42)}`);
             console.log(` |   Repository:  ${truncateMiddle(REPOSITORY_URL, 42)}`);
-            console.log(` |   Branch:      ${truncateMiddle(INSTALLER_BRANCH, 42)}`);
+            console.log(` |   Branch:      ${truncateMiddle(installSource.branch, 42)}`);
             console.log(` |   Source Ver:  ${truncateMiddle(formatInstallerReleaseStatus(layout.releaseUpdate), 42)}`);
             console.log(' ______________________________________________________________');
     console.log(' | Retry Mobile Status:');
@@ -369,7 +372,7 @@ async function installOrUpdateNow(rl, layout, platform) {
             return;
         }
 
-        installFrontendForProfiles(target.profiles);
+        installFrontendForProfiles(layout, target.profiles);
         refreshProfiles(layout);
         completionLines.push(`Installed ${PLUGIN_NAME} frontend for ${target.profiles.map((profile) => profile.handle).join(', ')}.`);
     }
@@ -483,17 +486,20 @@ async function uninstallFlow(rl, layout) {
 function installBackend(layout) {
     replaceDirectory(BACKEND_SOURCE, layout.backendTarget);
     fs.copyFileSync(path.join(SOURCE_ROOT, RELEASE_MANIFEST_FILE), path.join(layout.backendTarget, RELEASE_MANIFEST_FILE));
+    writeInstallSource(layout.backendTarget, buildInstalledMetadata(layout.installSource));
 }
 
 function installGlobalFrontend(layout) {
     ensureWritable(layout.globalExtensionsDir, true);
     replaceDirectory(FRONTEND_SOURCE, layout.globalFrontendTarget);
+    writeInstallSource(layout.globalFrontendTarget, buildInstalledMetadata(layout.installSource));
 }
 
-function installFrontendForProfiles(profiles) {
+function installFrontendForProfiles(layout, profiles) {
     for (const profile of profiles) {
         ensureWritable(profile.extensionsDir, true);
         replaceDirectory(FRONTEND_SOURCE, profile.frontendTarget);
+        writeInstallSource(profile.frontendTarget, buildInstalledMetadata(layout.installSource));
     }
 }
 
@@ -578,10 +584,10 @@ function findExistingPath(targetPath) {
 }
 
 async function refreshInstallerReleaseStatus(layout) {
-    layout.releaseUpdate = await readInstallerReleaseUpdateInfo(SOURCE_ROOT);
+    layout.releaseUpdate = await readInstallerReleaseUpdateInfo(SOURCE_ROOT, layout.installSource?.branch || DEFAULT_BRANCH);
 }
 
-async function readInstallerReleaseUpdateInfo(repoPath) {
+async function readInstallerReleaseUpdateInfo(repoPath, branch) {
     const result = {
         canCheck: false,
         hasUpdate: false,
@@ -592,7 +598,7 @@ async function readInstallerReleaseUpdateInfo(repoPath) {
 
     try {
         const localRelease = readJsonFile(path.join(repoPath, RELEASE_MANIFEST_FILE)) || {};
-        const remoteRelease = await fetchJson(`${RAW_REPOSITORY_BASE}/${INSTALLER_BRANCH}/${RELEASE_MANIFEST_FILE}`);
+        const remoteRelease = await fetchJson(`${RAW_REPOSITORY_BASE}/${branch}/${RELEASE_MANIFEST_FILE}`);
         result.localVersion = typeof localRelease.version === 'string' ? localRelease.version : '';
         result.remoteVersion = typeof remoteRelease?.version === 'string' ? remoteRelease.version : '';
         result.canCheck = Boolean(result.localVersion && result.remoteVersion);
@@ -609,9 +615,28 @@ async function readInstallerReleaseUpdateInfo(repoPath) {
     }
 }
 
-function resolveInstallerBranch() {
-    const value = String(process.env.RETRY_MOBILE_BRANCH || DEFAULT_BRANCH || '').trim();
-    return value || 'main';
+function resolveLayoutInstallSource(layout) {
+    return resolveInstallSource({
+        repoRoot: SOURCE_ROOT,
+        overrideBranch: process.env.RETRY_MOBILE_BRANCH,
+        existingRoots: [
+            layout.backendTarget,
+            layout.globalFrontendTarget,
+            ...layout.profiles.map((profile) => profile.frontendTarget),
+        ],
+        defaultBranch: DEFAULT_BRANCH,
+        repositoryUrl: REPOSITORY_URL,
+    });
+}
+
+function buildInstalledMetadata(installSource) {
+    return {
+        branch: installSource?.branch || DEFAULT_BRANCH,
+        commit: installSource?.commit || '',
+        repositoryUrl: REPOSITORY_URL,
+        installedAt: new Date().toISOString(),
+        selectedFrom: installSource?.selectedFrom || '',
+    };
 }
 
 async function fetchJson(url) {
