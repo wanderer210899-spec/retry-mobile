@@ -6,8 +6,8 @@ import {
     NATIVE_WAIT_PROGRESS_TIMEOUT_MS,
     NATIVE_WAIT_TIMEOUT_MS,
 } from './constants.js';
-import { getContext, getCurrentChatArray, getEventTypes, subscribeEvent } from './st-context.js';
-import { confirmTargetTurn } from './st-chat.js';
+import { getChatIdentity, getContext, getCurrentChatArray, getEventTypes, subscribeEvent } from './st-context.js';
+import { confirmTargetTurn, isSameChat, wasInternalChatReloadRecentlyTriggered } from './st-chat.js';
 import { createStructuredError } from './retry-error.js';
 
 export function waitForNativeCompletion({
@@ -85,6 +85,12 @@ export function waitForNativeCompletion({
         if (eventTypes.CHAT_CHANGED) {
             stopListening.push(
                 subscribeEvent(eventTypes.CHAT_CHANGED, () => {
+                    const liveIdentity = getChatIdentity(getContext());
+                    if (isSameChat(fingerprint?.chatIdentity, liveIdentity) && wasInternalChatReloadRecentlyTriggered(liveIdentity)) {
+                        onEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED triggered by Retry Mobile refreshing the current chat.');
+                        return;
+                    }
+
                     fail(createStructuredError(
                         'capture_chat_changed',
                         'Retry Mobile stopped because the active chat changed before native completion was confirmed.',

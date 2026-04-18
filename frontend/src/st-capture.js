@@ -1,5 +1,5 @@
 import { payloadHasRequiredKeys, clonePayload, getContext, getCurrentChatArray, getEventTypes, getChatIdentity, getUserMessageIndexFromEvent, subscribeEvent } from './st-context.js';
-import { buildFingerprint, isSameChat, normalizeRequestType } from './st-chat.js';
+import { buildFingerprint, isSameChat, normalizeRequestType, wasInternalChatReloadRecentlyTriggered } from './st-chat.js';
 import { createStructuredError } from './retry-error.js';
 
 export function createArmCaptureSession({
@@ -84,6 +84,12 @@ export function createArmCaptureSession({
                 return;
             }
 
+            const liveIdentity = getChatIdentity(getContext());
+            if (isSameChat(chatIdentity, liveIdentity) && wasInternalChatReloadRecentlyTriggered(liveIdentity)) {
+                onEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED triggered by Retry Mobile refreshing the current chat.');
+                return;
+            }
+
             close();
             onCancel?.(createStructuredError(
                 'capture_chat_changed',
@@ -120,4 +126,3 @@ export function createArmCaptureSession({
         });
     }
 }
-

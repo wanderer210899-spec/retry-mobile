@@ -5,7 +5,6 @@ import { syncRestoredStatus, clearCommittedReloads } from '../chat-sync.js';
 import { getChatIdentity, getContext } from '../st-context.js';
 import { reloadCurrentChatSafe } from '../st-chat.js';
 import { clearRetryLog, sendFrontendLogEvent, syncRetryLogForStatus } from '../logs/retry-log.js';
-import { isRunningLikeState } from '../core/run-state.js';
 
 const backendLog = createLogger(LOG_PREFIX.BACKEND);
 
@@ -26,45 +25,57 @@ export function createRecoveryController({ runtime, render, statusController, en
     }
 
     async function recoverFrontendFromBackend(reason, options = {}) {
-        const identity = getChatIdentity(getContext());
-        if (!identity?.chatId) {
-            return false;
+        if (runtime.recoveryPromise) {
+            return await runtime.recoveryPromise;
         }
 
-        await statusController.refreshChatState(identity);
+        runtime.recoveryPromise = (async () => {
+            const identity = getChatIdentity(getContext());
+            if (!identity?.chatId) {
+                return false;
+            }
+
+            await statusController.refreshChatState(identity);
+
+            try {
+                const status = await fetchActiveJob(identity);
+                if (status?.jobId) {
+                    await restoreRunningJobStatus(status, identity, reason);
+                    return true;
+                }
+
+                const latestStatus = await fetchLatestJob(identity);
+                if (latestStatus?.jobId) {
+                    runtime.activeJobId = null;
+                    statusController.clearActiveBackendStatus();
+                    await syncRetryLogForStatus(runtime, latestStatus, { force: true, clearWhenMissing: false });
+                    clearCommittedReloads(runtime);
+                    await reloadCurrentChatSafe();
+                    render();
+                    return true;
+                }
+
+                if (options.reloadWhenMissing) {
+                    clearRetryLog(runtime);
+                    await reloadCurrentChatSafe();
+                    render();
+                }
+            } catch (error) {
+                backendLog.warn(`Could not recover frontend state from backend (${reason}).`, error);
+                statusController.noteTransportError(error, 'backend', 'restore_failed', `Could not recover frontend state from backend (${reason}).`, {
+                    endpoint: '/active-or-latest',
+                    occurredDuring: 'restore',
+                });
+            }
+
+            return false;
+        })();
 
         try {
-            const status = await fetchActiveJob(identity);
-            if (status?.jobId) {
-                await restoreRunningJobStatus(status, identity, reason);
-                return true;
-            }
-
-            const latestStatus = await fetchLatestJob(identity);
-            if (latestStatus?.jobId) {
-                runtime.activeJobId = null;
-                statusController.clearActiveBackendStatus();
-                await syncRetryLogForStatus(runtime, latestStatus, { force: true, clearWhenMissing: false });
-                clearCommittedReloads(runtime);
-                await reloadCurrentChatSafe();
-                render();
-                return true;
-            }
-
-            if (options.reloadWhenMissing) {
-                clearRetryLog(runtime);
-                await reloadCurrentChatSafe();
-                render();
-            }
-        } catch (error) {
-            backendLog.warn(`Could not recover frontend state from backend (${reason}).`, error);
-            statusController.noteTransportError(error, 'backend', 'restore_failed', `Could not recover frontend state from backend (${reason}).`, {
-                endpoint: '/active-or-latest',
-                occurredDuring: 'restore',
-            });
+            return await runtime.recoveryPromise;
+        } finally {
+            runtime.recoveryPromise = null;
         }
-
-        return false;
     }
 
     function bindFrontendRecoverySignals() {
@@ -193,8 +204,10 @@ export function createRecoveryController({ runtime, render, statusController, en
     function shouldAttemptFrontendRecovery() {
         const state = statusController.getCurrentState();
         return Boolean(runtime.activeJobId)
-            || Boolean(runtime.retryLogJobId)
-            || isRunningLikeState(state)
+            || state === RUN_STATE.CAPTURED_PENDING_NATIVE
+            || state === RUN_STATE.NATIVE_CONFIRMED
+            || state === RUN_STATE.NATIVE_ABANDONED
+            || state === RUN_STATE.BACKEND_RUNNING
             || state === RUN_STATE.FAILED;
     }
 }

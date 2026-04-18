@@ -1,6 +1,13 @@
 import { getChatIdentity, getContext, getCurrentChatArray } from './st-context.js';
 import { createStructuredError } from './retry-error.js';
 
+const INTERNAL_CHAT_RELOAD_GRACE_MS = 1500;
+
+let internalChatReloadState = {
+    at: 0,
+    chatIdentity: null,
+};
+
 export function normalizeRequestType(value) {
     return typeof value === 'string'
         ? value.trim().toLowerCase()
@@ -146,14 +153,58 @@ export function getAssistantMessageAt(index, context = getContext()) {
         : null;
 }
 
+export function markInternalChatReload(chatIdentity = getChatIdentity(getContext())) {
+    internalChatReloadState = {
+        at: Date.now(),
+        chatIdentity: cloneChatIdentity(chatIdentity),
+    };
+}
+
+export function wasInternalChatReloadRecentlyTriggered(chatIdentity = getChatIdentity(getContext())) {
+    if (!internalChatReloadState.at) {
+        return false;
+    }
+
+    if ((Date.now() - internalChatReloadState.at) > INTERNAL_CHAT_RELOAD_GRACE_MS) {
+        return false;
+    }
+
+    if (!internalChatReloadState.chatIdentity || !chatIdentity) {
+        return true;
+    }
+
+    return isSameChat(chatIdentity, internalChatReloadState.chatIdentity);
+}
+
+export function clearInternalChatReloadMarker() {
+    internalChatReloadState = {
+        at: 0,
+        chatIdentity: null,
+    };
+}
+
 export async function reloadCurrentChatSafe(context = getContext()) {
     if (typeof context?.reloadCurrentChat === 'function') {
+        markInternalChatReload(getChatIdentity(context));
         await context.reloadCurrentChat();
+        markInternalChatReload(getChatIdentity(context));
         return true;
     }
 
     return false;
 }
 
+function cloneChatIdentity(chatIdentity) {
+    if (!chatIdentity) {
+        return null;
+    }
 
+    return {
+        kind: String(chatIdentity.kind || ''),
+        chatId: String(chatIdentity.chatId || ''),
+        groupId: chatIdentity.groupId == null
+            ? null
+            : String(chatIdentity.groupId),
+    };
+}
 

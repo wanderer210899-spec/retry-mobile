@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { inspectRecoverySnapshot } = require('./chat-writer');
+const { applyAcceptedResultToMessage, inspectRecoverySnapshot } = require('./chat-writer');
 
 function createDirectories(rootPath) {
     const directories = {
@@ -117,4 +117,88 @@ test('recovery becomes ambiguous when the live chat has fewer tagged swipes than
     assert.equal(result.ceiling, 0);
 
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
+});
+
+test('appending an accepted swipe preserves the currently selected swipe', () => {
+    const message = {
+        mes: 'Current swipe',
+        extra: {
+            slot: 'current',
+        },
+        send_date: '2026-04-18T22:16:00.000Z',
+        gen_started: '2026-04-18T22:16:00.000Z',
+        gen_finished: '2026-04-18T22:16:00.000Z',
+        swipes: [
+            'Older swipe',
+            'Current swipe',
+        ],
+        swipe_info: [
+            {
+                send_date: '2026-04-18T22:15:00.000Z',
+                gen_started: '2026-04-18T22:15:00.000Z',
+                gen_finished: '2026-04-18T22:15:00.000Z',
+                extra: {
+                    slot: 'older',
+                },
+            },
+            {
+                send_date: '2026-04-18T22:16:00.000Z',
+                gen_started: '2026-04-18T22:16:00.000Z',
+                gen_finished: '2026-04-18T22:16:00.000Z',
+                extra: {
+                    slot: 'current',
+                },
+            },
+        ],
+        swipe_id: 1,
+    };
+
+    applyAcceptedResultToMessage({
+        jobId: 'job-1',
+        acceptedCount: 1,
+        capturedRequest: {
+            model: 'test-model',
+        },
+    }, message, {
+        text: 'Newest retry swipe',
+        characterCount: 1234,
+        tokenCount: 321,
+    }, '2026-04-18T22:17:00.000Z');
+
+    assert.equal(message.swipes.length, 3);
+    assert.equal(message.swipes[2], 'Newest retry swipe');
+    assert.equal(message.swipe_id, 1);
+    assert.equal(message.mes, 'Current swipe');
+    assert.deepEqual(message.extra, {
+        slot: 'current',
+    });
+    assert.equal(message.send_date, '2026-04-18T22:16:00.000Z');
+});
+
+test('the first accepted result seeds swipe storage and selects it', () => {
+    const message = {
+        mes: '',
+        extra: {},
+        swipes: [],
+        swipe_info: [],
+        swipe_id: 0,
+    };
+
+    applyAcceptedResultToMessage({
+        jobId: 'job-2',
+        acceptedCount: 0,
+        capturedRequest: {
+            model: 'seed-model',
+        },
+    }, message, {
+        text: 'First accepted swipe',
+        characterCount: 456,
+        tokenCount: 78,
+    }, '2026-04-18T22:18:00.000Z');
+
+    assert.deepEqual(message.swipes, ['First accepted swipe']);
+    assert.equal(message.swipe_id, 0);
+    assert.equal(message.mes, 'First accepted swipe');
+    assert.equal(message.extra.retryMobileJobId, 'job-2');
+    assert.equal(message.send_date, '2026-04-18T22:18:00.000Z');
 });

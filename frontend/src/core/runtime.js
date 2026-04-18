@@ -71,6 +71,7 @@ export function createRuntime() {
         transportErrorContext: null,
         disconnectPolicy: 'none',
         recoveryHandle: 0,
+        recoveryPromise: null,
         recoverySignalsBound: false,
     };
 }

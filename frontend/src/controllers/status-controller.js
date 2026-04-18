@@ -18,7 +18,7 @@ import {
     showToast,
     subscribeEvent,
 } from '../st-context.js';
-import { reloadCurrentChatSafe } from '../st-chat.js';
+import { reloadCurrentChatSafe, wasInternalChatReloadRecentlyTriggered } from '../st-chat.js';
 import { clearCommittedReloads, syncRemoteStatus } from '../chat-sync.js';
 import {
     createStructuredError,
@@ -109,8 +109,11 @@ export function createStatusController({ runtime, render }) {
         }
 
         subscribeEvent(eventTypes.CHAT_CHANGED, () => {
-            clearCommittedReloads(runtime);
-            void refreshChatState();
+            const liveIdentity = getChatIdentity(getContext());
+            if (!wasInternalChatReloadRecentlyTriggered(liveIdentity)) {
+                clearCommittedReloads(runtime);
+            }
+            void refreshChatState(liveIdentity);
         }, getContext());
     }
 

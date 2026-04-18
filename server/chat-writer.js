@@ -36,25 +36,7 @@ async function writeAcceptedResult(job, accepted) {
 
     const targetMessage = currentChat[targetIndex];
     const timestamp = new Date().toISOString();
-    const nextExtra = buildAcceptedExtra(job, targetMessage.extra, accepted);
-    const shouldSeedResult = job.acceptedCount === 0 && !messageHasMeaningfulContent(targetMessage);
-
-    targetMessage.extra = nextExtra;
-    targetMessage.send_date = timestamp;
-    targetMessage.gen_started = timestamp;
-    targetMessage.gen_finished = timestamp;
-    targetMessage.mes = accepted.text;
-
-    if (shouldSeedResult) {
-        targetMessage.swipes = [accepted.text];
-        targetMessage.swipe_info = [createSwipeInfo(timestamp, nextExtra)];
-        targetMessage.swipe_id = 0;
-    } else {
-        normalizeSwipeShape(targetMessage);
-        targetMessage.swipes.push(accepted.text);
-        targetMessage.swipe_info.push(createSwipeInfo(timestamp, nextExtra));
-        targetMessage.swipe_id = targetMessage.swipes.length - 1;
-    }
+    applyAcceptedResultToMessage(job, targetMessage, accepted, timestamp);
 
     try {
         await persistLiveChat(job, currentChat);
@@ -84,6 +66,33 @@ async function writeAcceptedResult(job, accepted) {
         targetMessageVersion: job.targetMessageVersion,
         targetMessage: job.targetMessage,
     };
+}
+
+function applyAcceptedResultToMessage(job, targetMessage, accepted, timestamp = new Date().toISOString()) {
+    const nextExtra = buildAcceptedExtra(job, targetMessage.extra, accepted);
+    const shouldSeedResult = job.acceptedCount === 0 && !messageHasMeaningfulContent(targetMessage);
+
+    if (shouldSeedResult) {
+        targetMessage.swipes = [accepted.text];
+        targetMessage.swipe_info = [createSwipeInfo(timestamp, nextExtra)];
+        syncVisibleFieldsToSwipe(targetMessage, 0, {
+            fallbackMes: accepted.text,
+            fallbackExtra: nextExtra,
+            fallbackTimestamp: timestamp,
+        });
+        return targetMessage;
+    }
+
+    normalizeSwipeShape(targetMessage);
+    const preservedSwipeId = clampSwipeId(targetMessage.swipe_id, targetMessage.swipes.length);
+    targetMessage.swipes.push(accepted.text);
+    targetMessage.swipe_info.push(createSwipeInfo(timestamp, nextExtra));
+    syncVisibleFieldsToSwipe(targetMessage, preservedSwipeId, {
+        fallbackMes: targetMessage.swipes[preservedSwipeId],
+        fallbackExtra: targetMessage.extra,
+        fallbackTimestamp: firstString(targetMessage.send_date, timestamp),
+    });
+    return targetMessage;
 }
 
 function inspectNativeAssistantState(job) {
@@ -455,6 +464,37 @@ function normalizeSwipeShape(message) {
     }
 }
 
+function syncVisibleFieldsToSwipe(message, swipeId, options = {}) {
+    normalizeSwipeShape(message);
+
+    const resolvedSwipeId = clampSwipeId(swipeId, message.swipes.length);
+    const activeSwipeInfo = Array.isArray(message.swipe_info)
+        ? message.swipe_info[resolvedSwipeId]
+        : null;
+    const activeTimestamp = firstString(
+        activeSwipeInfo?.send_date,
+        activeSwipeInfo?.gen_finished,
+        activeSwipeInfo?.gen_started,
+        options.fallbackTimestamp,
+    );
+
+    message.swipe_id = resolvedSwipeId;
+    message.mes = String(message.swipes[resolvedSwipeId] ?? options.fallbackMes ?? '');
+    message.extra = clone(activeSwipeInfo?.extra || options.fallbackExtra || {});
+    message.send_date = activeTimestamp;
+    message.gen_started = firstString(activeSwipeInfo?.gen_started, activeTimestamp);
+    message.gen_finished = firstString(activeSwipeInfo?.gen_finished, activeTimestamp);
+}
+
+function clampSwipeId(value, swipeCount) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || swipeCount <= 0) {
+        return 0;
+    }
+
+    return Math.max(0, Math.min(Math.trunc(numeric), swipeCount - 1));
+}
+
 function messageHasMeaningfulContent(message) {
     if (!message || typeof message !== 'object') {
         return false;
@@ -694,6 +734,7 @@ function sanitizeFileName(value) {
 }
 
 module.exports = {
+    applyAcceptedResultToMessage,
     assertWritePathReady,
     inspectNativeAssistantState,
     inspectRecoverySnapshot,
