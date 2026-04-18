@@ -3,8 +3,11 @@ import {
     EXTENSION_ID,
     EXTENSION_NAME,
     LOG_PREFIX,
+    POLL_INTERVAL_FAST_MS,
+    POLL_INTERVAL_SLOW_MS,
+    POLL_INTERVAL_STEADY_MS,
+    PROTOCOL_VERSION,
     PANEL_ID,
-    POLL_INTERVAL_MS,
     REPOSITORY_URL,
     RUN_MODE,
     RUN_STATE,
@@ -19,12 +22,15 @@ import {
     getContext,
     registerSlashCommand,
     showToast,
+    subscribeEvent,
 } from './st-context.js';
 import {
     cancelBackendJob,
     confirmNativeJob,
+    fetchChatState,
     fetchActiveJob,
     fetchCapabilities,
+    fetchJobOrphans,
     fetchJobStatus,
     fetchReleaseInfo,
     getStructuredErrorFromApi,
@@ -33,7 +39,7 @@ import {
 } from './backend-api.js';
 import { runDiagnostics } from './diagnostics.js';
 import { getQuickReplyStatus, setQuickReplyAttached } from './quick-reply.js';
-import { syncRemoteStatus } from './chat-sync.js';
+import { clearCommittedReloads, syncRemoteStatus, syncRestoredStatus } from './chat-sync.js';
 import { createStateMachine } from './state-machine.js';
 import { createArmCaptureSession } from './st-capture.js';
 import { waitForNativeCompletion } from './st-lifecycle.js';
@@ -63,9 +69,15 @@ const runtime = {
     captureSession: null,
     activeJobId: null,
     activeJobStatus: null,
+    chatState: null,
     lastRunLog: null,
     quickReplyStatus: null,
     pollHandle: 0,
+    pollUnchangedCount: 0,
+    pollTransientFailures: 0,
+    pollUnexpectedServerFailures: 0,
+    pollSignature: '',
+    committedReloadKeys: new Set(),
     lastAppliedVersion: 0,
     manualStopRequested: false,
     mountRetryHandle: 0,
@@ -79,6 +91,7 @@ const runtime = {
     showRetryLog: false,
     activeTab: 'main',
     nativeFailureCompatWarned: false,
+    nativeFailureReported: false,
 };
 
 export function bootRetryMobile() {
@@ -94,6 +107,8 @@ export function bootRetryMobile() {
         runtime.termuxAvailable = Boolean(caps?.termux);
         render();
     });
+    void refreshChatState();
+    bindChatStateRefresh();
     void refreshReleaseInfo();
 }
 
@@ -170,6 +185,10 @@ function mountPanel() {
                             <div class="rm-inline-row">
                                 <label class="rm-inline-row__label" for="${EXTENSION_ID}-timeout">Attempt timeout (s)</label>
                                 <input id="${EXTENSION_ID}-timeout" class="rm-number-input" type="number" min="1" step="1" />
+                            </div>
+                            <div class="rm-inline-row">
+                                <label class="rm-inline-row__label" for="${EXTENSION_ID}-native-grace">Native silence window (s)</label>
+                                <input id="${EXTENSION_ID}-native-grace" class="rm-number-input" type="number" min="10" step="1" />
                             </div>
                         </div>
 
@@ -437,6 +456,13 @@ function bindPanelEvents(drawer) {
             return;
         }
 
+        if (event.target?.id === `${EXTENSION_ID}-native-grace`) {
+            runtime.settings.nativeGraceSeconds = clampWholeNumber(event.target.value, 10, runtime.settings.nativeGraceSeconds);
+            persistSettings();
+            render();
+            return;
+        }
+
         if (event.target?.id === `${EXTENSION_ID}-characters`) {
             runtime.settings.minCharacters = clampWholeNumber(event.target.value, 0, runtime.settings.minCharacters);
             persistSettings();
@@ -468,6 +494,7 @@ function hydrateForm() {
     drawer.querySelector(`#${EXTENSION_ID}-target`).value = String(runtime.settings.targetAcceptedCount);
     drawer.querySelector(`#${EXTENSION_ID}-attempts`).value = String(runtime.settings.maxAttempts);
     drawer.querySelector(`#${EXTENSION_ID}-timeout`).value = String(runtime.settings.attemptTimeoutSeconds);
+    drawer.querySelector(`#${EXTENSION_ID}-native-grace`).value = String(runtime.settings.nativeGraceSeconds);
     drawer.querySelector(`#${EXTENSION_ID}-characters`).value = String(runtime.settings.minCharacters);
     drawer.querySelector(`#${EXTENSION_ID}-tokens`).value = String(runtime.settings.minTokens);
     drawer.querySelector(`#${EXTENSION_ID}-notification-template`).value = runtime.settings.notificationMessageTemplate || '';
@@ -508,6 +535,16 @@ async function armPlugin(options = {}) {
         applyErrorState(createStructuredError(
             'capture_chat_changed',
             'No active chat was found. Open a chat before arming Retry Mobile.',
+        ));
+        return;
+    }
+
+    await refreshChatState(identity);
+
+    if (runtime.settings.runMode === RUN_MODE.TOGGLE && runtime.chatState?.toggleBlocked) {
+        applyErrorState(createStructuredError(
+            'toggle_blocked',
+            'Retry Mobile toggle mode is temporarily blocked for this chat after repeated failures. Start a single run or wait until the next successful run resets the breaker.',
         ));
         return;
     }
@@ -608,12 +645,15 @@ async function handleCaptureResult(runId, result) {
         return;
     }
 
+    runtime.nativeFailureReported = false;
+
     render();
     showToast('info', EXTENSION_NAME, 'Retry Mobile captured this generation. SillyTavern is creating the first reply.');
 
     try {
         const nativeResult = await waitForNativeCompletion({
             fingerprint: runtime.fingerprint,
+            nativeGraceSeconds: runtime.settings.nativeGraceSeconds,
             onEvent: (name, summary) => {
                 if (!runtime.machine.isCurrentRun(runId)) {
                     return;
@@ -669,22 +709,29 @@ async function reserveBackendJob(runId) {
     const snapshot = runtime.machine.getSnapshot();
     const context = getContext();
     const body = {
-        schemaVersion: 2,
+        clientProtocolVersion: PROTOCOL_VERSION,
         runId,
         chatIdentity: snapshot.chatIdentity,
         runConfig: {
+            runMode: runtime.settings.runMode,
             targetAcceptedCount: runtime.settings.targetAcceptedCount,
             maxAttempts: runtime.settings.maxAttempts,
             attemptTimeoutSeconds: runtime.settings.attemptTimeoutSeconds,
             validationMode: runtime.settings.validationMode,
             minTokens: runtime.settings.minTokens,
             minCharacters: runtime.settings.minCharacters,
+            allowHeuristicTokenFallback: runtime.settings.allowHeuristicTokenFallback,
             notifyOnSuccess: runtime.settings.notifyOnSuccess,
             notifyOnComplete: runtime.settings.notifyOnComplete,
             vibrateOnSuccess: runtime.settings.vibrateOnSuccess,
             vibrateOnComplete: runtime.settings.vibrateOnComplete,
             notificationMessageTemplate: runtime.settings.notificationMessageTemplate,
         },
+        expectedPreviousGeneration: Number(runtime.chatState?.currentGeneration) || 0,
+        nativeGraceSeconds: runtime.settings.nativeGraceSeconds,
+        capturedChatIntegrity: String(context?.chatMetadata?.integrity || context?.chat_metadata?.integrity || ''),
+        capturedChatLength: Array.isArray(context?.chat) ? context.chat.length : 0,
+        tokenizerDescriptor: buildTokenizerDescriptor(context),
         capturedRequest: runtime.capturedRequest,
         targetFingerprint: runtime.fingerprint,
         captureMeta: {
@@ -703,6 +750,16 @@ async function reserveBackendJob(runId) {
 
         runtime.activeJobId = result.jobId;
         runtime.activeJobStatus = result.job ?? null;
+        clearCommittedReloads(runtime);
+        runtime.chatState = {
+            ...(runtime.chatState || {}),
+            chatKey: result.job?.chatKey || runtime.chatState?.chatKey || '',
+            currentGeneration: Number(result.currentGeneration) || Number(runtime.chatState?.currentGeneration) || 0,
+            toggleFailureCount: Number(result.toggleFailureCount) || 0,
+            toggleBlocked: Boolean(result.toggleBlocked),
+            termux: Boolean(result.termux),
+            termuxCheckedAt: result.termuxCheckedAt || null,
+        };
         runtime.lastAppliedVersion = 0;
         runtime.machine.setOwnsTurn(false);
         runtime.machine.setBackendEvent('pending_native', `Reserved backend job ${result.jobId} while native generation tries the first reply.`);
@@ -712,6 +769,30 @@ async function reserveBackendJob(runId) {
         render();
         return true;
     } catch (error) {
+        if (error?.status === 409 && error?.payload?.reason === 'job_running' && error?.payload?.job?.jobId) {
+            runtime.activeJobId = error.payload.job.jobId;
+            runtime.activeJobStatus = error.payload.job;
+            clearCommittedReloads(runtime);
+            runtime.machine.setOwnsTurn(false);
+            runtime.machine.setBackendEvent('attached', 'Attached to an existing backend run for this chat.');
+            runtime.machine.recordEvent('backend', 'attached', 'Attached to an existing backend run for this chat.');
+            runtime.machine.transition(resolveRunStateFromStatus(error.payload.job) || RUN_STATE.CAPTURED_PENDING_NATIVE);
+            startPolling(runId);
+            render();
+            showToast('info', EXTENSION_NAME, 'Attached to the existing Retry Mobile run for this chat.');
+            return true;
+        }
+
+        if (error?.status === 409 && error?.payload?.reason === 'rearm_race') {
+            const structured = getStructuredErrorFromApi(error, 'Another tab already re-armed this chat before this browser could.');
+            await applyTerminalState(runId, RUN_STATE.FAILED, {
+                error: structured,
+                toastKind: 'info',
+                toastMessage: 'Another tab already re-armed this chat.',
+            });
+            return false;
+        }
+
         const structured = getStructuredErrorFromApi(error, 'Retry Mobile could not reserve the backend recovery job for this turn.');
         await applyTerminalState(runId, RUN_STATE.FAILED, {
             error: structured,
@@ -724,6 +805,12 @@ async function reserveBackendJob(runId) {
 
 async function confirmNativeHandoff(runId, nativeResult) {
     if (!runtime.machine.isCurrentRun(runId) || !runtime.activeJobId) {
+        return;
+    }
+
+    if (runtime.nativeFailureReported) {
+        runtime.machine.recordEvent('backend', 'native_confirm_skipped', 'Ignored a late native confirmation because a native failure hint was already sent.');
+        render();
         return;
     }
 
@@ -777,6 +864,7 @@ async function reportRecoverableNativeFailure(runId, nativeResult) {
         return;
     }
 
+    runtime.nativeFailureReported = true;
     runtime.machine.recordEvent('st', nativeResult.reason || 'native_wait_failed', nativeResult.message || 'Retry Mobile stopped waiting for native completion.');
     render();
 
@@ -863,19 +951,47 @@ async function stopPlugin() {
 function startPolling(runId) {
     clearPolling();
     const pollSessionId = runtime.machine.startPollSession();
-    runtime.pollHandle = window.setInterval(() => {
+    runtime.pollUnchangedCount = 0;
+    runtime.pollTransientFailures = 0;
+    runtime.pollUnexpectedServerFailures = 0;
+    runtime.pollSignature = '';
+    runtime.pollHandle = window.setTimeout(() => {
         void pollStatus(runId, pollSessionId);
-    }, POLL_INTERVAL_MS);
-    void pollStatus(runId, pollSessionId);
+    }, 0);
 }
 
 function clearPolling() {
     if (runtime.pollHandle) {
-        window.clearInterval(runtime.pollHandle);
+        window.clearTimeout(runtime.pollHandle);
         runtime.pollHandle = 0;
     }
 
+    runtime.pollUnchangedCount = 0;
+    runtime.pollTransientFailures = 0;
+    runtime.pollUnexpectedServerFailures = 0;
+    runtime.pollSignature = '';
     runtime.machine.clearPollSession(runtime.machine.getSnapshot().pollSessionId);
+}
+
+function scheduleNextPoll(runId, pollSessionId, delayMs) {
+    clearScheduledPollOnly();
+    if (!runtime.machine.isCurrentRun(runId) || !runtime.machine.isCurrentPollSession(pollSessionId)) {
+        return;
+    }
+
+    const jitterMultiplier = 0.85 + (Math.random() * 0.3);
+    runtime.pollHandle = window.setTimeout(() => {
+        void pollStatus(runId, pollSessionId);
+    }, Math.round(delayMs * jitterMultiplier));
+}
+
+function clearScheduledPollOnly() {
+    if (!runtime.pollHandle) {
+        return;
+    }
+
+    window.clearTimeout(runtime.pollHandle);
+    runtime.pollHandle = 0;
 }
 
 async function pollStatus(runId, pollSessionId) {
@@ -901,6 +1017,10 @@ async function pollStatus(runId, pollSessionId) {
         const previousStatus = runtime.activeJobStatus;
         const previousAccepted = Number(previousStatus?.acceptedCount) || 0;
         runtime.activeJobStatus = status;
+        const signatureChanged = updatePollSignature(status);
+        runtime.pollTransientFailures = 0;
+        runtime.pollUnexpectedServerFailures = 0;
+        runtime.pollUnchangedCount = signatureChanged ? 0 : (runtime.pollUnchangedCount + 1);
         syncRuntimeStateFromStatus(runId, status, {
             previousStatus,
             announceTransitions: true,
@@ -947,25 +1067,51 @@ async function pollStatus(runId, pollSessionId) {
         }
 
         render();
+        scheduleNextPoll(runId, pollSessionId, getNextPollDelay());
     } catch (error) {
         backendLog.warn('Status poll failed.', error);
         if (!runtime.machine.isCurrentRun(runId) || !runtime.machine.isCurrentPollSession(pollSessionId) || runtime.activeJobId !== requestedJobId) {
             return;
         }
         runtime.machine.recordEvent('backend', 'poll_failed', error?.message || 'Status poll failed.');
-        if (error?.status === 404 && runtime.machine.isCurrentRun(runId) && runtime.activeJobId === requestedJobId) {
+        const failureKind = classifyPollFailure(error);
+        if (failureKind === 'fatal') {
             await reloadCurrentChatSafe();
             await applyTerminalState(runId, RUN_STATE.FAILED, {
                 error: createStructuredError(
                     'backend_job_missing',
-                    'Retry Mobile lost the backend job while polling. The backend process may have restarted or been suspended.',
+                    error?.status === 404
+                        ? 'Retry Mobile lost the backend job while polling. The backend process may have restarted or been suspended.'
+                        : 'Retry Mobile hit a fatal backend polling error and stopped instead of guessing.',
                 ),
                 toastKind: 'warning',
-                toastMessage: 'Retry Mobile lost the backend job while polling.',
+                toastMessage: error?.status === 404
+                    ? 'Retry Mobile lost the backend job while polling.'
+                    : 'Retry Mobile stopped after a fatal backend polling error.',
             });
             return;
         }
+
+        if (failureKind === 'unexpected_5xx') {
+            runtime.pollUnexpectedServerFailures += 1;
+            if (runtime.pollUnexpectedServerFailures >= 3) {
+                await applyTerminalState(runId, RUN_STATE.FAILED, {
+                    error: createStructuredError(
+                        'backend_polling_failed',
+                        'Retry Mobile stopped after repeated unexpected backend server errors while polling status.',
+                    ),
+                    toastKind: 'warning',
+                    toastMessage: 'Retry Mobile stopped after repeated backend polling errors.',
+                });
+                return;
+            }
+        } else {
+            runtime.pollTransientFailures += 1;
+            runtime.pollUnexpectedServerFailures = 0;
+        }
+
         render();
+        scheduleNextPoll(runId, pollSessionId, getNextPollDelay());
     }
 }
 
@@ -1097,6 +1243,7 @@ async function applyTerminalState(runId, nextState, options = {}) {
         return;
     }
 
+    const previousChatIdentity = runtime.machine.getSnapshot().chatIdentity;
     stopCaptureSession();
     clearPolling();
 
@@ -1113,9 +1260,22 @@ async function applyTerminalState(runId, nextState, options = {}) {
     runtime.machine.setOwnsTurn(false);
     runtime.machine.transition(nextState);
     runtime.machine.releaseRun();
+    if (runtime.activeJobStatus?.jobId && Number(runtime.activeJobStatus?.orphanedAcceptedPreview?.count) > 0) {
+        try {
+            const orphanResult = await fetchJobOrphans(runtime.activeJobStatus.jobId);
+            if (orphanResult?.items) {
+                runtime.activeJobStatus.orphanedAcceptedResults = orphanResult.items;
+            }
+        } catch (error) {
+            backendLog.warn('Could not fetch orphaned accepted outputs.', error);
+        }
+    }
     rememberRunLog();
 
     runtime.activeJobId = null;
+    runtime.nativeFailureReported = false;
+    clearCommittedReloads(runtime);
+    await refreshChatState(previousChatIdentity || getChatIdentity(getContext()));
 
     render();
 
@@ -1137,11 +1297,47 @@ async function refreshDiagnostics(showFeedback = false) {
     render();
 }
 
+async function refreshChatState(identity = getChatIdentity(getContext())) {
+    if (!identity?.chatId) {
+        runtime.chatState = null;
+        render();
+        return null;
+    }
+
+    try {
+        runtime.chatState = await fetchChatState(identity);
+    } catch (error) {
+        backendLog.warn('Could not fetch Retry Mobile chat state.', error);
+    }
+
+    render();
+    return runtime.chatState;
+}
+
+function bindChatStateRefresh() {
+    const context = getContext();
+    const eventTypes = context?.eventTypes;
+    if (!eventTypes?.CHAT_CHANGED) {
+        return;
+    }
+
+    subscribeChatStateEvent(eventTypes.CHAT_CHANGED);
+}
+
+function subscribeChatStateEvent(eventName) {
+    subscribeEvent(eventName, () => {
+        clearCommittedReloads(runtime);
+        void refreshChatState();
+    }, getContext());
+}
+
 async function restoreActiveJob() {
     const identity = getChatIdentity(getContext());
     if (!identity?.chatId) {
         return;
     }
+
+    await refreshChatState(identity);
 
     try {
         const status = await fetchActiveJob(identity);
@@ -1162,7 +1358,9 @@ async function restoreActiveJob() {
         runtime.machine.recordEvent('backend', 'restored', `Restored backend job ${status.jobId}.`);
         runtime.activeJobId = status.jobId;
         runtime.activeJobStatus = status;
+        clearCommittedReloads(runtime);
         runtime.lastAppliedVersion = 0;
+        await syncRestoredStatus(status, runtime);
 
         if (status.state === 'running') {
             startPolling(status.runId || status.jobId);
@@ -1294,6 +1492,7 @@ function resetRunBuffers(options = {}) {
     runtime.assistantMessageIndex = null;
     runtime.lastAppliedVersion = 0;
     runtime.nativeFailureCompatWarned = false;
+    clearCommittedReloads(runtime);
     if (!options.preserveStatus) {
         runtime.activeJobId = null;
         runtime.activeJobStatus = null;
@@ -1606,6 +1805,14 @@ async function maybeAutoRearmAfterRun(resultState) {
         return;
     }
 
+    await refreshChatState(liveIdentity);
+    if (runtime.chatState?.toggleBlocked) {
+        runtime.machine.recordEvent('state', 'toggle_rearm_blocked', 'Skipped toggle re-arm because the backend circuit breaker is active for this chat.');
+        render();
+        showToast('warning', EXTENSION_NAME, 'Toggle mode paused after repeated failures in this chat.');
+        return;
+    }
+
     await armPlugin({
         showToastMessage: 'Toggle mode re-armed Retry Mobile for the next qualifying generation in the active chat.',
     });
@@ -1829,9 +2036,81 @@ function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
         }
     }
 
+    if (Array.isArray(status.orphanedAcceptedResults) && status.orphanedAcceptedResults.length > 0) {
+        lines.push('');
+        lines.push('Orphaned Accepted Outputs:');
+        status.orphanedAcceptedResults.forEach((entry, index) => {
+            lines.push(`orphan#${index + 1} | chars=${Number(entry?.characterCount) || 0} | tokens=${Number(entry?.tokenCount) || 0} | text=${String(entry?.text || '').slice(0, 200)}`);
+        });
+    } else if (status.orphanedAcceptedPreview?.count > 0) {
+        lines.push('');
+        lines.push(`Orphaned Accepted Outputs: ${status.orphanedAcceptedPreview.count} stored on backend.`);
+    }
+
     lines.push('');
     lines.push('Recent Events:');
     return appendDebugEventLines(lines, snapshot);
+}
+
+function updatePollSignature(status) {
+    const nextSignature = JSON.stringify({
+        updatedAt: status?.updatedAt || '',
+        state: status?.state || '',
+        phase: status?.phase || '',
+        nativeState: status?.nativeState || '',
+        acceptedCount: Number(status?.acceptedCount) || 0,
+        attemptCount: Number(status?.attemptCount) || 0,
+        attemptLogLength: Array.isArray(status?.attemptLog) ? status.attemptLog.length : 0,
+        targetMessageVersion: Number(status?.targetMessageVersion) || 0,
+        cancelRequested: Boolean(status?.cancelRequested),
+        structuredErrorCode: status?.structuredError?.code || '',
+    });
+    const changed = runtime.pollSignature !== nextSignature;
+    runtime.pollSignature = nextSignature;
+    return changed;
+}
+
+function getNextPollDelay() {
+    if (runtime.pollUnexpectedServerFailures > 0 || runtime.pollTransientFailures >= 3 || runtime.pollUnchangedCount >= 15) {
+        return POLL_INTERVAL_SLOW_MS;
+    }
+
+    if (runtime.pollUnchangedCount >= 5) {
+        return POLL_INTERVAL_STEADY_MS;
+    }
+
+    return POLL_INTERVAL_FAST_MS;
+}
+
+function classifyPollFailure(error) {
+    const status = Number(error?.status);
+    if (!Number.isFinite(status)) {
+        return 'transient';
+    }
+
+    if (status === 429 || status === 502 || status === 503 || status === 504) {
+        return 'transient';
+    }
+
+    if (status === 500 || status >= 505) {
+        return 'unexpected_5xx';
+    }
+
+    if (status === 400 || status === 401 || status === 403 || status === 404) {
+        return 'fatal';
+    }
+
+    return 'transient';
+}
+
+function buildTokenizerDescriptor(context) {
+    return {
+        tokenizerMode: runtime.settings.validationMode,
+        tokenizerKey: String(context?.chatCompletionModel || context?.mainApi || context?.api || ''),
+        model: String(context?.chatCompletionModel || context?.model || ''),
+        apiFamily: String(context?.mainApi || context?.api || ''),
+        chatCompletionSource: String(runtime.capturedRequest?.chat_completion_source || ''),
+    };
 }
 
 function appendDebugEventLines(lines, snapshot) {

@@ -1,0 +1,188 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
+
+const COMPAT_DIR_NAME = '_retry-mobile';
+const COMPAT_FILE_NAME = 'compat-probe.jsonl';
+
+const runtimeState = {
+    initialized: false,
+    initializing: null,
+    compatibility: {
+        nativeSaveSupport: false,
+        detail: 'Retry Mobile has not checked SillyTavern save compatibility yet.',
+        checkedAt: null,
+    },
+    getUserDirectories: null,
+    getUserDirectoriesList: null,
+    trySaveChat: null,
+};
+
+async function initializeStRuntime() {
+    if (runtimeState.initialized) {
+        return getCompatibilitySnapshot();
+    }
+
+    if (runtimeState.initializing) {
+        await runtimeState.initializing;
+        return getCompatibilitySnapshot();
+    }
+
+    runtimeState.initializing = (async () => {
+        try {
+            const usersModule = await importModuleFromServer('users.js');
+            const chatsModule = await importModuleFromServer(path.join('endpoints', 'chats.js'));
+
+            if (typeof usersModule.getUserDirectories !== 'function' || typeof usersModule.getUserDirectoriesList !== 'function') {
+                throw new Error('SillyTavern user directory helpers are unavailable.');
+            }
+
+            if (typeof chatsModule.trySaveChat !== 'function') {
+                throw new Error('SillyTavern trySaveChat helper is unavailable.');
+            }
+
+            runtimeState.getUserDirectories = usersModule.getUserDirectories;
+            runtimeState.getUserDirectoriesList = usersModule.getUserDirectoriesList;
+            runtimeState.trySaveChat = chatsModule.trySaveChat;
+
+            const probeResult = await runCompatibilityProbe(runtimeState.trySaveChat);
+            runtimeState.compatibility = probeResult;
+        } catch (error) {
+            runtimeState.compatibility = {
+                nativeSaveSupport: false,
+                detail: error instanceof Error ? error.message : String(error),
+                checkedAt: new Date().toISOString(),
+            };
+        } finally {
+            runtimeState.initialized = true;
+            runtimeState.initializing = null;
+        }
+    })();
+
+    await runtimeState.initializing;
+    return getCompatibilitySnapshot();
+}
+
+function getCompatibilitySnapshot() {
+    return {
+        nativeSaveSupport: Boolean(runtimeState.compatibility.nativeSaveSupport),
+        detail: String(runtimeState.compatibility.detail || ''),
+        checkedAt: runtimeState.compatibility.checkedAt || null,
+    };
+}
+
+function ensureRuntimeReady() {
+    if (!runtimeState.initialized) {
+        throw new Error('Retry Mobile ST runtime was not initialized.');
+    }
+
+    return runtimeState;
+}
+
+function getUserDirectories(handle) {
+    const state = ensureRuntimeReady();
+    return state.getUserDirectories(handle);
+}
+
+async function getUserDirectoriesList() {
+    const state = ensureRuntimeReady();
+    return await state.getUserDirectoriesList();
+}
+
+function getNativeSaveSupport() {
+    return Boolean(runtimeState.compatibility.nativeSaveSupport);
+}
+
+async function saveChatThroughSt({ chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory }) {
+    const state = ensureRuntimeReady();
+    if (!state.compatibility.nativeSaveSupport || typeof state.trySaveChat !== 'function') {
+        throw new Error(state.compatibility.detail || 'Retry Mobile native save compatibility is unavailable.');
+    }
+
+    return await state.trySaveChat(chatData, filePath, skipIntegrityCheck, handle, cardName, backupDirectory);
+}
+
+async function importModuleFromServer(relativePath) {
+    const targetPath = path.join(process.cwd(), 'src', relativePath);
+    if (!fs.existsSync(targetPath)) {
+        throw new Error(`SillyTavern runtime module is missing: ${targetPath}`);
+    }
+
+    const moduleUrl = pathToFileURL(targetPath).href;
+    return await import(moduleUrl);
+}
+
+async function runCompatibilityProbe(trySaveChat) {
+    const dataRoot = String(globalThis.DATA_ROOT || '').trim();
+    if (!dataRoot) {
+        throw new Error('SillyTavern DATA_ROOT is unavailable, so Retry Mobile cannot probe chat-save compatibility.');
+    }
+
+    const compatDir = path.join(dataRoot, COMPAT_DIR_NAME, 'compat');
+    const backupsDir = path.join(compatDir, 'backups');
+    const probeFilePath = path.join(compatDir, COMPAT_FILE_NAME);
+    fs.mkdirSync(backupsDir, { recursive: true });
+
+    const headerA = {
+        chat_metadata: {
+            integrity: 'retry-mobile-probe-a',
+        },
+        user_name: 'unused',
+        character_name: 'unused',
+    };
+    const headerB = {
+        chat_metadata: {
+            integrity: 'retry-mobile-probe-b',
+        },
+        user_name: 'unused',
+        character_name: 'unused',
+    };
+    const message = {
+        name: 'You',
+        is_user: true,
+        is_system: false,
+        send_date: new Date().toISOString(),
+        mes: 'compatibility probe',
+        extra: {},
+    };
+
+    try {
+        try {
+            fs.rmSync(probeFilePath, { force: true });
+        } catch {}
+
+        await trySaveChat([headerA, message], probeFilePath, false, 'retry-mobile-probe', 'retry-mobile-probe', backupsDir);
+
+        let integrityRejected = false;
+        try {
+            await trySaveChat([headerB, message], probeFilePath, false, 'retry-mobile-probe', 'retry-mobile-probe', backupsDir);
+        } catch (error) {
+            const messageText = String(error?.message || error || '').toLowerCase();
+            integrityRejected = messageText.includes('integrity');
+        }
+
+        if (!integrityRejected) {
+            throw new Error('SillyTavern trySaveChat compatibility probe did not reject an integrity mismatch.');
+        }
+
+        return {
+            nativeSaveSupport: true,
+            detail: 'Retry Mobile verified direct trySaveChat access and integrity mismatch handling.',
+            checkedAt: new Date().toISOString(),
+        };
+    } finally {
+        try {
+            fs.rmSync(compatDir, { recursive: true, force: true });
+        } catch {}
+    }
+}
+
+module.exports = {
+    COMPAT_DIR_NAME,
+    initializeStRuntime,
+    getCompatibilitySnapshot,
+    getUserDirectories,
+    getUserDirectoriesList,
+    getNativeSaveSupport,
+    saveChatThroughSt,
+};

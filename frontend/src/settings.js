@@ -38,10 +38,12 @@ function normalizeSettings(source) {
     settings.targetAcceptedCount = Math.max(1, normalizeWholeNumber(settings.targetAcceptedCount, DEFAULT_SETTINGS.targetAcceptedCount));
     settings.maxAttempts = Math.max(1, normalizeWholeNumber(settings.maxAttempts, DEFAULT_SETTINGS.maxAttempts));
     settings.attemptTimeoutSeconds = Math.max(1, normalizeWholeNumber(settings.attemptTimeoutSeconds, DEFAULT_SETTINGS.attemptTimeoutSeconds));
-    settings.notifyOnSuccess = Boolean(settings.notifyOnSuccess);
-    settings.notifyOnComplete = Boolean(settings.notifyOnComplete);
-    settings.vibrateOnSuccess = Boolean(settings.vibrateOnSuccess);
-    settings.vibrateOnComplete = Boolean(settings.vibrateOnComplete);
+    settings.nativeGraceSeconds = normalizeClampedWholeNumber(settings.nativeGraceSeconds, 10, 300, DEFAULT_SETTINGS.nativeGraceSeconds);
+    settings.notifyOnSuccess = normalizeBoolean(settings.notifyOnSuccess, DEFAULT_SETTINGS.notifyOnSuccess);
+    settings.notifyOnComplete = normalizeBoolean(settings.notifyOnComplete, DEFAULT_SETTINGS.notifyOnComplete);
+    settings.vibrateOnSuccess = normalizeBoolean(settings.vibrateOnSuccess, DEFAULT_SETTINGS.vibrateOnSuccess);
+    settings.vibrateOnComplete = normalizeBoolean(settings.vibrateOnComplete, DEFAULT_SETTINGS.vibrateOnComplete);
+    settings.allowHeuristicTokenFallback = normalizeBoolean(settings.allowHeuristicTokenFallback, DEFAULT_SETTINGS.allowHeuristicTokenFallback);
     settings.notificationMessageTemplate = typeof settings.notificationMessageTemplate === 'string'
         ? settings.notificationMessageTemplate
         : '';
@@ -72,4 +74,29 @@ function normalizeWholeNumber(value, fallback) {
     }
 
     return parsed;
+}
+
+function normalizeClampedWholeNumber(value, minimum, maximum, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) {
+        return fallback;
+    }
+
+    return Math.min(maximum, Math.max(minimum, parsed));
+}
+
+function normalizeBoolean(value, fallback) {
+    if (value === true || value === false) {
+        return value;
+    }
+
+    if (value === 'true') {
+        return true;
+    }
+
+    if (value === 'false') {
+        return false;
+    }
+
+    return fallback;
 }

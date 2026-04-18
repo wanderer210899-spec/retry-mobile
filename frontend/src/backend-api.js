@@ -62,7 +62,14 @@ export async function fetchCapabilities() {
     try {
         return await requestJson(`${BASE_URL}/capabilities`, { method: 'GET' });
     } catch {
-        return { termux: false };
+        return {
+            protocolVersion: 0,
+            minSupportedProtocolVersion: 0,
+            nativeSaveSupport: false,
+            nativeSaveCompatibilityDetail: '',
+            termux: false,
+            termuxCheckedAt: null,
+        };
     }
 }
 
@@ -83,6 +90,31 @@ export async function fetchActiveJob(identity) {
 
     const suffix = query.toString() ? `?${query.toString()}` : '';
     return requestJson(`${BASE_URL}/active${suffix}`, {
+        method: 'GET',
+    });
+}
+
+export async function fetchChatState(identity) {
+    const query = new URLSearchParams();
+    if (identity?.chatId) {
+        query.set('chatId', identity.chatId);
+    }
+    if (identity?.groupId) {
+        query.set('groupId', identity.groupId);
+    }
+
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return requestJson(`${BASE_URL}/state${suffix}`, {
+        method: 'GET',
+    });
+}
+
+export async function fetchJobOrphans(jobId) {
+    if (!jobId) {
+        return null;
+    }
+
+    return requestJson(`${BASE_URL}/orphans/${encodeURIComponent(jobId)}`, {
         method: 'GET',
     });
 }

@@ -1,12 +1,39 @@
 const fs = require('node:fs');
 const path = require('node:path');
+
 const { createStructuredError } = require('./retry-error');
+const { saveChatThroughSt } = require('./st-runtime');
 
 async function writeAcceptedResult(job, accepted) {
-    const currentChat = await readCurrentChat(job);
+    assertWritePathReady(job);
+
+    let currentChat = await readCurrentChat(job);
     assertChatStillMatches(job, currentChat);
 
-    const targetIndex = ensureAssistantSlotForWrite(job, currentChat);
+    let targetIndex = null;
+    try {
+        targetIndex = ensureAssistantSlotForWrite(job, currentChat);
+    } catch (error) {
+        if (!shouldUseConfirmedWriteSafetyRecheck(job, false, error)) {
+            throw error;
+        }
+
+        currentChat = readChatJsonl(getSaveTarget(job).filePath);
+        assertChatStillMatches(job, currentChat);
+        try {
+            targetIndex = ensureAssistantSlotForWrite(job, currentChat);
+        } catch (secondError) {
+            if (shouldUseConfirmedWriteSafetyRecheck(job, true, secondError)) {
+                throw createStructuredError(
+                    'native_persist_unresolved',
+                    'Retry Mobile confirmed the native turn in the browser, but the saved chat still did not expose the assistant slot for writing.',
+                );
+            }
+
+            throw secondError;
+        }
+    }
+
     const targetMessage = currentChat[targetIndex];
     const timestamp = new Date().toISOString();
     const nextExtra = buildAcceptedExtra(job, targetMessage.extra, accepted);
@@ -29,14 +56,22 @@ async function writeAcceptedResult(job, accepted) {
         targetMessage.swipe_id = targetMessage.swipes.length - 1;
     }
 
-    const saveTarget = getSaveTarget(job);
     try {
-        saveChatJsonl(currentChat, saveTarget.filePath);
+        await persistLiveChat(job, currentChat);
     } catch (error) {
+        const messageText = String(error?.message || error || '');
+        if (/integrity/i.test(messageText)) {
+            throw createStructuredError(
+                'write_conflict',
+                'Retry Mobile stopped because SillyTavern rejected the save due to a chat integrity mismatch.',
+                messageText,
+            );
+        }
+
         throw createStructuredError(
             'backend_write_failed',
             'Retry Mobile could not save the updated swipe set back to the live chat.',
-            error instanceof Error ? error.message : String(error),
+            messageText,
         );
     }
 
@@ -51,45 +86,6 @@ async function writeAcceptedResult(job, accepted) {
     };
 }
 
-async function confirmNativeAssistantTurn(job, assistantMessageIndex) {
-    const liveAssistantIndex = Number(assistantMessageIndex);
-    if (!Number.isFinite(liveAssistantIndex) || liveAssistantIndex < 0) {
-        throw createStructuredError(
-            'handoff_request_failed',
-            'Retry Mobile did not receive a valid native assistant turn to confirm.',
-        );
-    }
-
-    const currentChat = await readCurrentChat(job);
-    assertChatStillMatches(job, currentChat);
-
-    const state = inspectAdjacentAssistantState(job, currentChat);
-    if (state.kind === 'missing_assistant') {
-        throw createStructuredError(
-            'backend_turn_missing',
-            'The native assistant turn was missing when Retry Mobile tried to confirm it.',
-        );
-    }
-
-    if (state.assistantMessageIndex !== liveAssistantIndex) {
-        throw createStructuredError(
-            'backend_turn_changed',
-            'The confirmed native assistant turn no longer matches the captured user turn.',
-            `Expected live assistant index ${liveAssistantIndex}, found ${state.assistantMessageIndex}.`,
-        );
-    }
-
-    job.assistantMessageIndex = liveAssistantIndex;
-    job.targetMessageIndex = liveAssistantIndex;
-    job.targetMessage = clone(state.assistantMessage);
-
-    return {
-        assistantMessageIndex: liveAssistantIndex,
-        targetMessageIndex: liveAssistantIndex,
-        targetMessage: job.targetMessage,
-    };
-}
-
 function inspectNativeAssistantState(job) {
     const saveTarget = getSaveTarget(job);
     let chat = null;
@@ -100,10 +96,17 @@ function inspectNativeAssistantState(job) {
         return { kind: 'target_pending' };
     }
 
+    const integrityState = getIntegrityState(job, chat);
+    if (integrityState === 'mismatch') {
+        return { kind: 'target_pending' };
+    }
+
     const userState = resolveTargetUserState(job, chat);
     if (userState.kind === 'missing_appendable') {
         return {
-            kind: 'missing_user_anchor',
+            kind: canCreateMissingUserAnchor(job, chat)
+                ? 'missing_user_anchor'
+                : 'target_pending',
             persistedUserIndex: userState.persistedUserIndex,
         };
     }
@@ -114,24 +117,111 @@ function inspectNativeAssistantState(job) {
     return inspectAdjacentAssistantState(job, chat);
 }
 
+function inspectRecoverySnapshot(job) {
+    const persistedFloor = Number(job.acceptedCount) || 0;
+    let chat = null;
+
+    try {
+        const saveTarget = getSaveTarget(job);
+        chat = readChatJsonl(saveTarget.filePath);
+    } catch {
+        return buildRecoveryResult('backend_restarted', persistedFloor, 0, 'Retry Mobile could not read the live chat while recovering a persisted job.');
+    }
+
+    const integrityState = getIntegrityState(job, chat);
+    if (integrityState === 'mismatch') {
+        return buildRecoveryResult(
+            persistedFloor > 0 ? 'recovery_ambiguous' : 'backend_restarted',
+            persistedFloor,
+            0,
+            'The saved chat integrity changed before Retry Mobile could reconcile the recovered job.',
+        );
+    }
+
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind !== 'present') {
+        return buildRecoveryResult(
+            persistedFloor > 0 ? 'recovery_ambiguous' : 'backend_restarted',
+            persistedFloor,
+            0,
+            'Retry Mobile could not resolve the captured user turn while recovering the persisted job.',
+        );
+    }
+
+    const assistantState = inspectAdjacentAssistantState(job, chat);
+    if (assistantState.kind === 'missing_assistant') {
+        return buildRecoveryResult(
+            persistedFloor > 0 ? 'recovery_ambiguous' : 'backend_restarted',
+            persistedFloor,
+            0,
+            'The captured assistant turn was still missing when Retry Mobile recovered the persisted job.',
+        );
+    }
+
+    const liveCeiling = countTaggedAcceptedResults(job, assistantState.assistantMessage);
+    if (liveCeiling < persistedFloor || (liveCeiling === 0 && persistedFloor > 0)) {
+        return buildRecoveryResult(
+            'recovery_ambiguous',
+            persistedFloor,
+            liveCeiling,
+            'The saved chat contains fewer Retry Mobile-tagged swipes than the persisted snapshot expected.',
+        );
+    }
+
+    const resolvedAcceptedCount = liveCeiling > persistedFloor ? liveCeiling : persistedFloor;
+    if (resolvedAcceptedCount >= Number(job.targetAcceptedCount || 0)) {
+        return buildRecoveryResult(
+            'completed_on_recovery',
+            persistedFloor,
+            liveCeiling,
+            `Recovered ${resolvedAcceptedCount} accepted swipes from the live chat after backend restart.`,
+            resolvedAcceptedCount,
+        );
+    }
+
+    if (resolvedAcceptedCount > 0) {
+        return buildRecoveryResult(
+            'partial_on_recovery',
+            persistedFloor,
+            liveCeiling,
+            `Recovered ${resolvedAcceptedCount} accepted swipes from the live chat, but the run did not reach its target before backend restart.`,
+            resolvedAcceptedCount,
+        );
+    }
+
+    return buildRecoveryResult(
+        'backend_restarted',
+        persistedFloor,
+        liveCeiling,
+        'Retry Mobile restarted before it could confirm any accepted swipes from the recovered job.',
+    );
+}
+
 async function readCurrentChat(job) {
     const saveTarget = getSaveTarget(job);
     const maxAttempts = 12;
     const delayMs = 300;
-    const allowCreateUserAnchor = shouldCreateMissingUserAnchor(job);
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         const liveChat = readChatJsonl(saveTarget.filePath);
         if (Array.isArray(liveChat) && liveChat.length > 0) {
+            const integrityState = getIntegrityState(job, liveChat);
+            if (integrityState === 'mismatch') {
+                throw createStructuredError(
+                    'chat_context_changed',
+                    'Retry Mobile stopped because the saved chat integrity changed after capture.',
+                );
+            }
+
             const userState = resolveTargetUserState(job, liveChat);
             if (userState.kind === 'present') {
                 return liveChat;
             }
 
-            if (allowCreateUserAnchor && userState.kind === 'missing_appendable') {
+            if (userState.kind === 'missing_appendable' && canCreateMissingUserAnchor(job, liveChat)) {
                 insertUserMessage(job, liveChat, userState.persistedUserIndex);
                 try {
-                    saveChatJsonl(liveChat, saveTarget.filePath);
+                    await persistLiveChat(job, liveChat);
                 } catch (error) {
                     throw createStructuredError(
                         'backend_write_failed',
@@ -156,6 +246,14 @@ async function readCurrentChat(job) {
 }
 
 function assertChatStillMatches(job, chat) {
+    const integrityState = getIntegrityState(job, chat);
+    if (integrityState === 'mismatch') {
+        throw createStructuredError(
+            'chat_context_changed',
+            'Retry Mobile stopped because the saved chat integrity changed after capture.',
+        );
+    }
+
     const userState = resolveTargetUserState(job, chat);
     if (userState.kind !== 'present') {
         throw createStructuredError(
@@ -165,8 +263,28 @@ function assertChatStillMatches(job, chat) {
     }
 }
 
-function liveChatContainsTargetTurn(job, chat) {
-    return resolveTargetUserState(job, chat).kind === 'present';
+function assertWritePathReady(job) {
+    if (job?.nativeResolutionInProgress === true || job?.phase === 'native_confirming_persisted') {
+        throw createStructuredError(
+            'native_write_not_ready',
+            'Retry Mobile blocked the write path because native persistence confirmation is still in progress.',
+        );
+    }
+
+    if (job?.nativeState === 'pending') {
+        throw createStructuredError(
+            'native_write_not_ready',
+            'Retry Mobile blocked the write path because the native turn has not resolved yet.',
+        );
+    }
+}
+
+function shouldUseConfirmedWriteSafetyRecheck(job, recheckUsed, error) {
+    return job?.nativeState === 'confirmed'
+        && job?.phase !== 'native_confirming_persisted'
+        && job?.nativeResolutionInProgress !== true
+        && recheckUsed !== true
+        && String(error?.code || '') === 'backend_turn_missing';
 }
 
 function ensureAssistantSlotForWrite(job, chat) {
@@ -237,7 +355,7 @@ function ensureTargetUserMessage(job, chat) {
         return userState.persistedUserIndex;
     }
 
-    if (userState.kind === 'missing_appendable' && shouldCreateMissingUserAnchor(job)) {
+    if (userState.kind === 'missing_appendable' && canCreateMissingUserAnchor(job, chat)) {
         return insertUserMessage(job, chat, userState.persistedUserIndex).persistedUserIndex;
     }
 
@@ -461,6 +579,27 @@ function shouldCreateMissingUserAnchor(job) {
     return job.nativeState === 'abandoned' && job.recoveryMode === 'create_missing_turn';
 }
 
+function canCreateMissingUserAnchor(job, chat) {
+    return shouldCreateMissingUserAnchor(job)
+        && getIntegrityState(job, chat) === 'match'
+        && Number.isFinite(Number(job.capturedChatLength))
+        && (chat.length - getPersistedChatOffset(chat)) === Number(job.capturedChatLength);
+}
+
+function getIntegrityState(job, chat) {
+    const expected = typeof job.capturedChatIntegrity === 'string' ? job.capturedChatIntegrity.trim() : '';
+    if (!expected) {
+        return 'missing';
+    }
+
+    const actual = String(chat?.[0]?.chat_metadata?.integrity || '').trim();
+    if (!actual) {
+        return 'missing';
+    }
+
+    return actual === expected ? 'match' : 'mismatch';
+}
+
 function getPersistedChatOffset(chat) {
     const firstRow = Array.isArray(chat) ? chat[0] : null;
     return firstRow && typeof firstRow === 'object' && firstRow.chat_metadata
@@ -491,13 +630,42 @@ function readChatJsonl(filePath) {
     return parsed;
 }
 
-function saveChatJsonl(chatData, filePath) {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+async function persistLiveChat(job, chatData) {
+    const saveTarget = getSaveTarget(job);
+    return await saveChatThroughSt({
+        chatData,
+        filePath: saveTarget.filePath,
+        skipIntegrityCheck: false,
+        handle: job.userContext.handle,
+        cardName: saveTarget.cardName,
+        backupDirectory: job.userContext.directories.backups,
+    });
+}
+
+function buildRecoveryResult(reason, floor, ceiling, detail, acceptedCount = null) {
+    return {
+        reason,
+        floor,
+        ceiling,
+        acceptedCount: acceptedCount == null ? floor : acceptedCount,
+        detail,
+    };
+}
+
+function countTaggedAcceptedResults(job, assistantMessage) {
+    let count = 0;
+    const swipeInfo = Array.isArray(assistantMessage?.swipe_info) ? assistantMessage.swipe_info : [];
+    for (const row of swipeInfo) {
+        if (String(row?.extra?.retryMobileJobId || '') === String(job.jobId)) {
+            count += 1;
+        }
     }
-    const jsonl = chatData.map((row) => JSON.stringify(row)).join('\n');
-    fs.writeFileSync(filePath, jsonl, 'utf8');
+
+    if (count === 0 && String(assistantMessage?.extra?.retryMobileJobId || '') === String(job.jobId)) {
+        count = 1;
+    }
+
+    return count;
 }
 
 function sleep(ms) {
@@ -526,7 +694,9 @@ function sanitizeFileName(value) {
 }
 
 module.exports = {
-    confirmNativeAssistantTurn,
+    assertWritePathReady,
     inspectNativeAssistantState,
+    inspectRecoverySnapshot,
+    shouldUseConfirmedWriteSafetyRecheck,
     writeAcceptedResult,
 };

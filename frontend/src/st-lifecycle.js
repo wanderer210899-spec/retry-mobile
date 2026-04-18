@@ -1,18 +1,19 @@
 import {
     NATIVE_CONFIRM_POLL_MS,
     NATIVE_CONFIRM_TIMEOUT_MS,
-    NATIVE_HIDDEN_FAIL_DELAY_MS,
+    NATIVE_HIDDEN_DEBOUNCE_MS,
+    NATIVE_VISIBLE_PROGRESS_POLL_MS,
     NATIVE_WAIT_PROGRESS_TIMEOUT_MS,
-    NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS,
     NATIVE_WAIT_TIMEOUT_MS,
 } from './constants.js';
-import { getContext, getEventTypes, subscribeEvent } from './st-context.js';
+import { getContext, getCurrentChatArray, getEventTypes, subscribeEvent } from './st-context.js';
 import { confirmTargetTurn } from './st-chat.js';
 import { createStructuredError } from './retry-error.js';
 
 export function waitForNativeCompletion({
     fingerprint,
     timeoutMs = NATIVE_WAIT_TIMEOUT_MS,
+    nativeGraceSeconds = 30,
     onEvent,
 }) {
     return new Promise((resolve, reject) => {
@@ -23,12 +24,14 @@ export function waitForNativeCompletion({
         let confirming = false;
         let timeoutHandle = 0;
         let progressTimeoutHandle = 0;
-        let renderedWithoutEndHandle = 0;
         let hiddenTimeoutHandle = 0;
+        let visibleProgressHandle = 0;
         let lastEndedMessageId = null;
         let lastRenderedMessageId = null;
         let lastRenderedType = '';
         let lastRenderedSummary = '';
+        let lastVisibleProgressSignature = '';
+        let lastVisibleProgressAt = 0;
 
         if (!eventTypes.GENERATION_ENDED) {
             reject(createStructuredError(
@@ -44,7 +47,7 @@ export function waitForNativeCompletion({
             subscribeEvent(eventTypes.GENERATION_ENDED, (messageId) => {
                 lastEndedMessageId = normalizeMessageId(messageId);
                 clearProgressTimeout();
-                clearRenderedWithoutEndTimeout();
+                clearVisibleProgressPoll();
                 onEvent?.('GENERATION_ENDED', `SillyTavern reported native completion for message ${lastEndedMessageId}.`);
                 void confirmFromObservedEvents();
             }, context),
@@ -56,8 +59,10 @@ export function waitForNativeCompletion({
                     lastRenderedMessageId = normalizeMessageId(messageId);
                     lastRenderedType = String(type || '');
                     lastRenderedSummary = `Rendered assistant message ${messageId} (${type || 'unknown'}).`;
+                    lastVisibleProgressAt = Date.now();
+                    lastVisibleProgressSignature = readMessageProgressSignature(lastRenderedMessageId);
                     clearProgressTimeout();
-                    armRenderedWithoutEndTimeout();
+                    armVisibleProgressPoll();
                     onEvent?.('CHARACTER_MESSAGE_RENDERED', lastRenderedSummary);
                     if (lastEndedMessageId != null) {
                         void confirmFromObservedEvents();
@@ -259,6 +264,9 @@ export function waitForNativeCompletion({
             }
 
             clearHiddenTimeout();
+            if (lastRenderedMessageId != null && lastEndedMessageId == null) {
+                armVisibleProgressPoll();
+            }
         }
 
         function armHiddenTimeout() {
@@ -273,10 +281,10 @@ export function waitForNativeCompletion({
 
                 settleFailed(
                     'hidden_timeout',
-                    'Retry Mobile stopped waiting for native completion because the browser stayed hidden for too long.',
-                    describeObservedEvents() || 'The tab remained hidden for 20 seconds while native completion was pending.',
+                    'Retry Mobile stopped waiting for native completion because the browser remained hidden during native completion.',
+                    describeObservedEvents() || 'The tab remained hidden for more than the debounce window while native completion was pending.',
                 );
-            }, Math.min(timeoutMs, NATIVE_HIDDEN_FAIL_DELAY_MS));
+            }, Math.min(timeoutMs, NATIVE_HIDDEN_DEBOUNCE_MS));
         }
 
         function clearHiddenTimeout() {
@@ -333,7 +341,7 @@ export function waitForNativeCompletion({
             }
 
             clearProgressTimeout();
-            clearRenderedWithoutEndTimeout();
+            clearVisibleProgressPoll();
             clearHiddenTimeout();
             document.removeEventListener('visibilitychange', onVisibilityChange);
 
@@ -353,33 +361,56 @@ export function waitForNativeCompletion({
             progressTimeoutHandle = 0;
         }
 
-        function armRenderedWithoutEndTimeout() {
-            if (lastEndedMessageId != null) {
-                clearRenderedWithoutEndTimeout();
+        function armVisibleProgressPoll() {
+            if (document.visibilityState === 'hidden' || lastRenderedMessageId == null || lastEndedMessageId != null) {
+                clearVisibleProgressPoll();
                 return;
             }
 
-            clearRenderedWithoutEndTimeout();
-            renderedWithoutEndHandle = window.setTimeout(() => {
-                if (lastEndedMessageId != null) {
+            if (!lastVisibleProgressAt) {
+                lastVisibleProgressAt = Date.now();
+                lastVisibleProgressSignature = readMessageProgressSignature(lastRenderedMessageId);
+            }
+
+            if (visibleProgressHandle) {
+                return;
+            }
+
+            visibleProgressHandle = window.setInterval(() => {
+                if (lastEndedMessageId != null || lastRenderedMessageId == null) {
+                    clearVisibleProgressPoll();
                     return;
                 }
 
-                settleFailed(
-                    'rendered_without_end',
-                    'Retry Mobile saw the native assistant render, but SillyTavern never emitted the matching completion event.',
-                    describeObservedEvents() || lastRenderedSummary,
-                );
-            }, Math.min(timeoutMs, NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS));
+                const nextSignature = readMessageProgressSignature(lastRenderedMessageId);
+                if (nextSignature && nextSignature !== lastVisibleProgressSignature) {
+                    lastVisibleProgressSignature = nextSignature;
+                    lastVisibleProgressAt = Date.now();
+                    return;
+                }
+
+                if (!lastVisibleProgressAt) {
+                    lastVisibleProgressAt = Date.now();
+                    return;
+                }
+
+                if ((Date.now() - lastVisibleProgressAt) >= (Math.max(10, Number(nativeGraceSeconds) || 30) * 1000)) {
+                    settleFailed(
+                        'rendered_without_end',
+                        'Retry Mobile saw the native assistant render, but SillyTavern stopped making visible progress before the completion event arrived.',
+                        describeObservedEvents() || lastRenderedSummary,
+                    );
+                }
+            }, NATIVE_VISIBLE_PROGRESS_POLL_MS);
         }
 
-        function clearRenderedWithoutEndTimeout() {
-            if (!renderedWithoutEndHandle) {
+        function clearVisibleProgressPoll() {
+            if (!visibleProgressHandle) {
                 return;
             }
 
-            window.clearTimeout(renderedWithoutEndHandle);
-            renderedWithoutEndHandle = 0;
+            window.clearInterval(visibleProgressHandle);
+            visibleProgressHandle = 0;
         }
     });
 }
@@ -393,4 +424,23 @@ function normalizeMessageId(messageId) {
     return Number.isFinite(numeric)
         ? numeric
         : null;
+}
+
+function readMessageProgressSignature(messageId) {
+    const chat = getCurrentChatArray(getContext());
+    const message = Array.isArray(chat) && Number.isFinite(messageId)
+        ? chat[messageId]
+        : null;
+    if (!message || typeof message !== 'object') {
+        return '';
+    }
+
+    const swipeCount = Array.isArray(message.swipes) ? message.swipes.length : 0;
+    const swipeId = Number.isFinite(Number(message.swipe_id)) ? Number(message.swipe_id) : -1;
+    const mes = String(message.mes || '');
+    return JSON.stringify({
+        mes,
+        swipeCount,
+        swipeId,
+    });
 }

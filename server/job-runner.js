@@ -1,22 +1,29 @@
 const { acquireWakeLock, notify, releaseWakeLock } = require('./notifier');
+const { incrementCircuitBreaker, pruneTerminalJobUnits, resetCircuitBreaker } = require('./job-store');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { validateAcceptedText } = require('./validation');
 const { appendAttemptLog, touchJob } = require('./state');
-const { confirmNativeAssistantTurn, inspectNativeAssistantState, writeAcceptedResult } = require('./chat-writer');
+const {
+    assertWritePathReady,
+    inspectNativeAssistantState,
+    writeAcceptedResult,
+} = require('./chat-writer');
 
 const NATIVE_PENDING_POLL_MS = 1000;
-const FORCED_NATIVE_INSPECTION_DELAYS_MS = [0, 250, 500, 1000];
+const FORCED_NATIVE_INSPECTION_DELAYS_MS = [0, 1000, 2000, 4000, 8000];
+const BASE_RETRY_DELAY_MS = 750;
+const MAX_RETRY_DELAY_MS = 10000;
+const MAX_TARGET_PENDING_INSPECTIONS = 5;
 
 async function runJob(job, environment) {
     acquireWakeLock();
+    job.jobController ??= new AbortController();
+    job.transportFailureCount = 0;
+
     try {
         await awaitNativeOutcome(job);
         if (job.cancelRequested) {
-            touchJob(job, {
-                state: 'cancelled',
-                phase: 'cancelled',
-            });
-            releaseWakeLock();
+            finalizeCancelled(job);
             return;
         }
 
@@ -35,12 +42,19 @@ async function runJob(job, environment) {
             let responsePayload = null;
             try {
                 responsePayload = await replayCapturedRequest(job, environment);
+                job.transportFailureCount = 0;
             } catch (error) {
                 const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not complete a retry attempt.');
+                if (structuredError.code === 'cancelled' || job.cancelRequested || job.jobController?.signal?.aborted) {
+                    finalizeCancelled(job);
+                    return;
+                }
+
                 if (structuredError.code === 'attempt_timeout') {
                     job.lastError = structuredError.message;
                     job.structuredError = null;
                     job.lastValidation = null;
+                    job.transportFailureCount += 1;
                     appendAttemptLog(job, {
                         ...attemptRecord,
                         finishedAt: new Date().toISOString(),
@@ -52,6 +66,7 @@ async function runJob(job, environment) {
                     touchJob(job, {
                         phase: 'attempt_timed_out',
                     });
+                    await waitBeforeNextAttempt(job, 'transport');
                     continue;
                 }
 
@@ -90,6 +105,7 @@ async function runJob(job, environment) {
                 touchJob(job, {
                     phase: 'validation_rejected',
                 });
+                await waitBeforeNextAttempt(job, 'validation');
                 continue;
             }
 
@@ -97,26 +113,73 @@ async function runJob(job, environment) {
                 break;
             }
 
+            await ensureNativeWriteReady(job, attemptRecord);
+            if (job.cancelRequested) {
+                break;
+            }
+
             touchJob(job, {
                 phase: 'writing_chat',
             });
+
             let writeResult = null;
             try {
                 writeResult = await writeAcceptedResult(job, validation.metrics);
             } catch (error) {
                 const structuredError = toStructuredError(error, 'backend_write_failed', 'Retry Mobile could not write an accepted result back to chat.');
-                appendAttemptLog(job, {
-                    ...attemptRecord,
-                    finishedAt: new Date().toISOString(),
-                    outcome: 'write_failed',
-                    reason: structuredError.code,
-                    message: structuredError.message,
-                    phase: 'writing_chat',
-                    characterCount: validation.metrics.characterCount,
-                    tokenCount: validation.metrics.tokenCount,
-                });
-                throw error;
+                if (structuredError.code === 'native_write_not_ready') {
+                    appendAttemptLog(job, {
+                        ...attemptRecord,
+                        finishedAt: new Date().toISOString(),
+                        outcome: 'state_wait',
+                        reason: structuredError.code,
+                        message: structuredError.message,
+                        phase: 'awaiting_native_confirmation',
+                        characterCount: validation.metrics.characterCount,
+                        tokenCount: validation.metrics.tokenCount,
+                    });
+                    await awaitNativeOutcome(job);
+                    writeResult = await writeAcceptedResult(job, validation.metrics);
+                } else if (structuredError.code === 'native_persist_unresolved') {
+                    appendAttemptLog(job, {
+                        ...attemptRecord,
+                        finishedAt: new Date().toISOString(),
+                        outcome: 'state_wait',
+                        reason: structuredError.code,
+                        message: structuredError.message,
+                        phase: 'native_confirming_persisted',
+                        characterCount: validation.metrics.characterCount,
+                        tokenCount: validation.metrics.tokenCount,
+                    });
+                    await recoverConfirmedAssistantGap(job);
+                    writeResult = await writeAcceptedResult(job, validation.metrics);
+                }
+
+                if (writeResult) {
+                    // The accepted response survived a state wait and was written successfully.
+                } else if (structuredError.code === 'write_conflict') {
+                    job.orphanedAcceptedResults.push({
+                        text: validation.metrics.text,
+                        characterCount: validation.metrics.characterCount,
+                        tokenCount: validation.metrics.tokenCount,
+                    });
+                }
+
+                if (!writeResult) {
+                    appendAttemptLog(job, {
+                        ...attemptRecord,
+                        finishedAt: new Date().toISOString(),
+                        outcome: 'write_failed',
+                        reason: structuredError.code,
+                        message: structuredError.message,
+                        phase: 'writing_chat',
+                        characterCount: validation.metrics.characterCount,
+                        tokenCount: validation.metrics.tokenCount,
+                    });
+                    throw error;
+                }
             }
+
             job.acceptedResults.push({
                 text: validation.metrics.text,
                 characterCount: validation.metrics.characterCount,
@@ -154,11 +217,7 @@ async function runJob(job, environment) {
         }
 
         if (job.cancelRequested) {
-            touchJob(job, {
-                state: 'cancelled',
-                phase: 'cancelled',
-            });
-            releaseWakeLock();
+            finalizeCancelled(job);
             return;
         }
 
@@ -167,12 +226,13 @@ async function runJob(job, environment) {
                 state: 'completed',
                 phase: 'completed',
             });
+            resetCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
+            pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
             notify(job.runConfig, 'completed', {
                 attemptCount: job.attemptCount,
                 acceptedCount: job.acceptedCount,
                 targetAcceptedCount: job.targetAcceptedCount,
             });
-            releaseWakeLock();
             return;
         }
 
@@ -187,7 +247,8 @@ async function runJob(job, environment) {
             lastError: structuredError.message,
             structuredError,
         });
-        releaseWakeLock();
+        incrementCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
+        pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
     } catch (error) {
         const structuredError = toStructuredError(error, 'backend_write_failed', 'Retry Mobile backend job failed.');
         touchJob(job, {
@@ -199,7 +260,10 @@ async function runJob(job, environment) {
                 detail: structuredError.detail || buildAttemptSummary(job),
             },
         });
+        incrementCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
+        pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
         console.error('[retry-mobile:backend] Job failed:', job.jobId, error);
+    } finally {
         releaseWakeLock();
     }
 }
@@ -224,11 +288,8 @@ async function awaitNativeOutcome(job) {
         nativeState: 'pending',
         phase: 'pending_native',
         structuredError: null,
+        nativeGraceDeadline: new Date(Date.now() + (Number(job.nativeGraceSeconds || 30) * 1000)).toISOString(),
     });
-
-    const graceDeadlineMs = Number.isFinite(Date.parse(job.nativeGraceDeadline))
-        ? Date.parse(job.nativeGraceDeadline)
-        : Date.now();
 
     while (!job.cancelRequested) {
         if (job.nativeState === 'confirmed' || job.nativeState === 'abandoned') {
@@ -240,14 +301,22 @@ async function awaitNativeOutcome(job) {
             continue;
         }
 
+        if (job.phase === 'native_confirming_persisted') {
+            await resolvePendingNativeState(job, job.nativeResolutionCause || 'frontend_confirmed');
+            continue;
+        }
+
         const inspection = inspectNativeAssistantState(job);
         if (inspection.kind === 'filled') {
             applyInspectionResolution(job, inspection, '');
             return;
         }
 
-        if (Date.now() >= graceDeadlineMs) {
-            await resolvePendingNativeState(job, 'grace_expired');
+        const graceDeadlineMs = Number.isFinite(Date.parse(job.nativeGraceDeadline))
+            ? Date.parse(job.nativeGraceDeadline)
+            : 0;
+        if (graceDeadlineMs > 0 && Date.now() >= graceDeadlineMs) {
+            await resolvePendingNativeState(job, job.nativeResolutionCause || 'grace_expired');
             continue;
         }
 
@@ -267,11 +336,46 @@ async function resolvePendingNativeState(job, cause) {
                 return { outcome: job.nativeState };
             }
 
-            const inspection = await inspectPendingNativeState(job, cause);
+            const inspection = await inspectPendingNativeState(job);
             if (!inspection || job.state !== 'running' || job.cancelRequested) {
                 return { outcome: 'cancelled' };
             }
 
+            if (inspection.kind === 'target_pending') {
+                const nextAttempts = Number(job.inspectionAttempts || 0) + 1;
+                if (nextAttempts >= MAX_TARGET_PENDING_INSPECTIONS) {
+                    const forcedInspection = {
+                        kind: 'missing_assistant',
+                        persistedAssistantIndex: null,
+                        assistantMessageIndex: null,
+                        assistantMessage: null,
+                    };
+                    touchJob(job, {
+                        inspectionAttempts: nextAttempts,
+                    });
+                    applyInspectionResolution(job, forcedInspection, cause || 'forced_recovery');
+                    return {
+                        outcome: job.nativeState,
+                        inspection: forcedInspection,
+                    };
+                }
+
+                touchJob(job, {
+                    inspectionAttempts: nextAttempts,
+                    phase: job.phase === 'native_confirming_persisted'
+                        ? 'native_confirming_persisted'
+                        : 'pending_native',
+                    nativeGraceDeadline: new Date(Date.now() + (Number(job.nativeGraceSeconds || 30) * 1000)).toISOString(),
+                });
+                return {
+                    outcome: 'pending',
+                    inspection,
+                };
+            }
+
+            touchJob(job, {
+                inspectionAttempts: 0,
+            });
             applyInspectionResolution(job, inspection, cause);
             return {
                 outcome: job.nativeState,
@@ -300,19 +404,36 @@ async function waitForNativeResolutionIdle(job, timeoutMs) {
 }
 
 async function confirmNativeAssistant(job, assistantMessageIndex) {
-    const confirmation = await confirmNativeAssistantTurn(job, assistantMessageIndex);
+    const liveAssistantIndex = Number(assistantMessageIndex);
+    if (!Number.isFinite(liveAssistantIndex) || liveAssistantIndex < 0) {
+        throw createStructuredError(
+            'handoff_request_failed',
+            'Retry Mobile did not receive a valid native assistant turn to confirm.',
+        );
+    }
+
     touchJob(job, {
-        nativeState: 'confirmed',
-        phase: 'native_confirmed',
-        recoveryMode: 'top_up_existing',
-        assistantMessageIndex: confirmation.assistantMessageIndex,
-        targetMessageIndex: confirmation.targetMessageIndex,
-        targetMessage: confirmation.targetMessage,
+        nativeState: 'pending',
+        phase: 'native_confirming_persisted',
+        recoveryMode: '',
+        nativeResolutionCause: 'frontend_confirmed',
+        assistantMessageIndex: liveAssistantIndex,
+        targetMessageIndex: liveAssistantIndex,
+        targetMessage: null,
         lastError: '',
         structuredError: null,
+        inspectionAttempts: 0,
+        nativeGraceDeadline: new Date(Date.now() + (Number(job.nativeGraceSeconds || 30) * 1000)).toISOString(),
     });
-    appendLifecycleLog(job, 'native_confirmed', `Frontend confirmed native assistant turn ${confirmation.assistantMessageIndex}.`);
-    return confirmation;
+    appendLifecycleLog(job, 'native_confirming_persisted', `Frontend confirmed native assistant turn ${liveAssistantIndex}; backend is waiting for the saved chat to expose it.`);
+    if (!job.nativeResolutionInProgress) {
+        void resolvePendingNativeState(job, 'frontend_confirmed');
+    }
+    return {
+        assistantMessageIndex: liveAssistantIndex,
+        targetMessageIndex: liveAssistantIndex,
+        targetMessage: null,
+    };
 }
 
 function applyInspectionResolution(job, inspection, cause) {
@@ -322,6 +443,7 @@ function applyInspectionResolution(job, inspection, cause) {
             phase: 'native_confirmed',
             recoveryMode: 'top_up_existing',
             nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            nativeGraceDeadline: '',
             assistantMessageIndex: inspection.assistantMessageIndex,
             targetMessageIndex: inspection.assistantMessageIndex,
             targetMessage: clone(inspection.assistantMessage),
@@ -338,6 +460,7 @@ function applyInspectionResolution(job, inspection, cause) {
             phase: 'native_abandoned',
             recoveryMode: 'reuse_empty_placeholder',
             nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            nativeGraceDeadline: '',
             assistantMessageIndex: inspection.assistantMessageIndex,
             targetMessageIndex: inspection.assistantMessageIndex,
             targetMessage: clone(inspection.assistantMessage),
@@ -348,35 +471,22 @@ function applyInspectionResolution(job, inspection, cause) {
         return;
     }
 
-    if (inspection.kind === 'missing_assistant') {
+    if (inspection.kind === 'missing_assistant' || inspection.kind === 'missing_user_anchor') {
         touchJob(job, {
             nativeState: 'abandoned',
             phase: 'native_abandoned',
             recoveryMode: 'create_missing_turn',
             nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            nativeGraceDeadline: '',
             assistantMessageIndex: null,
             targetMessageIndex: null,
             targetMessage: null,
             lastError: '',
             structuredError: null,
         });
-        appendLifecycleLog(job, 'native_abandoned', 'Native first reply was abandoned. Backend will create the missing assistant turn.');
-        return;
-    }
-
-    if (inspection.kind === 'missing_user_anchor') {
-        touchJob(job, {
-            nativeState: 'abandoned',
-            phase: 'native_abandoned',
-            recoveryMode: 'create_missing_turn',
-            nativeResolutionCause: cause || job.nativeResolutionCause || '',
-            assistantMessageIndex: null,
-            targetMessageIndex: null,
-            targetMessage: null,
-            lastError: '',
-            structuredError: null,
-        });
-        appendLifecycleLog(job, 'native_abandoned', 'Native first reply was abandoned before SillyTavern saved the captured user turn. Backend will recreate the user and assistant anchor.');
+        appendLifecycleLog(job, 'native_abandoned', inspection.kind === 'missing_user_anchor'
+            ? 'Native first reply was abandoned before SillyTavern saved the captured user turn. Backend will recreate the user and assistant anchor.'
+            : 'Native first reply was abandoned. Backend will create the missing assistant turn.');
         return;
     }
 
@@ -386,13 +496,9 @@ function applyInspectionResolution(job, inspection, cause) {
     );
 }
 
-async function inspectPendingNativeState(job, cause) {
-    const delays = cause === 'grace_expired'
-        ? [0]
-        : FORCED_NATIVE_INSPECTION_DELAYS_MS;
-
+async function inspectPendingNativeState(job) {
     let latestInspection = null;
-    for (const delayMs of delays) {
+    for (const delayMs of FORCED_NATIVE_INSPECTION_DELAYS_MS) {
         if (delayMs > 0) {
             await sleep(delayMs);
         }
@@ -416,6 +522,43 @@ async function observeNativeResolution(job) {
     }
 
     await job.nativeResolutionPromise;
+}
+
+async function ensureNativeWriteReady(job, attemptRecord) {
+    try {
+        assertWritePathReady(job);
+    } catch (error) {
+        const structuredError = toStructuredError(error, 'native_write_not_ready', 'Retry Mobile delayed the write because native confirmation was still resolving.');
+        appendAttemptLog(job, {
+            ...attemptRecord,
+            finishedAt: new Date().toISOString(),
+            outcome: 'state_wait',
+            reason: structuredError.code,
+            message: structuredError.message,
+            phase: job.phase,
+        });
+        await awaitNativeOutcome(job);
+    }
+}
+
+async function recoverConfirmedAssistantGap(job) {
+    if (job.nativeResolutionInProgress || job.phase === 'native_confirming_persisted') {
+        await awaitNativeOutcome(job);
+        return;
+    }
+
+    const inspection = inspectNativeAssistantState(job);
+    if (inspection.kind === 'filled' || inspection.kind === 'empty_placeholder' || inspection.kind === 'missing_assistant' || inspection.kind === 'missing_user_anchor') {
+        applyInspectionResolution(job, inspection, 'confirmed_write_recheck');
+        return;
+    }
+
+    applyInspectionResolution(job, {
+        kind: 'missing_assistant',
+        persistedAssistantIndex: null,
+        assistantMessageIndex: null,
+        assistantMessage: null,
+    }, 'confirmed_write_recheck');
 }
 
 function appendLifecycleLog(job, reason, message) {
@@ -443,10 +586,13 @@ async function replayCapturedRequest(job, environment) {
 
     const endpoint = resolveGenerationEndpoint(body);
     const timeoutSeconds = Math.max(1, Number(job.runConfig?.attemptTimeoutSeconds) || 0);
-    const controller = new AbortController();
+    const timeoutController = new AbortController();
     const timeoutHandle = setTimeout(() => {
-        controller.abort();
+        timeoutController.abort();
     }, timeoutSeconds * 1000);
+
+    const onJobAbort = () => timeoutController.abort();
+    job.jobController?.signal?.addEventListener?.('abort', onJobAbort, { once: true });
 
     try {
         let response = null;
@@ -456,13 +602,16 @@ async function replayCapturedRequest(job, environment) {
                 headers: {
                     'Content-Type': 'application/json',
                     Accept: 'application/json',
-                    ...(job.authHeaders || {}),
                 },
                 body: JSON.stringify(body),
-                signal: controller.signal,
+                signal: timeoutController.signal,
             });
         } catch (error) {
             if (error?.name === 'AbortError') {
+                if (job.cancelRequested || job.jobController?.signal?.aborted) {
+                    throw createStructuredError('cancelled', 'Retry Mobile cancelled the active retry attempt.');
+                }
+
                 throw createStructuredError(
                     'attempt_timeout',
                     `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
@@ -477,6 +626,10 @@ async function replayCapturedRequest(job, environment) {
             text = await response.text();
         } catch (error) {
             if (error?.name === 'AbortError') {
+                if (job.cancelRequested || job.jobController?.signal?.aborted) {
+                    throw createStructuredError('cancelled', 'Retry Mobile cancelled the active retry attempt.');
+                }
+
                 throw createStructuredError(
                     'attempt_timeout',
                     `Attempt timed out after ${timeoutSeconds} seconds with no response.`,
@@ -497,6 +650,7 @@ async function replayCapturedRequest(job, environment) {
         return payload;
     } finally {
         clearTimeout(timeoutHandle);
+        job.jobController?.signal?.removeEventListener?.('abort', onJobAbort);
     }
 }
 
@@ -539,7 +693,10 @@ function extractResponseText(payload) {
         return payload.responseContent;
     }
 
-    return '';
+    throw createStructuredError(
+        'handoff_request_failed',
+        'Retry Mobile could not extract text from the generation response.',
+    );
 }
 
 function flattenMessagePart(part) {
@@ -547,7 +704,7 @@ function flattenMessagePart(part) {
         return part;
     }
 
-    if (part?.type === 'text' && typeof part.text === 'string') {
+    if (part && typeof part === 'object' && typeof part.text === 'string') {
         return part.text;
     }
 
@@ -556,10 +713,58 @@ function flattenMessagePart(part) {
 
 function tryParseJson(text) {
     try {
-        return text ? JSON.parse(text) : {};
+        return JSON.parse(text);
     } catch {
-        return { raw: text };
+        return null;
     }
+}
+
+function buildAttemptSummary(job) {
+    return `Attempts: ${job.attemptCount}/${job.maxAttempts}; accepted: ${job.acceptedCount}/${job.targetAcceptedCount}.`;
+}
+
+function formatValidationRejection(validation) {
+    if (!validation) {
+        return 'Validation rejected the response.';
+    }
+
+    if (validation.reason === 'empty') {
+        return 'The provider returned an empty response.';
+    }
+
+    if (validation.reason === 'below_min_characters') {
+        return `The response only had ${validation.metrics.characterCount} characters, below the required ${validation.threshold}.`;
+    }
+
+    if (validation.reason === 'below_min_tokens') {
+        return `The response only had ${validation.metrics.tokenCount} tokens, below the required ${validation.threshold}.`;
+    }
+
+    return 'Validation rejected the response.';
+}
+
+async function waitBeforeNextAttempt(job, failureKind) {
+    if (job.cancelRequested) {
+        return;
+    }
+
+    const jitterMultiplier = 0.8 + (Math.random() * 0.4);
+    const consecutiveTransportFailures = Number(job.transportFailureCount || 0);
+    let baseDelay = BASE_RETRY_DELAY_MS;
+    if (failureKind === 'transport') {
+        baseDelay = Math.min(MAX_RETRY_DELAY_MS, BASE_RETRY_DELAY_MS * (2 ** Math.max(0, consecutiveTransportFailures - 1)));
+    }
+
+    await sleep(Math.round(baseDelay * jitterMultiplier));
+}
+
+function finalizeCancelled(job) {
+    touchJob(job, {
+        state: 'cancelled',
+        phase: 'cancelled',
+    });
+    resetCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
+    pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
 }
 
 function clone(value) {
@@ -576,31 +781,3 @@ module.exports = {
     runJob,
     waitForNativeResolutionIdle,
 };
-
-function formatValidationRejection(validation) {
-    if (validation?.reason === 'below_min_characters') {
-        return `below minimum character count (${validation.metrics?.characterCount || 0}/${validation.threshold || 0})`;
-    }
-
-    if (validation?.reason === 'below_min_tokens') {
-        return `below minimum token count (${validation.metrics?.tokenCount || 0}/${validation.threshold || 0})`;
-    }
-
-    if (validation?.reason === 'empty') {
-        return 'empty response';
-    }
-
-    return validation?.reason || 'validation failed';
-}
-
-function buildAttemptSummary(job) {
-    const latest = Array.isArray(job?.attemptLog) && job.attemptLog.length > 0
-        ? job.attemptLog[job.attemptLog.length - 1]
-        : null;
-    if (!latest) {
-        return '';
-    }
-
-    const latestReason = latest.message || latest.reason || latest.outcome || 'unknown';
-    return `Accepted ${job.acceptedCount || 0}/${job.targetAcceptedCount || 0} after ${job.attemptCount || 0} attempts. Last attempt: ${latestReason}`;
-}

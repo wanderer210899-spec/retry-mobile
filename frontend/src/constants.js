@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     targetAcceptedCount: 3,
     maxAttempts: 30,
     attemptTimeoutSeconds: 90,
+    nativeGraceSeconds: 30,
     validationMode: VALIDATION_MODE.CHARACTERS,
     minTokens: 0,
     minCharacters: 300,
@@ -43,6 +44,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     vibrateOnSuccess: false,
     vibrateOnComplete: false,
     notificationMessageTemplate: '',
+    allowHeuristicTokenFallback: false,
 });
 
 export const REQUIRED_EVENT_NAMES = Object.freeze([
@@ -59,13 +61,16 @@ export const REQUIRED_PAYLOAD_KEYS = Object.freeze([
     'messages',
 ]);
 
-export const POLL_INTERVAL_MS = 1800;
+export const PROTOCOL_VERSION = 4;
+export const POLL_INTERVAL_FAST_MS = 1800;
+export const POLL_INTERVAL_STEADY_MS = 4000;
+export const POLL_INTERVAL_SLOW_MS = 8000;
 export const NATIVE_WAIT_TIMEOUT_MS = 180000;
 export const NATIVE_WAIT_PROGRESS_TIMEOUT_MS = 60000;
-export const NATIVE_WAIT_RENDERED_WITHOUT_END_TIMEOUT_MS = 12000;
-export const NATIVE_HIDDEN_FAIL_DELAY_MS = 20000;
+export const NATIVE_HIDDEN_DEBOUNCE_MS = 2500;
 export const NATIVE_CONFIRM_TIMEOUT_MS = 4000;
 export const NATIVE_CONFIRM_POLL_MS = 120;
+export const NATIVE_VISIBLE_PROGRESS_POLL_MS = 1000;
 export const DEBUG_EVENT_LIMIT = 16;
 
 export const LOG_PREFIX = Object.freeze({
