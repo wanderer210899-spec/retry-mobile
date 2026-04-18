@@ -464,13 +464,17 @@ async function ensureBackendReady() {
     }
 
     bootState.promise = (async () => {
-        await initializeStRuntime();
+        const compatibility = await initializeStRuntime();
         configureJobStore({
             getUserDirectories,
             getUserDirectoriesList,
         });
         setPersistenceHandler(writeJobSnapshot);
-        await restorePersistedJobs();
+        if (compatibility.userDirectoryScanSupport) {
+            await restorePersistedJobs();
+        } else {
+            console.warn('[retry-mobile:backend] Persisted-job restore scanning is unavailable:', compatibility.detail);
+        }
         bootState.ready = true;
         bootState.promise = null;
     })();

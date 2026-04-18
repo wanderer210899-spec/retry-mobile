@@ -10,6 +10,8 @@ const runtimeState = {
     initializing: null,
     compatibility: {
         nativeSaveSupport: false,
+        userDirectorySupport: false,
+        userDirectoryScanSupport: false,
         detail: 'Retry Mobile has not checked SillyTavern save compatibility yet.',
         checkedAt: null,
     },
@@ -36,24 +38,51 @@ async function initializeStRuntime() {
             const getAllUserHandles = resolveModuleFunction(usersModule, 'getAllUserHandles');
             const getUserDirectoriesList = buildUserDirectoriesListGetter(usersModule, getUserDirectories, getAllUserHandles);
             const trySaveChat = resolveModuleFunction(chatsModule, 'trySaveChat');
+            const detailParts = [];
 
-            if (typeof getUserDirectories !== 'function' || typeof getUserDirectoriesList !== 'function') {
-                throw new Error('SillyTavern user directory helpers are unavailable.');
+            runtimeState.getUserDirectories = typeof getUserDirectories === 'function'
+                ? getUserDirectories
+                : null;
+            runtimeState.getUserDirectoriesList = typeof getUserDirectoriesList === 'function'
+                ? getUserDirectoriesList
+                : null;
+            runtimeState.trySaveChat = typeof trySaveChat === 'function'
+                ? trySaveChat
+                : null;
+
+            if (typeof getUserDirectories !== 'function') {
+                detailParts.push('SillyTavern getUserDirectories helper is unavailable.');
+            }
+
+            if (typeof getUserDirectoriesList !== 'function') {
+                detailParts.push('SillyTavern getUserDirectoriesList helper is unavailable, so persisted-job restore scanning is disabled.');
             }
 
             if (typeof trySaveChat !== 'function') {
-                throw new Error('SillyTavern trySaveChat helper is unavailable.');
+                detailParts.push('SillyTavern trySaveChat helper is unavailable.');
             }
 
-            runtimeState.getUserDirectories = getUserDirectories;
-            runtimeState.getUserDirectoriesList = getUserDirectoriesList;
-            runtimeState.trySaveChat = trySaveChat;
+            let nativeSaveSupport = false;
+            if (typeof trySaveChat === 'function') {
+                const probeResult = await runCompatibilityProbe(trySaveChat);
+                nativeSaveSupport = Boolean(probeResult.nativeSaveSupport);
+                if (probeResult.detail) {
+                    detailParts.push(probeResult.detail);
+                }
+            }
 
-            const probeResult = await runCompatibilityProbe(runtimeState.trySaveChat);
-            runtimeState.compatibility = probeResult;
+            runtimeState.compatibility = {
+                nativeSaveSupport,
+                userDirectorySupport: typeof getUserDirectories === 'function',
+                userDirectoryScanSupport: typeof getUserDirectoriesList === 'function',
+                detail: detailParts.join(' ').trim() || 'Retry Mobile verified the current SillyTavern runtime helpers.',
+                checkedAt: new Date().toISOString(),
+            };
         } catch (error) {
             runtimeState.compatibility = {
                 nativeSaveSupport: false,
+                userDirectorySupport: typeof runtimeState.getUserDirectories === 'function',
+                userDirectoryScanSupport: typeof runtimeState.getUserDirectoriesList === 'function',
                 detail: error instanceof Error ? error.message : String(error),
                 checkedAt: new Date().toISOString(),
             };
@@ -70,6 +99,8 @@ async function initializeStRuntime() {
 function getCompatibilitySnapshot() {
     return {
         nativeSaveSupport: Boolean(runtimeState.compatibility.nativeSaveSupport),
+        userDirectorySupport: Boolean(runtimeState.compatibility.userDirectorySupport),
+        userDirectoryScanSupport: Boolean(runtimeState.compatibility.userDirectoryScanSupport),
         detail: String(runtimeState.compatibility.detail || ''),
         checkedAt: runtimeState.compatibility.checkedAt || null,
     };
@@ -85,11 +116,17 @@ function ensureRuntimeReady() {
 
 function getUserDirectories(handle) {
     const state = ensureRuntimeReady();
+    if (typeof state.getUserDirectories !== 'function') {
+        throw new Error(state.compatibility.detail || 'Retry Mobile user-directory support is unavailable in this SillyTavern runtime.');
+    }
     return state.getUserDirectories(handle);
 }
 
 async function getUserDirectoriesList() {
     const state = ensureRuntimeReady();
+    if (typeof state.getUserDirectoriesList !== 'function') {
+        return [];
+    }
     return await state.getUserDirectoriesList();
 }
 

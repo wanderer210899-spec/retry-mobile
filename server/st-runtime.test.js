@@ -49,3 +49,8 @@ test('buildUserDirectoriesListGetter prefers the direct exported helper when ava
 
     assert.equal(directories, expected);
 });
+
+test('buildUserDirectoriesListGetter returns null when no list strategy is available', () => {
+    const getter = buildUserDirectoriesListGetter({}, null, null);
+    assert.equal(getter, null);
+});
