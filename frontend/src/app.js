@@ -93,12 +93,15 @@ const runtime = {
     activeTab: 'main',
     nativeFailureCompatWarned: false,
     nativeFailureReported: false,
+    recoveryHandle: 0,
+    recoverySignalsBound: false,
 };
 
 export function bootRetryMobile() {
     runtime.settings = readSettings(getContext());
     mountPanel();
     bindHostObserver();
+    bindFrontendRecoverySignals();
     registerCommands();
     void refreshDiagnostics();
     refreshQuickReplyState({ quiet: true });
@@ -861,6 +864,15 @@ async function confirmNativeHandoff(runId, nativeResult) {
             return;
         }
 
+        if (shouldDeferBackendDisconnect(error)) {
+            deferBackendDisconnect(
+                runId,
+                'native_confirm_deferred',
+                'Frontend lost contact while confirming native completion. Retry Mobile will recover backend status when the page becomes active again.',
+            );
+            return;
+        }
+
         const structured = getStructuredErrorFromApi(error, 'Retry Mobile could not confirm the native assistant turn with the backend.');
         await applyTerminalState(runId, RUN_STATE.FAILED, {
             error: structured,
@@ -917,6 +929,15 @@ async function reportRecoverableNativeFailure(runId, nativeResult) {
             announceTransitions: true,
         });
         if (adopted) {
+            return;
+        }
+
+        if (shouldDeferBackendDisconnect(error)) {
+            deferBackendDisconnect(
+                runId,
+                'native_failure_deferred',
+                'Frontend lost contact while reporting the hidden-tab native outcome. Retry Mobile will recover backend status when the page becomes active again.',
+            );
             return;
         }
 
@@ -982,6 +1003,22 @@ function clearPolling() {
     runtime.pollUnexpectedServerFailures = 0;
     runtime.pollSignature = '';
     runtime.machine.clearPollSession(runtime.machine.getSnapshot().pollSessionId);
+}
+
+function ensurePolling(runId, delayMs = 0) {
+    if (!runtime.machine.isCurrentRun(runId) || !runtime.activeJobId) {
+        return;
+    }
+
+    const pollSessionId = runtime.machine.getSnapshot().pollSessionId;
+    if (!pollSessionId || !runtime.machine.isCurrentPollSession(pollSessionId)) {
+        startPolling(runId);
+        return;
+    }
+
+    if (!runtime.pollHandle) {
+        scheduleNextPoll(runId, pollSessionId, delayMs);
+    }
 }
 
 function scheduleNextPoll(runId, pollSessionId, delayMs) {
@@ -1087,6 +1124,10 @@ async function pollStatus(runId, pollSessionId) {
         runtime.machine.recordEvent('backend', 'poll_failed', error?.message || 'Status poll failed.');
         const failureKind = classifyPollFailure(error);
         if (failureKind === 'fatal') {
+            const recovered = await recoverFrontendFromBackend('poll_fatal');
+            if (recovered) {
+                return;
+            }
             await reloadCurrentChatSafe();
             await applyTerminalState(runId, RUN_STATE.FAILED, {
                 error: createStructuredError(
@@ -1343,50 +1384,79 @@ function subscribeChatStateEvent(eventName) {
 }
 
 async function restoreActiveJob() {
+    await recoverFrontendFromBackend('boot', {
+        reloadWhenMissing: true,
+    });
+}
+
+async function recoverFrontendFromBackend(reason, options = {}) {
     const identity = getChatIdentity(getContext());
     if (!identity?.chatId) {
-        return;
+        return false;
     }
 
     await refreshChatState(identity);
 
     try {
         const status = await fetchActiveJob(identity);
-        if (!status?.jobId) {
-            const latestStatus = await fetchLatestJob(identity);
-            if (latestStatus?.jobId) {
-                restoreLatestRunLog(latestStatus, identity);
-            }
-            await reloadCurrentChatSafe();
-            return;
+        if (status?.jobId) {
+            await restoreRunningJobStatus(status, identity, reason);
+            return true;
         }
 
+        const latestStatus = await fetchLatestJob(identity);
+        if (latestStatus?.jobId) {
+            restoreLatestRunLog(latestStatus, identity);
+            await reloadCurrentChatSafe();
+            render();
+            return true;
+        }
+
+        if (options.reloadWhenMissing) {
+            await reloadCurrentChatSafe();
+            render();
+        }
+    } catch (error) {
+        backendLog.warn(`Could not recover frontend state from backend (${reason}).`, error);
+    }
+
+    return false;
+}
+
+async function restoreRunningJobStatus(status, identity, reason = 'restored') {
+    const runId = status.runId || status.jobId;
+    const snapshot = runtime.machine.getSnapshot();
+    const hasLiveSameRun = runtime.activeJobId === status.jobId
+        && snapshot.runId === runId
+        && snapshot.activeRunId === runId;
+
+    if (!hasLiveSameRun) {
         runtime.machine.startRun({
-            runId: status.runId || status.jobId,
+            runId,
             chatIdentity: status.chatIdentity || identity,
         });
-        syncRuntimeStateFromStatus(status.runId || status.jobId, status, {
-            previousStatus: null,
-            announceTransitions: false,
-        });
-        runtime.machine.setBackendEvent('restored', `Restored backend job ${status.jobId}.`);
-        runtime.machine.recordEvent('backend', 'restored', `Restored backend job ${status.jobId}.`);
-        runtime.activeJobId = status.jobId;
-        runtime.activeJobStatus = status;
-        clearCommittedReloads(runtime);
-        runtime.lastAppliedVersion = 0;
-        await syncRestoredStatus(status, runtime);
-
-        if (status.state === 'running') {
-            startPolling(status.runId || status.jobId);
-        } else {
-            runtime.machine.releaseRun();
-        }
-
-        render();
-    } catch (error) {
-        backendLog.warn('Could not restore active job.', error);
     }
+
+    syncRuntimeStateFromStatus(status.runId || status.jobId, status, {
+        previousStatus: runtime.activeJobStatus,
+        announceTransitions: false,
+    });
+    runtime.machine.clearError();
+    runtime.machine.setBackendEvent(reason, `Recovered backend job ${status.jobId}.`);
+    runtime.machine.recordEvent('backend', reason, `Recovered backend job ${status.jobId}.`);
+    runtime.activeJobId = status.jobId;
+    runtime.activeJobStatus = status;
+    clearCommittedReloads(runtime);
+    runtime.lastAppliedVersion = 0;
+    await syncRestoredStatus(status, runtime);
+
+    if (status.state === 'running') {
+        ensurePolling(status.runId || status.jobId, 0);
+    } else {
+        runtime.machine.releaseRun();
+    }
+
+    render();
 }
 
 function registerCommands() {
@@ -1555,6 +1625,25 @@ function scheduleMountRetry() {
     }, 900);
 }
 
+function bindFrontendRecoverySignals() {
+    if (runtime.recoverySignalsBound) {
+        return;
+    }
+
+    runtime.recoverySignalsBound = true;
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            scheduleBackendRecovery('page_visible');
+        }
+    });
+    window.addEventListener('focus', () => {
+        scheduleBackendRecovery('window_focus');
+    });
+    window.addEventListener('online', () => {
+        scheduleBackendRecovery('browser_online');
+    });
+}
+
 function bindHostObserver() {
     if (runtime.hostObserver || !document.body) {
         return;
@@ -1570,6 +1659,29 @@ function bindHostObserver() {
         childList: true,
         subtree: true,
     });
+}
+
+function scheduleBackendRecovery(reason, delayMs = 0) {
+    if (!shouldAttemptFrontendRecovery()) {
+        return;
+    }
+
+    if (runtime.recoveryHandle) {
+        window.clearTimeout(runtime.recoveryHandle);
+    }
+
+    runtime.recoveryHandle = window.setTimeout(() => {
+        runtime.recoveryHandle = 0;
+        void recoverFrontendFromBackend(reason);
+    }, Math.max(0, Number(delayMs) || 0));
+}
+
+function shouldAttemptFrontendRecovery() {
+    const state = getCurrentState();
+    return Boolean(runtime.activeJobId)
+        || Boolean(runtime.lastRunLog?.status?.jobId)
+        || isRunningLikeState(state)
+        || state === RUN_STATE.FAILED;
 }
 
 function render() {
@@ -2247,6 +2359,32 @@ function classifyPollFailure(error) {
     }
 
     return 'transient';
+}
+
+function shouldDeferBackendDisconnect(error) {
+    return !Number.isFinite(Number(error?.status));
+}
+
+function deferBackendDisconnect(runId, eventName, summary) {
+    if (!runtime.machine.isCurrentRun(runId)) {
+        return;
+    }
+
+    runtime.machine.clearError();
+    runtime.machine.setBackendEvent('connection_lost', summary);
+    runtime.machine.recordEvent('backend', eventName, summary);
+
+    const fallbackState = resolveRunStateFromStatus(runtime.activeJobStatus) || RUN_STATE.BACKEND_RUNNING;
+    if (!isRunningLikeState(runtime.machine.getSnapshot().state)) {
+        runtime.machine.transition(fallbackState);
+    }
+
+    render();
+    ensurePolling(runId, POLL_INTERVAL_FAST_MS);
+
+    if (document.visibilityState === 'visible') {
+        scheduleBackendRecovery('deferred_disconnect', POLL_INTERVAL_FAST_MS);
+    }
 }
 
 function buildTokenizerDescriptor(context) {
