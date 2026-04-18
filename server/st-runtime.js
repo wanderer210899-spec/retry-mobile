@@ -32,18 +32,22 @@ async function initializeStRuntime() {
         try {
             const usersModule = await importModuleFromServer('users.js');
             const chatsModule = await importModuleFromServer(path.join('endpoints', 'chats.js'));
+            const getUserDirectories = resolveModuleFunction(usersModule, 'getUserDirectories');
+            const getAllUserHandles = resolveModuleFunction(usersModule, 'getAllUserHandles');
+            const getUserDirectoriesList = buildUserDirectoriesListGetter(usersModule, getUserDirectories, getAllUserHandles);
+            const trySaveChat = resolveModuleFunction(chatsModule, 'trySaveChat');
 
-            if (typeof usersModule.getUserDirectories !== 'function' || typeof usersModule.getUserDirectoriesList !== 'function') {
+            if (typeof getUserDirectories !== 'function' || typeof getUserDirectoriesList !== 'function') {
                 throw new Error('SillyTavern user directory helpers are unavailable.');
             }
 
-            if (typeof chatsModule.trySaveChat !== 'function') {
+            if (typeof trySaveChat !== 'function') {
                 throw new Error('SillyTavern trySaveChat helper is unavailable.');
             }
 
-            runtimeState.getUserDirectories = usersModule.getUserDirectories;
-            runtimeState.getUserDirectoriesList = usersModule.getUserDirectoriesList;
-            runtimeState.trySaveChat = chatsModule.trySaveChat;
+            runtimeState.getUserDirectories = getUserDirectories;
+            runtimeState.getUserDirectoriesList = getUserDirectoriesList;
+            runtimeState.trySaveChat = trySaveChat;
 
             const probeResult = await runCompatibilityProbe(runtimeState.trySaveChat);
             runtimeState.compatibility = probeResult;
@@ -110,6 +114,41 @@ async function importModuleFromServer(relativePath) {
 
     const moduleUrl = pathToFileURL(targetPath).href;
     return await import(moduleUrl);
+}
+
+function resolveModuleFunction(moduleNamespace, name) {
+    if (!moduleNamespace || typeof moduleNamespace !== 'object') {
+        return null;
+    }
+
+    if (typeof moduleNamespace[name] === 'function') {
+        return moduleNamespace[name];
+    }
+
+    const nestedDefault = moduleNamespace.default;
+    if (nestedDefault && typeof nestedDefault === 'object' && typeof nestedDefault[name] === 'function') {
+        return nestedDefault[name];
+    }
+
+    return null;
+}
+
+function buildUserDirectoriesListGetter(moduleNamespace, getUserDirectories, getAllUserHandles) {
+    const directGetter = resolveModuleFunction(moduleNamespace, 'getUserDirectoriesList');
+    if (typeof directGetter === 'function') {
+        return directGetter;
+    }
+
+    if (typeof getUserDirectories === 'function' && typeof getAllUserHandles === 'function') {
+        return async function fallbackGetUserDirectoriesList() {
+            const handles = await getAllUserHandles();
+            return (Array.isArray(handles) ? handles : [])
+                .map((handle) => getUserDirectories(handle))
+                .filter((directories) => Boolean(directories?.root));
+        };
+    }
+
+    return null;
 }
 
 async function runCompatibilityProbe(trySaveChat) {
@@ -179,10 +218,12 @@ async function runCompatibilityProbe(trySaveChat) {
 
 module.exports = {
     COMPAT_DIR_NAME,
+    buildUserDirectoriesListGetter,
     initializeStRuntime,
     getCompatibilitySnapshot,
     getUserDirectories,
     getUserDirectoriesList,
     getNativeSaveSupport,
+    resolveModuleFunction,
     saveChatThroughSt,
 };

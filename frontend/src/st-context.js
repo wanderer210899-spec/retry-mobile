@@ -40,9 +40,6 @@ export function getChatIdentity(context = getContext()) {
     const groupId = firstString(context.groupId, context.group_id, context.selectedGroup, context.selected_group);
     const characterRecord = getSelectedCharacterRecord(context);
     const avatarUrl = firstString(
-        context.avatar_url,
-        context.characterAvatar,
-        context.character_avatar,
         characterRecord?.avatar,
         characterRecord?.avatar_url,
     );
@@ -52,7 +49,6 @@ export function getChatIdentity(context = getContext()) {
         context.character_name,
         characterRecord?.name,
         context.chatMetadata?.character_name,
-        context.chat_metadata?.character_name,
         'Assistant',
     );
 

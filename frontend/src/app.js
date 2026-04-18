@@ -733,7 +733,7 @@ async function reserveBackendJob(runId) {
         },
         expectedPreviousGeneration: Number(runtime.chatState?.currentGeneration) || 0,
         nativeGraceSeconds: runtime.settings.nativeGraceSeconds,
-        capturedChatIntegrity: String(context?.chatMetadata?.integrity || context?.chat_metadata?.integrity || ''),
+        capturedChatIntegrity: String(context?.chatMetadata?.integrity || ''),
         capturedChatLength: Array.isArray(context?.chat) ? context.chat.length : 0,
         tokenizerDescriptor: buildTokenizerDescriptor(context),
         capturedRequest: runtime.capturedRequest,
@@ -2113,11 +2113,15 @@ function classifyPollFailure(error) {
 }
 
 function buildTokenizerDescriptor(context) {
+    const tokenizerModel = typeof context?.getTokenizerModel === 'function'
+        ? context.getTokenizerModel()
+        : '';
+    const capturedModel = runtime.capturedRequest?.model;
     return {
         tokenizerMode: runtime.settings.validationMode,
-        tokenizerKey: String(context?.chatCompletionModel || context?.mainApi || context?.api || ''),
-        model: String(context?.chatCompletionModel || context?.model || ''),
-        apiFamily: String(context?.mainApi || context?.api || ''),
+        tokenizerKey: String(tokenizerModel || capturedModel || context?.mainApi || ''),
+        model: String(capturedModel || tokenizerModel || ''),
+        apiFamily: String(context?.mainApi || ''),
         chatCompletionSource: String(runtime.capturedRequest?.chat_completion_source || ''),
     };
 }
