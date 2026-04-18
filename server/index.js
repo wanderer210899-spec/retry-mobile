@@ -65,6 +65,9 @@ async function init(router) {
             minSupportedProtocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION,
             nativeSaveSupport: compatibility.nativeSaveSupport,
             nativeSaveCompatibilityDetail: compatibility.detail,
+            compatibilityCheckedAt: compatibility.checkedAt,
+            userDirectorySupport: compatibility.userDirectorySupport,
+            userDirectoryScanSupport: compatibility.userDirectoryScanSupport,
             termux: Boolean(termux.available),
             termuxCheckedAt: termux.checkedAt,
         });

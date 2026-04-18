@@ -70,6 +70,11 @@ const runtime = {
     captureSession: null,
     activeJobId: null,
     activeJobStatus: null,
+    activeJobStatusSource: 'none',
+    activeJobStatusObservedAt: null,
+    lastKnownJobStatus: null,
+    lastKnownJobStatusSource: 'none',
+    lastKnownJobStatusAt: null,
     chatState: null,
     lastRunLog: null,
     quickReplyStatus: null,
@@ -87,12 +92,28 @@ const runtime = {
     capturedRequest: null,
     fingerprint: null,
     assistantMessageIndex: null,
+    capabilities: {
+        protocolVersion: 0,
+        minSupportedProtocolVersion: 0,
+        nativeSaveSupport: false,
+        nativeSaveCompatibilityDetail: '',
+        compatibilityCheckedAt: null,
+        userDirectorySupport: false,
+        userDirectoryScanSupport: false,
+        termux: false,
+        termuxCheckedAt: null,
+    },
     termuxAvailable: false,
     releaseInfo: null,
     showRetryLog: false,
     activeTab: 'main',
     nativeFailureCompatWarned: false,
     nativeFailureReported: false,
+    lastTransportError: null,
+    lastTransportEndpoint: '',
+    lastTransportErrorAt: null,
+    transportErrorContext: null,
+    disconnectPolicy: 'none',
     recoveryHandle: 0,
     recoverySignalsBound: false,
 };
@@ -108,6 +129,10 @@ export function bootRetryMobile() {
     scheduleQuickReplyRefresh();
     void restoreActiveJob();
     void fetchCapabilities().then((caps) => {
+        runtime.capabilities = {
+            ...runtime.capabilities,
+            ...caps,
+        };
         runtime.termuxAvailable = Boolean(caps?.termux);
         render();
     });
@@ -763,7 +788,7 @@ async function reserveBackendJob(runId) {
         }
 
         runtime.activeJobId = result.jobId;
-        runtime.activeJobStatus = result.job ?? null;
+        setActiveBackendStatus(result.job ?? null, 'live_active');
         clearCommittedReloads(runtime);
         runtime.chatState = {
             ...(runtime.chatState || {}),
@@ -785,7 +810,7 @@ async function reserveBackendJob(runId) {
     } catch (error) {
         if (error?.status === 409 && error?.payload?.reason === 'job_running' && error?.payload?.job?.jobId) {
             runtime.activeJobId = error.payload.job.jobId;
-            runtime.activeJobStatus = error.payload.job;
+            setActiveBackendStatus(error.payload.job, 'live_active');
             clearCommittedReloads(runtime);
             runtime.machine.setOwnsTurn(false);
             runtime.machine.setBackendEvent('attached', 'Attached to an existing backend run for this chat.');
@@ -838,7 +863,7 @@ async function confirmNativeHandoff(runId, nativeResult) {
             return;
         }
 
-        runtime.activeJobStatus = result.job ?? runtime.activeJobStatus;
+        setActiveBackendStatus(result.job ?? runtime.activeJobStatus, 'live_active');
         syncRuntimeStateFromStatus(runId, runtime.activeJobStatus, {
             previousStatus: null,
             announceTransitions: false,
@@ -848,6 +873,10 @@ async function confirmNativeHandoff(runId, nativeResult) {
         render();
         showToast('success', EXTENSION_NAME, 'Retry Mobile confirmed the native first reply. Backend retries are ready for this turn.');
     } catch (error) {
+        noteTransportError(error, 'backend', 'native_confirm_failed', 'Retry Mobile could not confirm the native assistant turn with the backend.', {
+            endpoint: '/confirm-native',
+            occurredDuring: 'native_confirmation',
+        });
         if (error?.status === 409) {
             runtime.machine.recordEvent('backend', 'native_confirm_conflict', error?.message || 'Backend reported a native confirmation conflict.');
             render();
@@ -902,7 +931,7 @@ async function reportRecoverableNativeFailure(runId, nativeResult) {
             return;
         }
 
-        runtime.activeJobStatus = result.job ?? runtime.activeJobStatus;
+        setActiveBackendStatus(result.job ?? runtime.activeJobStatus, 'live_active');
         syncRuntimeStateFromStatus(runId, runtime.activeJobStatus, {
             previousStatus: null,
             announceTransitions: true,
@@ -914,6 +943,11 @@ async function reportRecoverableNativeFailure(runId, nativeResult) {
         if (!runtime.machine.isCurrentRun(runId)) {
             return;
         }
+
+        noteTransportError(error, 'backend', 'native_failure_report_failed', 'Retry Mobile could not report the native wait outcome to the backend.', {
+            endpoint: '/native-failed',
+            occurredDuring: 'hidden_timeout_report',
+        });
 
         if (error?.status === 404) {
             if (!runtime.nativeFailureCompatWarned) {
@@ -964,6 +998,10 @@ async function stopPlugin() {
             runtime.machine.recordEvent('backend', 'cancel_requested', `Requested cancellation for backend job ${runtime.activeJobId}.`);
         } catch (error) {
             backendLog.warn('Cancel request failed.', error);
+            noteTransportError(error, 'backend', 'cancel_failed', 'Retry Mobile could not send the backend cancel request.', {
+                endpoint: '/cancel',
+                occurredDuring: 'cancel',
+            });
         }
     }
 
@@ -1064,7 +1102,7 @@ async function pollStatus(runId, pollSessionId) {
 
         const previousStatus = runtime.activeJobStatus;
         const previousAccepted = Number(previousStatus?.acceptedCount) || 0;
-        runtime.activeJobStatus = status;
+        setActiveBackendStatus(status, 'live_active');
         const signatureChanged = updatePollSignature(status);
         runtime.pollTransientFailures = 0;
         runtime.pollUnexpectedServerFailures = 0;
@@ -1121,7 +1159,10 @@ async function pollStatus(runId, pollSessionId) {
         if (!runtime.machine.isCurrentRun(runId) || !runtime.machine.isCurrentPollSession(pollSessionId) || runtime.activeJobId !== requestedJobId) {
             return;
         }
-        runtime.machine.recordEvent('backend', 'poll_failed', error?.message || 'Status poll failed.');
+        noteTransportError(error, 'backend', 'poll_failed', error?.message || 'Status poll failed.', {
+            endpoint: '/status',
+            occurredDuring: 'polling',
+        });
         const failureKind = classifyPollFailure(error);
         if (failureKind === 'fatal') {
             const recovered = await recoverFrontendFromBackend('poll_fatal');
@@ -1251,7 +1292,7 @@ async function adoptBackendStatus(runId, sourceError = null, options = {}) {
     }
 
     const previousStatus = runtime.activeJobStatus;
-    runtime.activeJobStatus = status;
+    setActiveBackendStatus(status, 'live_active');
     syncRuntimeStateFromStatus(runId, status, {
         previousStatus,
         announceTransitions: Boolean(options.announceTransitions),
@@ -1309,6 +1350,10 @@ async function applyTerminalState(runId, nextState, options = {}) {
         runtime.machine.clearError();
     }
 
+    if (nextState === RUN_STATE.FAILED && runtime.transportErrorContext) {
+        runtime.disconnectPolicy = 'failed';
+    }
+
     runtime.machine.setOwnsTurn(false);
     runtime.machine.transition(nextState);
     runtime.machine.releaseRun();
@@ -1360,6 +1405,10 @@ async function refreshChatState(identity = getChatIdentity(getContext())) {
         runtime.chatState = await fetchChatState(identity);
     } catch (error) {
         backendLog.warn('Could not fetch Retry Mobile chat state.', error);
+        noteTransportError(error, 'backend', 'chat_state_failed', 'Retry Mobile could not fetch backend chat state.', {
+            endpoint: '/state',
+            occurredDuring: 'restore',
+        });
     }
 
     render();
@@ -1418,6 +1467,10 @@ async function recoverFrontendFromBackend(reason, options = {}) {
         }
     } catch (error) {
         backendLog.warn(`Could not recover frontend state from backend (${reason}).`, error);
+        noteTransportError(error, 'backend', 'restore_failed', `Could not recover frontend state from backend (${reason}).`, {
+            endpoint: '/active-or-latest',
+            occurredDuring: 'restore',
+        });
     }
 
     return false;
@@ -1445,7 +1498,7 @@ async function restoreRunningJobStatus(status, identity, reason = 'restored') {
     runtime.machine.setBackendEvent(reason, `Recovered backend job ${status.jobId}.`);
     runtime.machine.recordEvent('backend', reason, `Recovered backend job ${status.jobId}.`);
     runtime.activeJobId = status.jobId;
-    runtime.activeJobStatus = status;
+    setActiveBackendStatus(status, 'live_active');
     clearCommittedReloads(runtime);
     runtime.lastAppliedVersion = 0;
     await syncRestoredStatus(status, runtime);
@@ -1543,7 +1596,7 @@ async function toggleQuickRepliesFromUi() {
 
 async function copyRetryLogFromUi() {
     const logContext = getRetryLogContext();
-    const text = formatRetryLogText(logContext.status, logContext.snapshot);
+    const text = formatRetryLogText(logContext);
     if (!text.trim()) {
         showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
         return;
@@ -1560,7 +1613,7 @@ async function copyRetryLogFromUi() {
 
 async function downloadRetryLogFromUi() {
     const logContext = getRetryLogContext();
-    const text = formatRetryLogText(logContext.status, logContext.snapshot);
+    const text = formatRetryLogText(logContext);
     if (!text.trim()) {
         showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
         return;
@@ -1607,10 +1660,15 @@ function resetRunBuffers(options = {}) {
     runtime.assistantMessageIndex = null;
     runtime.lastAppliedVersion = 0;
     runtime.nativeFailureCompatWarned = false;
+    runtime.lastTransportError = null;
+    runtime.lastTransportEndpoint = '';
+    runtime.lastTransportErrorAt = null;
+    runtime.transportErrorContext = null;
+    runtime.disconnectPolicy = 'none';
     clearCommittedReloads(runtime);
     if (!options.preserveStatus) {
         runtime.activeJobId = null;
-        runtime.activeJobStatus = null;
+        clearActiveBackendStatus();
     }
 }
 
@@ -1714,7 +1772,7 @@ function render() {
     }
     if (runtime.retryLogContainer) {
         const logContext = getRetryLogContext(snapshot);
-        runtime.retryLogContainer.textContent = formatRetryLogText(logContext.status, logContext.snapshot);
+        runtime.retryLogContainer.textContent = formatRetryLogText(logContext);
     }
     if (runtime.retryLogShell) {
         runtime.retryLogShell.hidden = !runtime.showRetryLog;
@@ -1862,7 +1920,7 @@ function renderRetryLogPanel() {
     return `
         <div class="rm-diagnostics__title">Retry Log</div>
         <div class="rm-diagnostics__line">Copy-friendly backend attempt history.</div>
-        <textarea class="rm-retry-log" readonly>${escapeHtml(formatRetryLogText(logContext.status, logContext.snapshot))}</textarea>
+        <textarea class="rm-retry-log" readonly>${escapeHtml(formatRetryLogText(logContext))}</textarea>
     `;
 }
 
@@ -2125,6 +2183,144 @@ function formatRetryPhase(status) {
     return status.phaseText || formatStateLabel(resolveRunStateFromStatus(status) || RUN_STATE.IDLE);
 }
 
+function setActiveBackendStatus(status, source = 'live_active') {
+    runtime.activeJobStatus = status || null;
+    runtime.activeJobStatusSource = status ? source : 'none';
+    runtime.activeJobStatusObservedAt = status ? getStatusObservedAt(status) : null;
+
+    if (!status) {
+        return null;
+    }
+
+    runtime.lastKnownJobStatus = cloneValue(status);
+    runtime.lastKnownJobStatusSource = source;
+    runtime.lastKnownJobStatusAt = runtime.activeJobStatusObservedAt;
+    clearTransportErrorIfRecovered(status);
+    return runtime.activeJobStatus;
+}
+
+function clearActiveBackendStatus() {
+    runtime.activeJobStatus = null;
+    runtime.activeJobStatusSource = 'none';
+    runtime.activeJobStatusObservedAt = null;
+}
+
+function noteTransportError(error, source, eventName, summary, context = {}) {
+    const status = Number(error?.status);
+    const isTransportLoss = !Number.isFinite(status);
+    const endpoint = String(context.endpoint || '');
+    const transportContext = {
+        endpoint,
+        message: error?.message || summary || 'Request failed.',
+        timestamp: new Date().toISOString(),
+        visibilityAtFailure: getFrontendVisibility(),
+        onlineAtFailure: getFrontendOnline(),
+        occurredDuring: context.occurredDuring || 'polling',
+    };
+
+    if (isTransportLoss) {
+        runtime.lastTransportError = transportContext.message;
+        runtime.lastTransportEndpoint = endpoint;
+        runtime.lastTransportErrorAt = transportContext.timestamp;
+        runtime.transportErrorContext = transportContext;
+    }
+
+    runtime.machine.recordEvent(source, eventName, summary, transportContext);
+}
+
+function clearTransportErrorIfRecovered(status) {
+    if (!status?.jobId) {
+        return;
+    }
+
+    if (!runtime.transportErrorContext) {
+        return;
+    }
+
+    runtime.disconnectPolicy = 'deferred_to_backend_truth';
+}
+
+function getFrontendVisibility() {
+    return document.visibilityState === 'visible'
+        ? 'visible'
+        : 'hidden';
+}
+
+function getFrontendOnline() {
+    if (typeof navigator?.onLine !== 'boolean') {
+        return 'unknown';
+    }
+
+    return navigator.onLine ? 'online' : 'offline';
+}
+
+function getStatusObservedAt(status) {
+    return status?.updatedAt || status?.createdAt || null;
+}
+
+function isSameRunStatus(status, snapshot = runtime.machine.getSnapshot()) {
+    if (!status?.jobId) {
+        return false;
+    }
+
+    const snapshotRunId = snapshot?.activeRunId || snapshot?.runId || '';
+    return Boolean(
+        (snapshotRunId && (status.runId === snapshotRunId || status.jobId === snapshotRunId))
+        || (runtime.activeJobId && status.jobId === runtime.activeJobId),
+    );
+}
+
+function buildLogSnapshot(snapshot = runtime.machine.getSnapshot()) {
+    return {
+        ...cloneValue(snapshot),
+        toggleMode: runtime.settings?.runMode || 'unknown',
+        frontendVisibility: getFrontendVisibility(),
+        frontendOnline: getFrontendOnline(),
+        lastTransportError: runtime.lastTransportError || 'none',
+        lastTransportEndpoint: runtime.lastTransportEndpoint || 'none',
+        lastTransportErrorAt: runtime.lastTransportErrorAt || null,
+        transportErrorContext: cloneValue(runtime.transportErrorContext),
+        disconnectPolicy: runtime.disconnectPolicy || 'none',
+    };
+}
+
+function resolveLogBackendStatus(snapshot = runtime.machine.getSnapshot()) {
+    if (runtime.activeJobStatus?.jobId && isSameRunStatus(runtime.activeJobStatus, snapshot)) {
+        return {
+            status: runtime.activeJobStatus,
+            source: runtime.activeJobStatusSource || 'live_active',
+            observedAt: runtime.activeJobStatusObservedAt || getStatusObservedAt(runtime.activeJobStatus),
+        };
+    }
+
+    if (runtime.lastKnownJobStatus?.jobId && isSameRunStatus(runtime.lastKnownJobStatus, snapshot)) {
+        return {
+            status: runtime.lastKnownJobStatus,
+            source: 'cached_same_run',
+            observedAt: runtime.lastKnownJobStatusAt || getStatusObservedAt(runtime.lastKnownJobStatus),
+        };
+    }
+
+    return {
+        status: null,
+        source: 'none',
+        observedAt: null,
+    };
+}
+
+function buildRetryLogContext(currentSnapshot = runtime.machine.getSnapshot()) {
+    const snapshot = buildLogSnapshot(currentSnapshot);
+    const resolved = resolveLogBackendStatus(snapshot);
+    return {
+        status: resolved.status,
+        snapshot,
+        statusSource: resolved.source,
+        statusObservedAt: resolved.observedAt,
+        capabilities: cloneValue(runtime.capabilities),
+        chatState: cloneValue(runtime.chatState),
+    };
+}
+
 function getRetryLogContext(currentSnapshot = runtime.machine.getSnapshot()) {
     const shouldUseLastRun = (!runtime.activeJobStatus && isIdleLikeState(currentSnapshot?.state))
         && runtime.lastRunLog?.snapshot;
@@ -2133,25 +2329,26 @@ function getRetryLogContext(currentSnapshot = runtime.machine.getSnapshot()) {
         return runtime.lastRunLog;
     }
 
-    return {
-        status: runtime.activeJobStatus,
-        snapshot: currentSnapshot,
-    };
+    return buildRetryLogContext(currentSnapshot);
 }
 
 function rememberRunLog() {
-    runtime.lastRunLog = {
-        status: cloneValue(runtime.activeJobStatus),
-        snapshot: cloneValue(runtime.machine.getSnapshot()),
-    };
+    runtime.lastRunLog = buildRetryLogContext(runtime.machine.getSnapshot());
 }
 
 function restoreLatestRunLog(status, fallbackIdentity) {
     runtime.activeJobId = null;
-    runtime.activeJobStatus = null;
+    clearActiveBackendStatus();
+    const restoredSource = status?.state === 'running'
+        ? 'latest_restored_active'
+        : 'latest_restored_terminal';
     runtime.lastRunLog = {
         status: cloneValue(status),
         snapshot: buildRestoredLogSnapshot(status, fallbackIdentity),
+        statusSource: restoredSource,
+        statusObservedAt: getStatusObservedAt(status),
+        capabilities: cloneValue(runtime.capabilities),
+        chatState: cloneValue(runtime.chatState),
     };
     clearCommittedReloads(runtime);
 }
@@ -2197,6 +2394,14 @@ function buildRestoredLogSnapshot(status, fallbackIdentity) {
             },
         ],
         createdAt: status?.createdAt || restoredAt,
+        toggleMode: runtime.settings?.runMode || 'unknown',
+        frontendVisibility: getFrontendVisibility(),
+        frontendOnline: getFrontendOnline(),
+        lastTransportError: runtime.lastTransportError || 'none',
+        lastTransportEndpoint: runtime.lastTransportEndpoint || 'none',
+        lastTransportErrorAt: runtime.lastTransportErrorAt || null,
+        transportErrorContext: cloneValue(runtime.transportErrorContext),
+        disconnectPolicy: runtime.disconnectPolicy || 'none',
     };
 }
 
@@ -2228,46 +2433,125 @@ function buildRestoredNativeEvent(status, timestamp) {
     };
 }
 
-function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
+function formatRetryLogText(logContext = getRetryLogContext()) {
+    const status = logContext?.status || null;
+    const snapshot = logContext?.snapshot || buildLogSnapshot();
+    const capabilities = logContext?.capabilities || runtime.capabilities || {};
+    const chatState = logContext?.chatState || runtime.chatState || null;
+    const statusSource = logContext?.statusSource || 'none';
+    const statusObservedAt = logContext?.statusObservedAt || null;
+    const diagnosis = buildRetryLogDiagnosis({
+        status,
+        snapshot,
+        statusSource,
+        statusObservedAt,
+        capabilities,
+        chatState,
+    });
+    const warnings = collectRetryLogWarnings({
+        status,
+        snapshot,
+        statusSource,
+        statusObservedAt,
+        capabilities,
+        chatState,
+    });
+    const latestAttempt = getLatestAttempt(status);
+    const latestAttemptDuration = getAttemptDurationMs(latestAttempt);
+    const orphanCount = Array.isArray(status?.orphanedAcceptedResults)
+        ? status.orphanedAcceptedResults.length
+        : Number(status?.orphanedAcceptedPreview?.count) || 0;
     const lines = [
+        'Diagnosis:',
+        `diagnosisCode: ${diagnosis.code}`,
+        `diagnosis: ${diagnosis.message}`,
+        `statusSource: ${statusSource}`,
+        `statusObservedAt: ${statusObservedAt || 'none'}`,
+        `statusAge: ${formatStatusAge(statusObservedAt)}`,
+        `consistency: ${diagnosis.consistency}`,
+        `frontendVisibility: ${snapshot?.frontendVisibility || 'unknown'}`,
+        `frontendOnline: ${snapshot?.frontendOnline || 'unknown'}`,
+        `lastTransportError: ${formatTransportErrorSummary(snapshot)}`,
+        `transportErrorContext: ${formatTransportErrorContext(snapshot)}`,
+        '',
+        'Frontend Snapshot:',
         `runId: ${status?.runId || snapshot?.runId || 'none'}`,
         `frontendState: ${snapshot?.state || 'unknown'}`,
         `frontendLabel: ${formatVisibleStateLabel(snapshot?.state || RUN_STATE.IDLE, status)}`,
         `activeChat: ${formatChatIdentity(snapshot?.chatIdentity)}`,
         `ownsTurn: ${snapshot?.ownsTurn ? 'retry-mobile' : 'native'}`,
+        `toggleMode: ${snapshot?.toggleMode || 'unknown'}`,
         `lastFrontendError: ${snapshot?.error ? formatStructuredError(snapshot.error) : 'none'}`,
         `lastNativeEvent: ${formatEventSummary(snapshot?.lastNativeEvent)}`,
         `lastBackendEvent: ${formatEventSummary(snapshot?.lastBackendEvent)}`,
+        `frontendVisibility: ${snapshot?.frontendVisibility || 'unknown'}`,
+        `frontendOnline: ${snapshot?.frontendOnline || 'unknown'}`,
+        `lastTransportError: ${formatTransportErrorSummary(snapshot)}`,
+        `transportErrorContext: ${formatTransportErrorContext(snapshot)}`,
+        `disconnectPolicy: ${snapshot?.disconnectPolicy || 'none'}`,
         '',
+        'Backend Snapshot:',
     ];
 
     if (!status) {
-        lines.push('backend: no backend job was reserved or restorable for this run.');
-        lines.push('');
-        lines.push('Recent Events:');
-        return appendDebugEventLines(lines, snapshot);
+        lines.push('backend: no backend status is currently available for this run.');
+    } else {
+        lines.push(
+            `jobId: ${status.jobId || 'none'}`,
+            `state: ${status.state || 'unknown'}`,
+            `phase: ${status.phase || 'unknown'}`,
+            `phaseText: ${formatRetryPhase(status)}`,
+            `accepted: ${Number(status.acceptedCount) || 0}/${Number(status.targetAcceptedCount) || 0}`,
+            `attempts: ${Number(status.attemptCount) || 0}/${Number(status.maxAttempts) || 0}`,
+            `targetMessageVersion: ${Number(status.targetMessageVersion) || 0}`,
+            `nativeState: ${status.nativeState || 'unknown'}`,
+            `nativeResolutionCause: ${status.nativeResolutionCause || 'none'}`,
+            `nativeFailureHintedAt: ${status.nativeFailureHintedAt || 'none'}`,
+            `recoveryMode: ${formatRecoveryMode(status.recoveryMode)}`,
+            `assistantMessageIndex: ${status.assistantMessageIndex == null ? 'none' : (Number.isFinite(Number(status.assistantMessageIndex)) ? Number(status.assistantMessageIndex) : 'none')}`,
+            `nativeGraceDeadlineAt: ${formatGraceDeadline(status.nativeGraceDeadline)}`,
+            `nativeGraceExpired: ${isGraceDeadlineExpired(status?.nativeGraceDeadline) ? 'yes' : 'no'}`,
+            `protocolVersion: ${Number(capabilities?.protocolVersion) || 0}`,
+            `minSupportedProtocolVersion: ${Number(capabilities?.minSupportedProtocolVersion) || 0}`,
+            `toggleCircuitBreaker: failureCount=${Number(chatState?.toggleFailureCount) || 0} | blocked=${Boolean(chatState?.toggleBlocked) ? 'yes' : 'no'}`,
+            `nativeResolutionState: phase=${status.phase || 'unknown'} | inProgress=${status.phase === 'native_confirming_persisted' ? 'yes' : 'no'} | inspectionCount=${Number(status.inspectionAttempts) || 0} | graceDeadlineExpired=${isGraceDeadlineExpired(status?.nativeGraceDeadline) ? 'yes' : 'no'}`,
+            `lastError: ${status.lastError || 'none'}`,
+        );
     }
 
     lines.push(
-        `jobId: ${status.jobId || 'none'}`,
-        `state: ${status.state || 'unknown'}`,
-        `phase: ${status.phase || 'unknown'}`,
-        `phaseText: ${formatRetryPhase(status)}`,
-        `nativeState: ${status.nativeState || 'unknown'}`,
-        `nativeResolutionCause: ${status.nativeResolutionCause || 'none'}`,
-        `nativeFailureHintedAt: ${status.nativeFailureHintedAt || 'none'}`,
-        `recoveryMode: ${formatRecoveryMode(status.recoveryMode)}`,
-        `nativeGraceDeadline: ${formatGraceDeadline(status.nativeGraceDeadline)}`,
-        `assistantMessageIndex: ${status.assistantMessageIndex == null ? 'none' : (Number.isFinite(Number(status.assistantMessageIndex)) ? Number(status.assistantMessageIndex) : 'none')}`,
-        `accepted: ${Number(status.acceptedCount) || 0}/${Number(status.targetAcceptedCount) || 0}`,
-        `attempts: ${Number(status.attemptCount) || 0}/${Number(status.maxAttempts) || 0}`,
-        `targetMessageVersion: ${Number(status.targetMessageVersion) || 0}`,
-        `lastError: ${status.lastError || 'none'}`,
         '',
-        'Attempts:',
+        'Runtime Compatibility:',
+        `nativeSaveSupport: ${Boolean(capabilities?.nativeSaveSupport) ? 'yes' : 'no'}`,
+        `nativeSaveCompatibilityDetail: ${capabilities?.nativeSaveCompatibilityDetail || 'none'}`,
+        `compatibilityCheckedAt: ${capabilities?.compatibilityCheckedAt || 'none'}`,
+        `userDirectorySupport: ${capabilities?.userDirectorySupport == null ? 'unknown' : (capabilities.userDirectorySupport ? 'yes' : 'no')}`,
+        `userDirectoryScanSupport: ${capabilities?.userDirectoryScanSupport == null ? 'unknown' : (capabilities.userDirectoryScanSupport ? 'yes' : 'no')}`,
+        `termux: ${Boolean(capabilities?.termux) ? 'yes' : 'no'}`,
+        `termuxCheckedAt: ${capabilities?.termuxCheckedAt || 'none'}`,
+        '',
+        'Attempt Summary:',
     );
 
-    const attempts = Array.isArray(status.attemptLog) ? status.attemptLog : [];
+    if (!latestAttempt) {
+        lines.push('No attempts recorded yet.');
+    } else {
+        lines.push(
+            `latestAttemptNumber: ${Number(latestAttempt?.attemptNumber) || 0}`,
+            `outcome: ${latestAttempt?.outcome || 'unknown'}`,
+            `reason: ${latestAttempt?.reason || 'none'}`,
+            `message: ${latestAttempt?.message || 'none'}`,
+            `attemptDurationMs: ${latestAttemptDuration == null ? 'none' : latestAttemptDuration}`,
+            `characterCount: ${latestAttempt?.characterCount == null ? 'none' : latestAttempt.characterCount}`,
+            `tokenCount: ${latestAttempt?.tokenCount == null ? 'none' : latestAttempt.tokenCount}`,
+            `phase: ${latestAttempt?.phase || 'unknown'}`,
+            `targetMessageVersion: ${latestAttempt?.targetMessageVersion == null ? 'none' : latestAttempt.targetMessageVersion}`,
+            `timeoutFamily: ${classifyTimeoutFamily(latestAttempt, snapshot)}`,
+        );
+    }
+
+    lines.push('', 'Attempts:');
+    const attempts = Array.isArray(status?.attemptLog) ? status.attemptLog : [];
     if (attempts.length === 0) {
         lines.push('No attempts recorded yet.');
     } else {
@@ -2276,20 +2560,264 @@ function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
         }
     }
 
-    if (Array.isArray(status.orphanedAcceptedResults) && status.orphanedAcceptedResults.length > 0) {
-        lines.push('');
-        lines.push('Orphaned Accepted Outputs:');
+    lines.push('', 'Orphaned Accepted Outputs:');
+    if (Array.isArray(status?.orphanedAcceptedResults) && status.orphanedAcceptedResults.length > 0) {
+        lines.push(`count: ${status.orphanedAcceptedResults.length}`);
+        lines.push(`likelyCause: ${findOrphanCause(status)}`);
         status.orphanedAcceptedResults.forEach((entry, index) => {
             lines.push(`orphan#${index + 1} | chars=${Number(entry?.characterCount) || 0} | tokens=${Number(entry?.tokenCount) || 0} | text=${String(entry?.text || '').slice(0, 200)}`);
         });
-    } else if (status.orphanedAcceptedPreview?.count > 0) {
-        lines.push('');
-        lines.push(`Orphaned Accepted Outputs: ${status.orphanedAcceptedPreview.count} stored on backend.`);
+    } else if (orphanCount > 0) {
+        lines.push(`count: ${orphanCount}`);
+        lines.push(`likelyCause: ${findOrphanCause(status)}`);
+        lines.push('detail: full orphan contents are not loaded in this snapshot.');
+    } else {
+        lines.push('count: 0');
     }
 
-    lines.push('');
-    lines.push('Recent Events:');
-    return appendDebugEventLines(lines, snapshot);
+    lines.push('', 'Recent Events:');
+    appendDebugEventLines(lines, snapshot);
+
+    lines.push('', 'Warnings:');
+    if (warnings.length === 0) {
+        lines.push('none');
+    } else {
+        warnings.forEach((warning) => lines.push(warning));
+    }
+
+    return lines.join('\n');
+}
+
+function buildRetryLogDiagnosis(context) {
+    const status = context?.status || null;
+    const snapshot = context?.snapshot || null;
+    const statusSource = context?.statusSource || 'none';
+
+    if (status?.state === 'failed' && status?.structuredError?.code) {
+        return {
+            code: status.structuredError.code,
+            message: status.structuredError.message || status.lastError || 'The backend job failed.',
+            consistency: 'frontend and backend agree on a terminal backend failure',
+        };
+    }
+
+    const latestAttempt = getLatestAttempt(status);
+    if (latestAttempt?.reason === 'attempt_timeout' || latestAttempt?.outcome === 'timed_out') {
+        return {
+            code: 'retry_attempt_timed_out',
+            message: latestAttempt.message || 'A backend retry attempt timed out.',
+            consistency: statusSource === 'none'
+                ? 'frontend-only timeout signal'
+                : 'frontend and backend agree on retry-attempt timeout',
+        };
+    }
+
+    const nativeTimeoutReason = getNativeTimeoutReason(snapshot);
+    if (nativeTimeoutReason) {
+        return {
+            code: nativeTimeoutReason,
+            message: formatNativeTimeoutMessage(nativeTimeoutReason),
+            consistency: statusSource === 'none'
+                ? 'frontend-only native wait signal'
+                : 'frontend and backend both observed native wait trouble',
+        };
+    }
+
+    if (statusSource === 'cached_same_run') {
+        return {
+            code: 'frontend_disconnected',
+            message: 'The frontend lost live backend status and is showing the last known same-run backend snapshot.',
+            consistency: 'frontend is using cached backend truth for this run',
+        };
+    }
+
+    if (statusSource === 'latest_restored_terminal') {
+        return {
+            code: 'restored_terminal_run',
+            message: 'This log is showing the last terminal backend snapshot restored after refresh.',
+            consistency: 'restored backend truth from a previous page state',
+        };
+    }
+
+    if (statusSource === 'latest_restored_active') {
+        return {
+            code: 'restored_active_run',
+            message: 'This log is showing the latest backend snapshot restored for a still-active run.',
+            consistency: 'restored backend truth for an active run',
+        };
+    }
+
+    if (statusSource === 'none') {
+        return {
+            code: 'backend_snapshot_missing',
+            message: 'No backend snapshot is currently available for this run.',
+            consistency: 'frontend has no backend truth for this run',
+        };
+    }
+
+    return {
+        code: 'live_backend_ok',
+        message: 'The log is using the current live backend snapshot for this run.',
+        consistency: 'frontend and backend state are aligned',
+    };
+}
+
+function collectRetryLogWarnings(context) {
+    const status = context?.status || null;
+    const snapshot = context?.snapshot || null;
+    const statusSource = context?.statusSource || 'none';
+    const statusObservedAt = context?.statusObservedAt || null;
+    const capabilities = context?.capabilities || {};
+    const chatState = context?.chatState || null;
+    const warnings = [];
+
+    if (isRunningLikeState(snapshot?.state) && statusSource === 'none') {
+        warnings.push('frontend says the run is active, but no backend snapshot is available.');
+    }
+
+    if ((statusSource === 'cached_same_run' || String(statusSource).startsWith('latest_restored_')) && isStatusStale(statusObservedAt)) {
+        warnings.push(`backend snapshot is stale (${formatStatusAge(statusObservedAt)} old).`);
+    }
+
+    if (Number(capabilities?.minSupportedProtocolVersion || 0) > Number(PROTOCOL_VERSION || 0)) {
+        warnings.push(`frontend protocol ${PROTOCOL_VERSION} is below the backend minimum supported protocol ${capabilities.minSupportedProtocolVersion}.`);
+    }
+
+    if (chatState?.toggleBlocked) {
+        warnings.push(`toggle circuit breaker is active after ${Number(chatState?.toggleFailureCount) || 0} recorded failure(s).`);
+    }
+
+    if (status?.nativeState === 'pending' && isGraceDeadlineExpired(status?.nativeGraceDeadline)) {
+        warnings.push('native grace deadline expired while native resolution is still unresolved.');
+    }
+
+    if (String(statusSource).startsWith('latest_restored_') && snapshot?.state && status?.state === 'running' && !isRunningLikeState(snapshot.state)) {
+        warnings.push('frontend snapshot and restored backend snapshot disagree about whether the run is still active.');
+    }
+
+    if (statusSource === 'none' && hasBackendEvidenceInEvents(snapshot)) {
+        warnings.push('recent events show backend activity for this run, but no backend snapshot is currently selected.');
+    }
+
+    return warnings;
+}
+
+function getLatestAttempt(status) {
+    const attempts = Array.isArray(status?.attemptLog) ? status.attemptLog : [];
+    return attempts.length > 0 ? attempts[attempts.length - 1] : null;
+}
+
+function getAttemptDurationMs(entry) {
+    const started = Date.parse(entry?.startedAt || '');
+    const finished = Date.parse(entry?.finishedAt || '');
+    if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) {
+        return null;
+    }
+
+    return finished - started;
+}
+
+function classifyTimeoutFamily(entry, snapshot) {
+    if (entry?.reason === 'attempt_timeout' || entry?.outcome === 'timed_out') {
+        return 'retry_attempt_timeout';
+    }
+
+    const nativeTimeoutReason = getNativeTimeoutReason(snapshot);
+    if (nativeTimeoutReason) {
+        return 'native_wait_timeout';
+    }
+
+    return 'none';
+}
+
+function getNativeTimeoutReason(snapshot) {
+    const eventName = String(snapshot?.lastNativeEvent?.name || '');
+    if (eventName === 'native_wait_timeout') {
+        return 'native_wait_timed_out';
+    }
+    if (eventName === 'hidden_timeout') {
+        return 'hidden_timeout';
+    }
+    if (eventName === 'native_wait_stalled') {
+        return 'native_wait_stalled';
+    }
+    if (eventName === 'rendered_without_end') {
+        return 'rendered_without_end';
+    }
+    return '';
+}
+
+function formatNativeTimeoutMessage(reason) {
+    switch (reason) {
+        case 'native_wait_timed_out':
+            return 'The native first-reply wait timed out before the browser observed completion.';
+        case 'hidden_timeout':
+            return 'The browser stayed hidden during native completion long enough for Retry Mobile to stop waiting and defer to backend recovery.';
+        case 'native_wait_stalled':
+            return 'The native first-reply wait stalled without enough visible progress.';
+        case 'rendered_without_end':
+            return 'SillyTavern rendered the reply without emitting the expected native completion end event.';
+        default:
+            return 'The native first-reply wait did not finish cleanly.';
+    }
+}
+
+function formatTransportErrorSummary(snapshot) {
+    if (!snapshot?.lastTransportError || snapshot.lastTransportError === 'none') {
+        return 'none';
+    }
+
+    const endpoint = snapshot?.lastTransportEndpoint && snapshot.lastTransportEndpoint !== 'none'
+        ? ` @ ${snapshot.lastTransportEndpoint}`
+        : '';
+    const timestamp = snapshot?.lastTransportErrorAt ? ` @ ${snapshot.lastTransportErrorAt}` : '';
+    return `${snapshot.lastTransportError}${endpoint}${timestamp}`;
+}
+
+function formatTransportErrorContext(snapshot) {
+    const context = snapshot?.transportErrorContext;
+    if (!context?.message) {
+        return 'none';
+    }
+
+    return [
+        `endpoint=${context.endpoint || 'unknown'}`,
+        `message=${context.message || 'unknown'}`,
+        `timestamp=${context.timestamp || 'unknown'}`,
+        `visibility=${context.visibilityAtFailure || 'unknown'}`,
+        `online=${context.onlineAtFailure || 'unknown'}`,
+        `occurredDuring=${context.occurredDuring || 'unknown'}`,
+    ].join(' | ');
+}
+
+function formatStatusAge(value) {
+    const parsed = Date.parse(value || '');
+    if (!Number.isFinite(parsed)) {
+        return 'unknown';
+    }
+
+    return `${Math.max(0, Date.now() - parsed)}ms`;
+}
+
+function isStatusStale(value) {
+    const parsed = Date.parse(value || '');
+    return Number.isFinite(parsed) && (Date.now() - parsed) > (POLL_INTERVAL_SLOW_MS * 3);
+}
+
+function isGraceDeadlineExpired(value) {
+    const parsed = Date.parse(value || '');
+    return Number.isFinite(parsed) && parsed < Date.now();
+}
+
+function hasBackendEvidenceInEvents(snapshot) {
+    const events = Array.isArray(snapshot?.debugEvents) ? snapshot.debugEvents : [];
+    return events.some((entry) => entry?.source === 'backend' && entry?.event === 'status');
+}
+
+function findOrphanCause(status) {
+    const attempts = Array.isArray(status?.attemptLog) ? status.attemptLog : [];
+    const latestWriteFailure = [...attempts].reverse().find((entry) => entry?.reason);
+    return latestWriteFailure?.reason || 'unknown';
 }
 
 function buildRetryLogFileName(status, snapshot = runtime.machine.getSnapshot()) {
@@ -2370,6 +2898,7 @@ function deferBackendDisconnect(runId, eventName, summary) {
         return;
     }
 
+    runtime.disconnectPolicy = 'deferred_to_backend_truth';
     runtime.machine.clearError();
     runtime.machine.setBackendEvent('connection_lost', summary);
     runtime.machine.recordEvent('backend', eventName, summary);
@@ -2405,14 +2934,12 @@ function appendDebugEventLines(lines, snapshot) {
     const events = Array.isArray(snapshot?.debugEvents) ? snapshot.debugEvents : [];
     if (events.length === 0) {
         lines.push('No frontend run events recorded yet.');
-        return lines.join('\n');
+        return;
     }
 
     for (const entry of events) {
         lines.push(formatDebugEventLine(entry));
     }
-
-    return lines.join('\n');
 }
 
 function formatDebugEventLine(entry) {
@@ -2443,6 +2970,7 @@ function formatAttemptLogEntry(entry) {
         `#${Number(entry?.attemptNumber) || 0}`,
         entry?.outcome || 'unknown',
     ];
+    const durationMs = getAttemptDurationMs(entry);
 
     if (entry?.phase) {
         parts.push(`phase=${entry.phase}`);
@@ -2467,6 +2995,9 @@ function formatAttemptLogEntry(entry) {
     }
     if (entry?.finishedAt) {
         parts.push(`finished=${entry.finishedAt}`);
+    }
+    if (durationMs != null) {
+        parts.push(`durationMs=${durationMs}`);
     }
     if (entry?.message) {
         parts.push(`message=${entry.message}`);

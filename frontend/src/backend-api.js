@@ -67,6 +67,9 @@ export async function fetchCapabilities() {
             minSupportedProtocolVersion: 0,
             nativeSaveSupport: false,
             nativeSaveCompatibilityDetail: '',
+            compatibilityCheckedAt: null,
+            userDirectorySupport: false,
+            userDirectoryScanSupport: false,
             termux: false,
             termuxCheckedAt: null,
         };
