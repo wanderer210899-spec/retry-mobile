@@ -1,4 +1,4 @@
-# Retry Mobile
+# Retry Mobile (IN PROGRESS...)
 
 Retry Mobile is a split SillyTavern plugin: the backend installs as a server plugin in `plugins/retry-mobile`, and the frontend installs into one or more profile extension folders under `data/<profile>/extensions/retry-mobile`.
 
