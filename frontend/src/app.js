@@ -30,6 +30,7 @@ import {
     fetchChatState,
     fetchActiveJob,
     fetchCapabilities,
+    fetchLatestJob,
     fetchJobOrphans,
     fetchJobStatus,
     fetchReleaseInfo,
@@ -290,6 +291,7 @@ function mountPanel() {
                             <div class="rm-header-actions">
                                 <button class="menu_button rm-button--inline" data-action="toggle-log">Show</button>
                                 <button class="menu_button rm-button--inline" data-action="copy-log">Copy</button>
+                                <button class="menu_button rm-button--inline" data-action="download-log">Download</button>
                             </div>
                         </div>
                         <div class="rm-log-window" data-role="retry-log-shell" hidden>
@@ -405,6 +407,11 @@ function bindPanelEvents(drawer) {
 
         if (action === 'copy-log') {
             await copyRetryLogFromUi();
+            return;
+        }
+
+        if (action === 'download-log') {
+            await downloadRetryLogFromUi();
         }
     });
 
@@ -1346,6 +1353,10 @@ async function restoreActiveJob() {
     try {
         const status = await fetchActiveJob(identity);
         if (!status?.jobId) {
+            const latestStatus = await fetchLatestJob(identity);
+            if (latestStatus?.jobId) {
+                restoreLatestRunLog(latestStatus, identity);
+            }
             await reloadCurrentChatSafe();
             return;
         }
@@ -1474,6 +1485,36 @@ async function copyRetryLogFromUi() {
     } catch (error) {
         backendLog.warn('Retry log copy failed.', error);
         showToast('warning', EXTENSION_NAME, 'Retry log copy failed in this browser session.');
+    }
+}
+
+async function downloadRetryLogFromUi() {
+    const logContext = getRetryLogContext();
+    const text = formatRetryLogText(logContext.status, logContext.snapshot);
+    if (!text.trim()) {
+        showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
+        return;
+    }
+
+    const blob = new Blob([text], {
+        type: 'text/plain;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+
+    try {
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = buildRetryLogFileName(logContext.status, logContext.snapshot);
+        anchor.style.display = 'none';
+        document.body.append(anchor);
+        anchor.click();
+        anchor.remove();
+        showToast('success', EXTENSION_NAME, `Retry log downloaded as ${anchor.download}.`);
+    } catch (error) {
+        backendLog.warn('Retry log download failed.', error);
+        showToast('warning', EXTENSION_NAME, 'Retry log download failed in this browser session.');
+    } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
     }
 }
 
@@ -1993,8 +2034,86 @@ function rememberRunLog() {
     };
 }
 
+function restoreLatestRunLog(status, fallbackIdentity) {
+    runtime.activeJobId = null;
+    runtime.activeJobStatus = null;
+    runtime.lastRunLog = {
+        status: cloneValue(status),
+        snapshot: buildRestoredLogSnapshot(status, fallbackIdentity),
+    };
+    clearCommittedReloads(runtime);
+}
+
 function isIdleLikeState(state) {
     return state === RUN_STATE.IDLE || state === RUN_STATE.ARMED;
+}
+
+function buildRestoredLogSnapshot(status, fallbackIdentity) {
+    const state = resolveHistoricalRunState(status);
+    const restoredAt = status?.updatedAt || status?.createdAt || new Date().toISOString();
+    const structuredError = status?.state === 'failed'
+        ? normalizeStructuredError(
+            status?.structuredError,
+            'backend_write_failed',
+            status?.lastError || 'The backend job failed.',
+        )
+        : null;
+
+    return {
+        state,
+        runId: status?.runId || status?.jobId || null,
+        activeRunId: null,
+        pollSessionId: null,
+        chatIdentity: status?.chatIdentity || fallbackIdentity || null,
+        ownsTurn: false,
+        error: structuredError,
+        lastNativeEvent: buildRestoredNativeEvent(status, restoredAt),
+        lastBackendEvent: {
+            name: 'restored',
+            summary: `Restored ${status?.state || 'previous'} backend job ${status?.jobId || 'unknown'}.`,
+            at: restoredAt,
+        },
+        debugEvents: [
+            {
+                at: restoredAt,
+                runId: status?.runId || status?.jobId || null,
+                phase: state,
+                source: 'backend',
+                event: 'restored',
+                summary: `Restored ${status?.state || 'previous'} backend job ${status?.jobId || 'unknown'} after page refresh.`,
+                detail: null,
+            },
+        ],
+        createdAt: status?.createdAt || restoredAt,
+    };
+}
+
+function resolveHistoricalRunState(status) {
+    if (status?.state === 'completed') {
+        return RUN_STATE.COMPLETED;
+    }
+
+    if (status?.state === 'failed') {
+        return RUN_STATE.FAILED;
+    }
+
+    if (status?.state === 'cancelled') {
+        return RUN_STATE.CANCELLED;
+    }
+
+    return resolveRunStateFromStatus(status) || RUN_STATE.IDLE;
+}
+
+function buildRestoredNativeEvent(status, timestamp) {
+    if (!status?.nativeState || status.nativeState === 'pending') {
+        return null;
+    }
+
+    return {
+        name: 'restored_native_state',
+        summary: `Backend restored native state ${status.nativeState}.`,
+        at: timestamp,
+    };
 }
 
 function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
@@ -2059,6 +2178,24 @@ function formatRetryLogText(status, snapshot = runtime.machine.getSnapshot()) {
     lines.push('');
     lines.push('Recent Events:');
     return appendDebugEventLines(lines, snapshot);
+}
+
+function buildRetryLogFileName(status, snapshot = runtime.machine.getSnapshot()) {
+    const timestamp = sanitizeTimestampForFileName(
+        status?.updatedAt
+        || status?.createdAt
+        || snapshot?.createdAt
+        || new Date().toISOString(),
+    );
+    return `retry-mobile-log-${timestamp}.txt`;
+}
+
+function sanitizeTimestampForFileName(value) {
+    const parsed = Date.parse(value || '');
+    const safeIso = Number.isFinite(parsed)
+        ? new Date(parsed).toISOString()
+        : new Date().toISOString();
+    return safeIso.replaceAll(':', '-');
 }
 
 function updatePollSignature(status) {

@@ -31,6 +31,7 @@ const {
     createJob,
     getJob,
     getJobByChat,
+    getLatestJobByChat,
     serializeJob,
     setPersistenceHandler,
     touchJob,
@@ -106,6 +107,16 @@ async function init(router) {
 
         const existing = getJobByChat(identity);
         return response.send(existing ? serializeJob(existing) : {});
+    });
+
+    router.get('/latest', (request, response) => {
+        const identity = getChatIdentityFromRequest(request);
+        if (!identity?.chatId) {
+            return response.send({});
+        }
+
+        const latest = getLatestJobByChat(identity);
+        return response.send(latest ? serializeJob(latest) : {});
     });
 
     router.get('/status/:jobId', (request, response) => {

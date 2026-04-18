@@ -94,6 +94,21 @@ export async function fetchActiveJob(identity) {
     });
 }
 
+export async function fetchLatestJob(identity) {
+    const query = new URLSearchParams();
+    if (identity?.chatId) {
+        query.set('chatId', identity.chatId);
+    }
+    if (identity?.groupId) {
+        query.set('groupId', identity.groupId);
+    }
+
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    return requestJson(`${BASE_URL}/latest${suffix}`, {
+        method: 'GET',
+    });
+}
+
 export async function fetchChatState(identity) {
     const query = new URLSearchParams();
     if (identity?.chatId) {

@@ -91,6 +91,26 @@ function getJobByChat(chatIdentity) {
     return null;
 }
 
+function getLatestJobByChat(chatIdentity) {
+    const chatKey = buildChatKey(chatIdentity);
+    let latestJob = null;
+    let latestTimestamp = -1;
+
+    for (const job of jobs.values()) {
+        if (job.chatKey !== chatKey) {
+            continue;
+        }
+
+        const timestamp = getJobTimestamp(job);
+        if (!latestJob || timestamp > latestTimestamp || (timestamp === latestTimestamp && job.state === 'running' && latestJob.state !== 'running')) {
+            latestJob = job;
+            latestTimestamp = timestamp;
+        }
+    }
+
+    return latestJob;
+}
+
 function touchJob(job, patch = {}) {
     Object.assign(job, patch, {
         updatedAt: new Date().toISOString(),
@@ -304,11 +324,26 @@ function cloneValue(value) {
     return value == null ? value : JSON.parse(JSON.stringify(value));
 }
 
+function getJobTimestamp(job) {
+    const updatedAt = Date.parse(job?.updatedAt || '');
+    if (Number.isFinite(updatedAt) && updatedAt > 0) {
+        return updatedAt;
+    }
+
+    const createdAt = Date.parse(job?.createdAt || '');
+    if (Number.isFinite(createdAt) && createdAt > 0) {
+        return createdAt;
+    }
+
+    return 0;
+}
+
 module.exports = {
     buildChatKey,
     createJob,
     getJob,
     getJobByChat,
+    getLatestJobByChat,
     jobs,
     appendAttemptLog,
     serializeJob,
