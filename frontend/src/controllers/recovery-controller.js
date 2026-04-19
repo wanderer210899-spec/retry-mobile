@@ -54,6 +54,7 @@ export function createRecoveryController({ runtime, render, statusController, en
                     await syncRetryLogForStatus(runtime, latestStatus, { force: true, clearWhenMissing: false });
                     clearCommittedReloads(runtime);
                     await reloadCurrentChatSafe();
+                    getContext()?.activateSendButtons?.();
                     render();
                     return true;
                 }
@@ -74,11 +75,15 @@ export function createRecoveryController({ runtime, render, statusController, en
             return false;
         })();
 
+        let result = false;
         try {
-            return await runtime.recoveryPromise;
+            result = await runtime.recoveryPromise;
+            return result;
         } finally {
             runtime.recoveryPromise = null;
-            lastRecoveryCompletedAt = Date.now();
+            if (result) {
+                lastRecoveryCompletedAt = Date.now();
+            }
         }
     }
 
@@ -151,7 +156,8 @@ export function createRecoveryController({ runtime, render, statusController, en
             return;
         }
 
-        if (Date.now() - lastRecoveryCompletedAt < RECOVERY_COOLDOWN_MS) {
+        const forced = Boolean(runtime.pendingForcedRecovery);
+        if (!forced && Date.now() - lastRecoveryCompletedAt < RECOVERY_COOLDOWN_MS) {
             return;
         }
 
@@ -161,6 +167,7 @@ export function createRecoveryController({ runtime, render, statusController, en
 
         runtime.recoveryHandle = window.setTimeout(() => {
             runtime.recoveryHandle = 0;
+            runtime.pendingForcedRecovery = false;
             void recoverFrontendFromBackend(reason);
         }, Math.max(0, Number(delayMs) || 0));
     }
@@ -190,9 +197,9 @@ export function createRecoveryController({ runtime, render, statusController, en
         runtime.activeJobId = status.jobId;
         statusController.setActiveBackendStatus(status, 'live_active');
         if (!isSameActiveJob) {
-            clearCommittedReloads(runtime);
             runtime.lastAppliedVersion = 0;
         }
+        clearCommittedReloads(runtime);
         await syncRestoredStatus(status, runtime);
         await syncRetryLogForStatus(runtime, status, { force: true, clearWhenMissing: false });
         void sendFrontendLogEvent(runtime, {
@@ -206,6 +213,7 @@ export function createRecoveryController({ runtime, render, statusController, en
         if (status.state === 'running') {
             statusController.ensurePolling(status.runId || status.jobId, 0);
         } else {
+            getContext()?.activateSendButtons?.();
             runtime.machine.releaseRun();
         }
 

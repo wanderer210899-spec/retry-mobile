@@ -508,6 +508,7 @@ export function createRunController({ runtime, render, statusController }) {
                 clearWhenMissing: false,
             });
             render();
+            getContext()?.activateSendButtons?.();
         } catch (error) {
             if (!runtime.machine.isCurrentRun(runId)) {
                 return;

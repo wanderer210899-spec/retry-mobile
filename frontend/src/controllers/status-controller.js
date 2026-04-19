@@ -110,7 +110,7 @@ export function createStatusController({ runtime, render }) {
 
         subscribeEvent(eventTypes.CHAT_CHANGED, () => {
             const liveIdentity = getChatIdentity(getContext());
-            if (!wasInternalChatReloadRecentlyTriggered(liveIdentity)) {
+            if (!wasInternalChatReloadRecentlyTriggered(liveIdentity) && !runtime.recoveryPromise) {
                 clearCommittedReloads(runtime);
             }
             void refreshChatState(liveIdentity);
@@ -283,6 +283,7 @@ export function createStatusController({ runtime, render }) {
         runtime.machine.setOwnsTurn(false);
         runtime.machine.transition(nextState);
         runtime.machine.releaseRun();
+        getContext()?.activateSendButtons?.();
 
         if (runtime.activeJobStatus?.jobId && Number(runtime.activeJobStatus?.orphanedAcceptedPreview?.count) > 0) {
             try {
@@ -390,6 +391,8 @@ export function createStatusController({ runtime, render }) {
 
         if (document.visibilityState === 'visible') {
             scheduleBackendRecovery('deferred_disconnect', POLL_INTERVAL_FAST_MS);
+        } else {
+            runtime.pendingForcedRecovery = true;
         }
     }
 
@@ -489,7 +492,6 @@ export function createStatusController({ runtime, render }) {
                 if (recovered) {
                     return;
                 }
-                await reloadCurrentChatSafe();
                 await applyTerminalState(runId, RUN_STATE.FAILED, {
                     error: createStructuredError(
                         'backend_job_missing',

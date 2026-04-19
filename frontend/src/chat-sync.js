@@ -109,7 +109,7 @@ export function applyStatusToExistingMessage(status, context) {
             context.swipe.refresh(true);
         }
 
-        if (shouldReactivateSendButtons(context) && typeof context?.activateSendButtons === 'function') {
+        if (typeof context?.activateSendButtons === 'function') {
             context.activateSendButtons();
         }
     } catch {
@@ -117,15 +117,6 @@ export function applyStatusToExistingMessage(status, context) {
     }
 
     return true;
-}
-
-function shouldReactivateSendButtons(context) {
-    const processor = context?.streamingProcessor;
-    if (!processor) {
-        return true;
-    }
-
-    return processor.isStopped === true || processor.isFinished === true;
 }
 
 function cloneValue(value) {
