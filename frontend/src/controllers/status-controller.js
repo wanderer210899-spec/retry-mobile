@@ -303,6 +303,7 @@ export function createStatusController({ runtime, render }) {
         runtime.activeJobId = null;
         runtime.nativeFailureReported = false;
         clearCommittedReloads(runtime);
+        await reloadCurrentChatSafe();
         await refreshChatState(previousChatIdentity || getChatIdentity(getContext()));
 
         render();

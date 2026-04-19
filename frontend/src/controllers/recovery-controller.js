@@ -8,7 +8,10 @@ import { clearRetryLog, sendFrontendLogEvent, syncRetryLogForStatus } from '../l
 
 const backendLog = createLogger(LOG_PREFIX.BACKEND);
 
+const RECOVERY_COOLDOWN_MS = 20_000;
+
 export function createRecoveryController({ runtime, render, statusController, ensurePanelMounted }) {
+    let lastRecoveryCompletedAt = 0;
     return {
         bindFrontendRecoverySignals,
         bindHostObserver,
@@ -75,6 +78,7 @@ export function createRecoveryController({ runtime, render, statusController, en
             return await runtime.recoveryPromise;
         } finally {
             runtime.recoveryPromise = null;
+            lastRecoveryCompletedAt = Date.now();
         }
     }
 
@@ -147,6 +151,10 @@ export function createRecoveryController({ runtime, render, statusController, en
             return;
         }
 
+        if (Date.now() - lastRecoveryCompletedAt < RECOVERY_COOLDOWN_MS) {
+            return;
+        }
+
         if (runtime.recoveryHandle) {
             window.clearTimeout(runtime.recoveryHandle);
         }
@@ -178,10 +186,13 @@ export function createRecoveryController({ runtime, render, statusController, en
         runtime.machine.clearError();
         runtime.machine.setBackendEvent(reason, `Recovered backend job ${status.jobId}.`);
         runtime.machine.recordEvent('backend', reason, `Recovered backend job ${status.jobId}.`);
+        const isSameActiveJob = runtime.activeJobId === status.jobId;
         runtime.activeJobId = status.jobId;
         statusController.setActiveBackendStatus(status, 'live_active');
-        clearCommittedReloads(runtime);
-        runtime.lastAppliedVersion = 0;
+        if (!isSameActiveJob) {
+            clearCommittedReloads(runtime);
+            runtime.lastAppliedVersion = 0;
+        }
         await syncRestoredStatus(status, runtime);
         await syncRetryLogForStatus(runtime, status, { force: true, clearWhenMissing: false });
         void sendFrontendLogEvent(runtime, {
