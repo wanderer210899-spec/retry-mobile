@@ -8,9 +8,10 @@ export function createRenderer({ runtime }) {
             return;
         }
 
-        const snapshot = runtime.machine.getSnapshot();
-        const state = snapshot.state;
-        const activeStatus = runtime.activeJobStatus;
+        const machine = runtime.jobMachine || runtime.machine;
+        const snapshot = machine.getSnapshot();
+        const state = snapshot.phase || snapshot.state;
+        const activeStatus = snapshot.activeStatus || runtime.activeJobStatus;
         const errorText = formatStructuredError(snapshot.error);
 
         runtime.ui.statusText.textContent = formatVisibleStateLabel(state, activeStatus);

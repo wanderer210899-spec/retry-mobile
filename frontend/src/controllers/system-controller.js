@@ -27,7 +27,7 @@ const qrLog = createLogger(LOG_PREFIX.QR);
 export function createSystemController({
     runtime,
     render,
-    statusController,
+    setJobError,
     armPluginFromUi,
     stopPlugin,
 }) {
@@ -115,14 +115,14 @@ export function createSystemController({
         runtime.quickReplyStatus = result.ok ? result : getQuickReplyStatus();
 
         if (!result.ok) {
-            statusController.applyErrorState(createStructuredError(
+            setJobError?.(createStructuredError(
                 'capture_missing_payload',
                 result.reason || 'Quick Reply controls are unavailable in this SillyTavern session.',
             ));
             return;
         }
 
-        runtime.machine.clearError();
+        (runtime.jobMachine || runtime.machine).clearError();
         showToast(
             'success',
             EXTENSION_NAME,

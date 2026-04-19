@@ -24,6 +24,8 @@ export function createRuntime() {
         capabilities: createDefaultCapabilities(),
         termuxAvailable: false,
         machine: createStateMachine(),
+        jobMachine: null,
+        jobEffects: null,
         activeJobId: null,
         activeJobStatus: null,
         activeJobStatusSource: 'none',

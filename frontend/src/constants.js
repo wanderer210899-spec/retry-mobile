@@ -20,6 +20,20 @@ export const RUN_STATE = Object.freeze({
     CANCELLED: 'cancelled',
 });
 
+export const JOB_PHASE = Object.freeze({
+    IDLE: 'idle',
+    ARMED: 'armed',
+    RESERVING: 'reserving',
+    WAITING_NATIVE: 'waiting_native',
+    BACKEND_RUNNING: 'backend_running',
+    STOPPING: 'stopping',
+    COMPLETING: 'completing',
+    RECOVERING: 'recovering',
+    COMPLETED: 'completed',
+    FAILED: 'failed',
+    CANCELLED: 'cancelled',
+});
+
 export const RUN_MODE = Object.freeze({
     SINGLE: 'single',
     TOGGLE: 'toggle',
@@ -71,6 +85,12 @@ export const NATIVE_HIDDEN_DEBOUNCE_MS = 2500;
 export const NATIVE_CONFIRM_TIMEOUT_MS = 4000;
 export const NATIVE_CONFIRM_POLL_MS = 120;
 export const NATIVE_VISIBLE_PROGRESS_POLL_MS = 1000;
+// Calibrate these DOM-facing waits further after the machine refactor has live traces.
+export const RENDER_MESSAGE_POLL_MS = 50;
+export const RENDER_MESSAGE_WAIT_MS = 900;
+export const RENDER_STABLE_TEXT_INTERVAL_MS = 100;
+export const RENDER_STABLE_TEXT_TIMEOUT_MS = 2200;
+export const TERMINAL_UI_SETTLE_TIMEOUT_MS = 700;
 export const DEBUG_EVENT_LIMIT = 16;
 
 export const LOG_PREFIX = Object.freeze({
