@@ -4,11 +4,11 @@ const LOG_OUTBOX_PREFIX = 'retry-mobile-log-outbox:';
 
 export function getRetryLogContext(runtime) {
     return {
-        jobId: runtime.retryLogJobId || runtime.activeJobStatus?.jobId || '',
-        title: runtime.retryLogTitle || '',
-        text: runtime.retryLogText || '',
-        updatedAt: runtime.retryLogUpdatedAt || null,
-        entryCount: Number(runtime.retryLogEntryCount) || 0,
+        jobId: runtime.log.jobId || runtime.activeJobStatus?.jobId || '',
+        title: runtime.log.title || '',
+        text: runtime.log.text || '',
+        updatedAt: runtime.log.updatedAt || null,
+        entryCount: Number(runtime.log.entryCount) || 0,
     };
 }
 
@@ -23,13 +23,13 @@ export async function syncRetryLogForStatus(runtime, status, options = {}) {
 
     const nextCursor = buildRetryLogCursor(status);
     const currentCursor = buildRetryLogCursor({
-        jobId: runtime.retryLogJobId,
-        updatedAt: runtime.retryLogUpdatedAt,
-        logUpdatedAt: runtime.retryLogUpdatedAt,
-        logEntryCount: runtime.retryLogEntryCount,
+        jobId: runtime.log.jobId,
+        updatedAt: runtime.log.updatedAt,
+        logUpdatedAt: runtime.log.updatedAt,
+        logEntryCount: runtime.log.entryCount,
     });
 
-    if (!options.force && runtime.retryLogJobId === jobId && currentCursor === nextCursor && runtime.retryLogText) {
+    if (!options.force && runtime.log.jobId === jobId && currentCursor === nextCursor && runtime.log.text) {
         return getRetryLogContext(runtime);
     }
 
@@ -38,25 +38,25 @@ export async function syncRetryLogForStatus(runtime, status, options = {}) {
         return null;
     }
 
-    runtime.retryLogJobId = jobId;
-    runtime.retryLogTitle = String(result.title || '');
-    runtime.retryLogText = String(result.text || '');
-    runtime.retryLogUpdatedAt = result.updatedAt || status?.logUpdatedAt || status?.updatedAt || null;
-    runtime.retryLogEntryCount = Number(result.entryCount) || 0;
+    runtime.log.jobId = jobId;
+    runtime.log.title = String(result.title || '');
+    runtime.log.text = String(result.text || '');
+    runtime.log.updatedAt = result.updatedAt || status?.logUpdatedAt || status?.updatedAt || null;
+    runtime.log.entryCount = Number(result.entryCount) || 0;
     await flushRetryLogOutbox(jobId);
     return getRetryLogContext(runtime);
 }
 
 export function clearRetryLog(runtime) {
-    runtime.retryLogJobId = '';
-    runtime.retryLogTitle = '';
-    runtime.retryLogText = '';
-    runtime.retryLogUpdatedAt = null;
-    runtime.retryLogEntryCount = 0;
+    runtime.log.jobId = '';
+    runtime.log.title = '';
+    runtime.log.text = '';
+    runtime.log.updatedAt = null;
+    runtime.log.entryCount = 0;
 }
 
 export function buildRetryLogFileName(runtime) {
-    const title = String(runtime.retryLogTitle || '').trim();
+    const title = String(runtime.log.title || '').trim();
     if (!title) {
         return `retry-mobile-log-${sanitizeTimestamp(new Date().toISOString())}.txt`;
     }
@@ -71,7 +71,7 @@ export function buildRetryLogFileName(runtime) {
 }
 
 export async function sendFrontendLogEvent(runtime, event) {
-    const jobId = String(runtime.activeJobId || runtime.activeJobStatus?.jobId || runtime.retryLogJobId || '').trim();
+    const jobId = String(runtime.activeJobId || runtime.activeJobStatus?.jobId || runtime.log.jobId || '').trim();
     if (!jobId) {
         return false;
     }

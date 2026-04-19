@@ -2,7 +2,10 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/wanderer210899-spec/retry-mobile.git"
-REPO_BRANCH="${1:-${RETRY_MOBILE_BRANCH:-feature/screen_off_initial_generation}}"
+# BOOTSTRAP_BRANCH: the default branch cloned when no argument or env var is supplied.
+# Update this string whenever the canonical release branch is renamed or merged to main.
+BOOTSTRAP_BRANCH="feature/screen_off_initial_generation"
+REPO_BRANCH="${1:-${RETRY_MOBILE_BRANCH:-$BOOTSTRAP_BRANCH}}"
 TEMP_ROOT="$(mktemp -d -t retry-mobile-installer-XXXXXX)"
 REPO_DIR="$TEMP_ROOT/retry-mobile"
 LAUNCH_DIRECTORY="$PWD"

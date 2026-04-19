@@ -8,7 +8,7 @@ const {
 } = require('./job-runner');
 const { inspectRecoverySnapshot } = require('./chat-writer');
 const { debugNotifier, getTermuxStatus, refreshTermuxStatusForStart } = require('./notifier');
-const { PLUGIN_ID, PLUGIN_NAME } = require('./plugin-meta');
+const { MIN_SUPPORTED_PROTOCOL_VERSION, PLUGIN_ID, PLUGIN_NAME, PROTOCOL_VERSION } = require('./plugin-meta');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const {
     advanceGeneration,
@@ -43,8 +43,6 @@ const {
 } = require('./state');
 const { validateRunConfig } = require('./validation');
 
-const PROTOCOL_VERSION = 4;
-const MIN_SUPPORTED_PROTOCOL_VERSION = 4;
 const NATIVE_RESOLUTION_WAIT_MS = 2500;
 const ALLOWED_NATIVE_FAILURE_REASONS = new Set([
     'hidden_timeout',

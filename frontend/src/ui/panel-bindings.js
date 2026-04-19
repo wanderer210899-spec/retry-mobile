@@ -69,19 +69,19 @@ export function syncValidationControls(drawer, settings) {
 }
 
 function cachePanelElements(runtime, drawer) {
-    runtime.panel = drawer;
-    runtime.statusText = drawer.querySelector('[data-role="state-pill"]');
-    runtime.stats = drawer.querySelector('[data-role="stats"]');
-    runtime.diagnosticsOutput = drawer.querySelector('[data-role="diagnostics-output"]');
-    runtime.retryLogShell = drawer.querySelector('[data-role="retry-log-shell"]');
-    runtime.retryLogContainer = drawer.querySelector('[data-role="retry-log-box"]');
-    runtime.releaseInfoContainer = drawer.querySelector('[data-role="release-info"]');
-    runtime.errorBox = drawer.querySelector('[data-role="error-box"]');
-    runtime.actionToggleButton = drawer.querySelector('[data-action="toggle-run"]');
-    runtime.quickReplyStatusLine = drawer.querySelector('[data-role="qr-status"]');
-    runtime.quickReplyToggleButton = drawer.querySelector('[data-action="toggle-qr"]');
-    runtime.mainPane = drawer.querySelector('[data-role="main-pane"]');
-    runtime.systemPane = drawer.querySelector('[data-role="system-pane"]');
+    runtime.ui.panel = drawer;
+    runtime.ui.statusText = drawer.querySelector('[data-role="state-pill"]');
+    runtime.ui.stats = drawer.querySelector('[data-role="stats"]');
+    runtime.ui.diagnosticsOutput = drawer.querySelector('[data-role="diagnostics-output"]');
+    runtime.ui.retryLogShell = drawer.querySelector('[data-role="retry-log-shell"]');
+    runtime.ui.retryLogContainer = drawer.querySelector('[data-role="retry-log-box"]');
+    runtime.ui.releaseInfoContainer = drawer.querySelector('[data-role="release-info"]');
+    runtime.ui.errorBox = drawer.querySelector('[data-role="error-box"]');
+    runtime.ui.actionToggleButton = drawer.querySelector('[data-action="toggle-run"]');
+    runtime.ui.quickReplyStatusLine = drawer.querySelector('[data-role="qr-status"]');
+    runtime.ui.quickReplyToggleButton = drawer.querySelector('[data-action="toggle-qr"]');
+    runtime.ui.mainPane = drawer.querySelector('[data-role="main-pane"]');
+    runtime.ui.systemPane = drawer.querySelector('[data-role="system-pane"]');
 }
 
 function bindPanelEvents(drawer, runtime, {
@@ -155,7 +155,7 @@ function bindPanelEvents(drawer, runtime, {
 }
 
 function hydrateForm(runtime) {
-    const drawer = runtime.panel;
+    const drawer = runtime.ui.panel;
     if (!drawer) {
         return;
     }

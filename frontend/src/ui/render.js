@@ -4,7 +4,7 @@ import { syncValidationControls } from './panel-bindings.js';
 
 export function createRenderer({ runtime }) {
     return function render() {
-        if (!runtime.panel) {
+        if (!runtime.ui.panel) {
             return;
         }
 
@@ -13,61 +13,61 @@ export function createRenderer({ runtime }) {
         const activeStatus = runtime.activeJobStatus;
         const errorText = formatStructuredError(snapshot.error);
 
-        runtime.statusText.textContent = formatVisibleStateLabel(state, activeStatus);
-        runtime.statusText.dataset.state = state;
+        runtime.ui.statusText.textContent = formatVisibleStateLabel(state, activeStatus);
+        runtime.ui.statusText.dataset.state = state;
 
-        runtime.stats.innerHTML = [
+        runtime.ui.stats.innerHTML = [
             renderStat('Accepted', activeStatus?.acceptedCount ?? 0),
             renderStat('Attempts', activeStatus?.attemptCount ?? 0),
             renderStat('Target', runtime.settings.targetAcceptedCount),
             renderStat('Timeout', `${runtime.settings.attemptTimeoutSeconds}s`),
         ].join('');
 
-        runtime.errorBox.hidden = !errorText;
-        runtime.errorBox.textContent = errorText;
+        runtime.ui.errorBox.hidden = !errorText;
+        runtime.ui.errorBox.textContent = errorText;
 
-        if (runtime.quickReplyStatusLine) {
-            runtime.quickReplyStatusLine.textContent = renderQuickReplyStatusLine(runtime.quickReplyStatus);
+        if (runtime.ui.quickReplyStatusLine) {
+            runtime.ui.quickReplyStatusLine.textContent = renderQuickReplyStatusLine(runtime.quickReplyStatus);
         }
-        if (runtime.releaseInfoContainer) {
-            runtime.releaseInfoContainer.innerHTML = renderReleaseInfo(runtime.releaseInfo);
+        if (runtime.ui.releaseInfoContainer) {
+            runtime.ui.releaseInfoContainer.innerHTML = renderReleaseInfo(runtime.releaseInfo);
         }
-        if (runtime.retryLogContainer) {
-            runtime.retryLogContainer.textContent = runtime.retryLogText || 'No retry log is available yet.';
+        if (runtime.ui.retryLogContainer) {
+            runtime.ui.retryLogContainer.textContent = runtime.log.text || 'No retry log is available yet.';
         }
-        if (runtime.retryLogShell) {
-            runtime.retryLogShell.hidden = !runtime.showRetryLog;
+        if (runtime.ui.retryLogShell) {
+            runtime.ui.retryLogShell.hidden = !runtime.log.show;
         }
-        if (runtime.diagnosticsOutput) {
-            runtime.diagnosticsOutput.innerHTML = renderDiagnostics(runtime.diagnostics);
+        if (runtime.ui.diagnosticsOutput) {
+            runtime.ui.diagnosticsOutput.innerHTML = renderDiagnostics(runtime.diagnostics);
         }
-        if (runtime.mainPane && runtime.systemPane) {
-            const showSystem = runtime.activeTab === 'system';
-            runtime.mainPane.hidden = showSystem;
-            runtime.systemPane.hidden = !showSystem;
+        if (runtime.ui.mainPane && runtime.ui.systemPane) {
+            const showSystem = runtime.ui.activeTab === 'system';
+            runtime.ui.mainPane.hidden = showSystem;
+            runtime.ui.systemPane.hidden = !showSystem;
         }
 
-        runtime.panel.querySelectorAll('.rm-tab').forEach((button) => {
+        runtime.ui.panel.querySelectorAll('.rm-tab').forEach((button) => {
             const tab = button.dataset.tab === 'system' ? 'system' : 'main';
-            button.classList.toggle('rm-tab--active', runtime.activeTab === tab);
+            button.classList.toggle('rm-tab--active', runtime.ui.activeTab === tab);
         });
-        syncValidationControls(runtime.panel, runtime.settings);
+        syncValidationControls(runtime.ui.panel, runtime.settings);
 
-        if (runtime.actionToggleButton) {
+        if (runtime.ui.actionToggleButton) {
             const stopMode = isRunningLikeState(state);
-            runtime.actionToggleButton.textContent = stopMode ? 'Stop' : 'Start';
-            runtime.actionToggleButton.classList.toggle('rm-button--danger', stopMode);
-            runtime.actionToggleButton.classList.toggle('rm-button--primary', !stopMode);
+            runtime.ui.actionToggleButton.textContent = stopMode ? 'Stop' : 'Start';
+            runtime.ui.actionToggleButton.classList.toggle('rm-button--danger', stopMode);
+            runtime.ui.actionToggleButton.classList.toggle('rm-button--primary', !stopMode);
         }
-        if (runtime.quickReplyToggleButton) {
+        if (runtime.ui.quickReplyToggleButton) {
             const attached = Boolean(runtime.quickReplyStatus?.attached);
-            runtime.quickReplyToggleButton.textContent = attached ? 'Uninject' : 'Inject';
-            runtime.quickReplyToggleButton.classList.toggle('rm-qr-toggle--active', attached);
+            runtime.ui.quickReplyToggleButton.textContent = attached ? 'Uninject' : 'Inject';
+            runtime.ui.quickReplyToggleButton.classList.toggle('rm-qr-toggle--active', attached);
         }
 
-        const toggleLogButton = runtime.panel.querySelector('[data-action="toggle-log"]');
+        const toggleLogButton = runtime.ui.panel.querySelector('[data-action="toggle-log"]');
         if (toggleLogButton) {
-            toggleLogButton.textContent = runtime.showRetryLog ? 'Hide' : 'Show';
+            toggleLogButton.textContent = runtime.log.show ? 'Hide' : 'Show';
         }
     };
 }

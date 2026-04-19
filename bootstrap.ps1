@@ -2,12 +2,15 @@ $RepoBranchArgument = if ($args.Count -gt 0) { [string]$args[0] } else { '' }
 $ErrorActionPreference = 'Stop'
 
 $RepoUrl = 'https://github.com/wanderer210899-spec/retry-mobile.git'
+# BOOTSTRAP_BRANCH: the default branch cloned when no argument or env var is supplied.
+# Update this string whenever the canonical release branch is renamed or merged to main.
+$BootstrapBranch = 'feature/screen_off_initial_generation'
 $RepoBranch = if ($RepoBranchArgument) {
     $RepoBranchArgument
 } elseif ($env:RETRY_MOBILE_BRANCH) {
     [string]$env:RETRY_MOBILE_BRANCH
 } else {
-    'feature/screen_off_initial_generation'
+    $BootstrapBranch
 }
 $TempRoot = Join-Path $env:TEMP ('retry-mobile-installer-' + [guid]::NewGuid().ToString('N'))
 $RepoDir = Join-Path $TempRoot 'retry-mobile'

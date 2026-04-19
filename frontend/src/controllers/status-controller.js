@@ -120,25 +120,25 @@ export function createStatusController({ runtime, render }) {
     function startPolling(runId) {
         clearPolling();
         const pollSessionId = runtime.machine.startPollSession();
-        runtime.pollUnchangedCount = 0;
-        runtime.pollTransientFailures = 0;
-        runtime.pollUnexpectedServerFailures = 0;
-        runtime.pollSignature = '';
-        runtime.pollHandle = window.setTimeout(() => {
+        runtime.poll.unchangedCount = 0;
+        runtime.poll.transientFailures = 0;
+        runtime.poll.unexpectedServerFailures = 0;
+        runtime.poll.signature = '';
+        runtime.poll.handle = window.setTimeout(() => {
             void pollStatus(runId, pollSessionId);
         }, 0);
     }
 
     function clearPolling() {
-        if (runtime.pollHandle) {
-            window.clearTimeout(runtime.pollHandle);
-            runtime.pollHandle = 0;
+        if (runtime.poll.handle) {
+            window.clearTimeout(runtime.poll.handle);
+            runtime.poll.handle = 0;
         }
 
-        runtime.pollUnchangedCount = 0;
-        runtime.pollTransientFailures = 0;
-        runtime.pollUnexpectedServerFailures = 0;
-        runtime.pollSignature = '';
+        runtime.poll.unchangedCount = 0;
+        runtime.poll.transientFailures = 0;
+        runtime.poll.unexpectedServerFailures = 0;
+        runtime.poll.signature = '';
         runtime.machine.clearPollSession(runtime.machine.getSnapshot().pollSessionId);
     }
 
@@ -153,7 +153,7 @@ export function createStatusController({ runtime, render }) {
             return;
         }
 
-        if (!runtime.pollHandle) {
+        if (!runtime.poll.handle) {
             scheduleNextPoll(runId, pollSessionId, delayMs);
         }
     }
@@ -276,8 +276,8 @@ export function createStatusController({ runtime, render }) {
             runtime.machine.clearError();
         }
 
-        if (nextState === RUN_STATE.FAILED && runtime.transportErrorContext) {
-            runtime.disconnectPolicy = 'failed';
+        if (nextState === RUN_STATE.FAILED && runtime.transport.errorContext) {
+            runtime.transport.disconnectPolicy = 'failed';
         }
 
         runtime.machine.setOwnsTurn(false);
@@ -344,10 +344,10 @@ export function createStatusController({ runtime, render }) {
         };
 
         if (isTransportLoss) {
-            runtime.lastTransportError = transportContext.message;
-            runtime.lastTransportEndpoint = endpoint;
-            runtime.lastTransportErrorAt = transportContext.timestamp;
-            runtime.transportErrorContext = transportContext;
+            runtime.transport.lastError = transportContext.message;
+            runtime.transport.lastEndpoint = endpoint;
+            runtime.transport.lastErrorAt = transportContext.timestamp;
+            runtime.transport.errorContext = transportContext;
         }
 
         runtime.machine.recordEvent(source, eventName, summary, transportContext);
@@ -367,7 +367,7 @@ export function createStatusController({ runtime, render }) {
             return;
         }
 
-        runtime.disconnectPolicy = 'deferred_to_backend_truth';
+        runtime.transport.disconnectPolicy = 'deferred_to_backend_truth';
         runtime.machine.clearError();
         runtime.machine.setBackendEvent('connection_lost', summary);
         runtime.machine.recordEvent('backend', eventName, summary);
@@ -416,9 +416,9 @@ export function createStatusController({ runtime, render }) {
             const previousAccepted = Number(previousStatus?.acceptedCount) || 0;
             setActiveBackendStatus(status, 'live_active');
             const signatureChanged = updatePollSignature(status);
-            runtime.pollTransientFailures = 0;
-            runtime.pollUnexpectedServerFailures = 0;
-            runtime.pollUnchangedCount = signatureChanged ? 0 : (runtime.pollUnchangedCount + 1);
+            runtime.poll.transientFailures = 0;
+            runtime.poll.unexpectedServerFailures = 0;
+            runtime.poll.unchangedCount = signatureChanged ? 0 : (runtime.poll.unchangedCount + 1);
             syncRuntimeStateFromStatus(runId, status, {
                 previousStatus,
                 announceTransitions: true,
@@ -435,7 +435,7 @@ export function createStatusController({ runtime, render }) {
                 showToast('success', EXTENSION_NAME, `Retry Mobile accepted ${status.acceptedCount}/${status.targetAcceptedCount} generations.`);
             }
 
-            if (signatureChanged || runtime.retryLogJobId !== status.jobId) {
+            if (signatureChanged || runtime.log.jobId !== status.jobId) {
                 await syncRetryLogForStatus(runtime, status, {
                     force: false,
                     clearWhenMissing: false,
@@ -505,8 +505,8 @@ export function createStatusController({ runtime, render }) {
             }
 
             if (failureKind === 'unexpected_5xx') {
-                runtime.pollUnexpectedServerFailures += 1;
-                if (runtime.pollUnexpectedServerFailures >= 3) {
+                runtime.poll.unexpectedServerFailures += 1;
+                if (runtime.poll.unexpectedServerFailures >= 3) {
                     await applyTerminalState(runId, RUN_STATE.FAILED, {
                         error: createStructuredError(
                             'backend_polling_failed',
@@ -518,8 +518,8 @@ export function createStatusController({ runtime, render }) {
                     return;
                 }
             } else {
-                runtime.pollTransientFailures += 1;
-                runtime.pollUnexpectedServerFailures = 0;
+                runtime.poll.transientFailures += 1;
+                runtime.poll.unexpectedServerFailures = 0;
             }
 
             render();
@@ -534,26 +534,26 @@ export function createStatusController({ runtime, render }) {
         }
 
         const jitterMultiplier = 0.85 + (Math.random() * 0.3);
-        runtime.pollHandle = window.setTimeout(() => {
+        runtime.poll.handle = window.setTimeout(() => {
             void pollStatus(runId, pollSessionId);
         }, Math.round(delayMs * jitterMultiplier));
     }
 
     function clearScheduledPollOnly() {
-        if (!runtime.pollHandle) {
+        if (!runtime.poll.handle) {
             return;
         }
 
-        window.clearTimeout(runtime.pollHandle);
-        runtime.pollHandle = 0;
+        window.clearTimeout(runtime.poll.handle);
+        runtime.poll.handle = 0;
     }
 
     function getNextPollDelay() {
-        if (runtime.pollUnexpectedServerFailures > 0 || runtime.pollTransientFailures >= 3 || runtime.pollUnchangedCount >= 15) {
+        if (runtime.poll.unexpectedServerFailures > 0 || runtime.poll.transientFailures >= 3 || runtime.poll.unchangedCount >= 15) {
             return POLL_INTERVAL_SLOW_MS;
         }
 
-        if (runtime.pollUnchangedCount >= 5) {
+        if (runtime.poll.unchangedCount >= 5) {
             return POLL_INTERVAL_STEADY_MS;
         }
 
@@ -575,8 +575,8 @@ export function createStatusController({ runtime, render }) {
             cancelRequested: Boolean(status?.cancelRequested),
             structuredErrorCode: status?.structuredError?.code || '',
         });
-        const changed = runtime.pollSignature !== nextSignature;
-        runtime.pollSignature = nextSignature;
+        const changed = runtime.poll.signature !== nextSignature;
+        runtime.poll.signature = nextSignature;
         return changed;
     }
 
@@ -606,24 +606,24 @@ export function createStatusController({ runtime, render }) {
             return;
         }
 
-        if (!runtime.transportErrorContext) {
+        if (!runtime.transport.errorContext) {
             return;
         }
 
-        runtime.disconnectPolicy = 'deferred_to_backend_truth';
+        runtime.transport.disconnectPolicy = 'deferred_to_backend_truth';
     }
 
     function clearCaptureSession() {
-        if (!runtime.captureSession) {
+        if (!runtime.capture.session) {
             return;
         }
 
         try {
-            runtime.captureSession.stop?.();
+            runtime.capture.session.stop?.();
         } catch (error) {
             backendLog.warn('Capture session cleanup failed.', error);
         }
-        runtime.captureSession = null;
+        runtime.capture.session = null;
     }
 
     function getFrontendVisibility() {

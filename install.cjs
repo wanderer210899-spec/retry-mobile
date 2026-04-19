@@ -21,7 +21,14 @@ main().catch((error) => {
 
 async function main() {
     const platform = detectPlatform();
+    warnIfVersionsMismatch();
     const layout = resolveLocalLayout(process.cwd(), platform);
+
+    if (process.env.RETRY_MOBILE_HEADLESS === '1') {
+        await headlessInstall(layout, platform);
+        return;
+    }
+
     const rl = readline.createInterface({
         input: process.stdin,
         output: process.stdout,
@@ -56,6 +63,40 @@ async function main() {
     } finally {
         rl.close();
     }
+}
+
+async function headlessInstall(layout, platform) {
+    console.log('\n[Headless] Non-interactive install (RETRY_MOBILE_HEADLESS=1)');
+    layout.installSource = resolveLayoutInstallSource(layout);
+    await refreshInstallerReleaseStatus(layout);
+
+    if (!layout.config.enableServerPlugins) {
+        throw new Error(
+            'Server plugins are not enabled in config.yaml.\n' +
+            'Run the installer interactively first, choose option 1 to enable server plugins,\n' +
+            'restart SillyTavern, then rerun the sync script.'
+        );
+    }
+
+    ensureWritable(layout.pluginsDir, true);
+    installBackend(layout);
+    console.log('[Headless] Backend installed.');
+
+    const profilesWithFrontend = layout.profiles.filter((p) => p.hasFrontend);
+    if (profilesWithFrontend.length > 0) {
+        removeProfileFrontends(profilesWithFrontend);
+        console.log(`[Headless] Removed ${profilesWithFrontend.length} profile-local frontend install(s) to install globally.`);
+    }
+
+    ensureWritable(layout.globalExtensionsDir, true);
+    installGlobalFrontend(layout);
+    refreshProfiles(layout);
+    console.log('[Headless] Frontend installed (global third-party).');
+
+    logProcessComplete('[Headless] Install complete.', [
+        'Backend and global frontend updated.',
+        'Restart SillyTavern for changes to take effect.',
+    ], platform);
 }
 
 function detectPlatform() {
@@ -659,6 +700,29 @@ function readJsonFile(filePath) {
     }
 
     return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function warnIfVersionsMismatch() {
+    try {
+        const backendVersion = String(readJsonFile(path.join(SOURCE_ROOT, 'server', 'package.json'))?.version || '').trim();
+        const frontendVersion = String(readJsonFile(path.join(SOURCE_ROOT, 'frontend', 'manifest.json'))?.version || '').trim();
+        const releaseVersion = String(readJsonFile(path.join(SOURCE_ROOT, 'release.json'))?.version || '').trim();
+        const versions = [
+            { file: 'server/package.json', version: backendVersion },
+            { file: 'frontend/manifest.json', version: frontendVersion },
+            { file: 'release.json', version: releaseVersion },
+        ];
+        const unique = new Set(versions.map((v) => v.version).filter(Boolean));
+        if (unique.size > 1) {
+            console.warn(`\n${PLUGIN_NAME} WARNING: version mismatch detected across release files.`);
+            for (const { file, version } of versions) {
+                console.warn(`  ${file}: ${version || '(missing)'}`);
+            }
+            console.warn('  Update all three files to the same version before releasing.\n');
+        }
+    } catch {
+        // Non-fatal; version files may be absent in partial checkouts.
+    }
 }
 
 function compareVersions(left, right) {

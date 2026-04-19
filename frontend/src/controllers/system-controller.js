@@ -211,7 +211,7 @@ export function createSystemController({
         registerSlashCommand(context, {
             name: `${SLASH_COMMAND_PREFIX}-panel`,
             callback: async () => {
-                focusPanelDrawer(runtime.panel);
+                focusPanelDrawer(runtime.ui.panel);
             },
             helpString: 'Focus the Retry Mobile settings panel.',
         });
@@ -225,8 +225,8 @@ export function createSystemController({
     }
 
     function showTab(tab) {
-        runtime.activeTab = tab === 'system' ? 'system' : 'main';
-        if (runtime.activeTab === 'system') {
+        runtime.ui.activeTab = tab === 'system' ? 'system' : 'main';
+        if (runtime.ui.activeTab === 'system') {
             void refreshReleaseInfo();
             void syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
                 force: Boolean(runtime.activeJobStatus?.jobId),
@@ -237,9 +237,9 @@ export function createSystemController({
     }
 
     function toggleRetryLog() {
-        runtime.showRetryLog = !runtime.showRetryLog;
-        runtime.activeTab = 'system';
-        if (runtime.showRetryLog) {
+        runtime.log.show = !runtime.log.show;
+        runtime.ui.activeTab = 'system';
+        if (runtime.log.show) {
             void syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
                 force: Boolean(runtime.activeJobStatus?.jobId),
                 clearWhenMissing: false,

@@ -108,7 +108,7 @@ export function createRunController({ runtime, render, statusController }) {
         runtime.machine.recordEvent('ui', 'armed', 'User armed Retry Mobile.');
 
         const runId = snapshot.runId;
-        runtime.captureSession = createArmCaptureSession({
+        runtime.capture.session = createArmCaptureSession({
             chatIdentity: identity,
             onCapture: (result) => {
                 void handleCaptureResult(runId, result);
@@ -224,9 +224,9 @@ export function createRunController({ runtime, render, statusController }) {
             return;
         }
 
-        runtime.capturedRequest = result.capturedRequest;
-        runtime.fingerprint = result.fingerprint;
-        runtime.assistantMessageIndex = null;
+        runtime.capture.request = result.capturedRequest;
+        runtime.capture.fingerprint = result.fingerprint;
+        runtime.capture.assistantMessageIndex = null;
 
         runtime.machine.clearError();
         runtime.machine.setNativeEvent('CHAT_COMPLETION_SETTINGS_READY', `Captured ${result.requestType || 'normal'} request for user turn ${result.fingerprint.userMessageIndex}.`);
@@ -244,7 +244,7 @@ export function createRunController({ runtime, render, statusController }) {
 
         try {
             const nativeResult = await waitForNativeCompletion({
-                fingerprint: runtime.fingerprint,
+                fingerprint: runtime.capture.fingerprint,
                 nativeGraceSeconds: runtime.settings.nativeGraceSeconds,
                 onEvent: (name, summary) => {
                     if (!runtime.machine.isCurrentRun(runId)) {
@@ -266,7 +266,7 @@ export function createRunController({ runtime, render, statusController }) {
                 return;
             }
 
-            runtime.assistantMessageIndex = nativeResult.assistantMessageIndex;
+            runtime.capture.assistantMessageIndex = nativeResult.assistantMessageIndex;
             runtime.machine.transition(RUN_STATE.NATIVE_CONFIRMED);
             runtime.machine.recordEvent(
                 'st',
@@ -324,10 +324,10 @@ export function createRunController({ runtime, render, statusController }) {
             capturedChatIntegrity: String(context?.chatMetadata?.integrity || ''),
             capturedChatLength: Array.isArray(context?.chat) ? context.chat.length : 0,
             tokenizerDescriptor: buildTokenizerDescriptor(context),
-            capturedRequest: runtime.capturedRequest,
-            targetFingerprint: runtime.fingerprint,
+            capturedRequest: runtime.capture.request,
+            targetFingerprint: runtime.capture.fingerprint,
             captureMeta: {
-                capturedAt: runtime.fingerprint?.capturedAt || new Date().toISOString(),
+                capturedAt: runtime.capture.fingerprint?.capturedAt || new Date().toISOString(),
                 assistantName: snapshot.chatIdentity?.assistantName || 'Assistant',
                 userName: String(context?.name1 || context?.user_name || 'You'),
                 userAvatar: String(context?.user_avatar || ''),
@@ -554,29 +554,29 @@ export function createRunController({ runtime, render, statusController }) {
     }
 
     function stopCaptureSession() {
-        if (!runtime.captureSession) {
+        if (!runtime.capture.session) {
             return;
         }
 
         try {
-            runtime.captureSession.stop?.();
+            runtime.capture.session.stop?.();
         } catch (error) {
             log.warn('Capture session cleanup failed.', error);
         }
-        runtime.captureSession = null;
+        runtime.capture.session = null;
     }
 
     function resetRunBuffers(options = {}) {
-        runtime.capturedRequest = null;
-        runtime.fingerprint = null;
-        runtime.assistantMessageIndex = null;
+        runtime.capture.request = null;
+        runtime.capture.fingerprint = null;
+        runtime.capture.assistantMessageIndex = null;
         runtime.lastAppliedVersion = 0;
         runtime.nativeFailureCompatWarned = false;
-        runtime.lastTransportError = null;
-        runtime.lastTransportEndpoint = '';
-        runtime.lastTransportErrorAt = null;
-        runtime.transportErrorContext = null;
-        runtime.disconnectPolicy = 'none';
+        runtime.transport.lastError = null;
+        runtime.transport.lastEndpoint = '';
+        runtime.transport.lastErrorAt = null;
+        runtime.transport.errorContext = null;
+        runtime.transport.disconnectPolicy = 'none';
         clearCommittedReloads(runtime);
         if (!options.preserveStatus) {
             runtime.activeJobId = null;
@@ -613,13 +613,13 @@ export function createRunController({ runtime, render, statusController }) {
         const tokenizerModel = typeof context?.getTokenizerModel === 'function'
             ? context.getTokenizerModel()
             : '';
-        const capturedModel = runtime.capturedRequest?.model;
+        const capturedModel = runtime.capture.request?.model;
         return {
             tokenizerMode: runtime.settings.validationMode,
             tokenizerKey: String(tokenizerModel || capturedModel || context?.mainApi || ''),
             model: String(capturedModel || tokenizerModel || ''),
             apiFamily: String(context?.mainApi || ''),
-            chatCompletionSource: String(runtime.capturedRequest?.chat_completion_source || ''),
+            chatCompletionSource: String(runtime.capture.request?.chat_completion_source || ''),
         };
     }
 }

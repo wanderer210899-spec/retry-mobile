@@ -1,6 +1,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+let _fs = fs;
+
+function configureFs(impl) {
+    _fs = impl || fs;
+}
+
 const { createStructuredError } = require('./retry-error');
 const { saveChatThroughSt } = require('./st-runtime');
 
@@ -650,7 +656,7 @@ function getPersistedChatOffset(chat) {
 function readChatJsonl(filePath) {
     let raw = '';
     try {
-        raw = fs.readFileSync(filePath, 'utf8');
+        raw = _fs.readFileSync(filePath, 'utf8');
     } catch (error) {
         throw createStructuredError(
             'backend_turn_missing',
@@ -736,6 +742,7 @@ function sanitizeFileName(value) {
 module.exports = {
     applyAcceptedResultToMessage,
     assertWritePathReady,
+    configureFs,
     inspectNativeAssistantState,
     inspectRecoverySnapshot,
     shouldUseConfirmedWriteSafetyRecheck,

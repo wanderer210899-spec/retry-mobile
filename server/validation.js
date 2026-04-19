@@ -84,13 +84,16 @@ function validateRunConfig(runConfig = {}) {
     };
 }
 
-function validateAcceptedText(text, runConfig = {}) {
+function validateAcceptedText(text, runConfig = {}, options = {}) {
+    const countTokensFn = typeof options.countTokens === 'function'
+        ? options.countTokens
+        : countTokensHeuristic;
     const normalized = normalizeText(text);
     const validation = getValidationThreshold(runConfig);
     const metrics = {
         text: normalized,
         characterCount: countCharacters(normalized),
-        tokenCount: countTokensHeuristic(normalized),
+        tokenCount: countTokensFn(normalized),
     };
 
     if (!normalized) {
@@ -133,6 +136,8 @@ function validateAcceptedText(text, runConfig = {}) {
 }
 
 module.exports = {
+    VALIDATION_MODE,
+    countTokensHeuristic,
     validateRunConfig,
     validateAcceptedText,
 };

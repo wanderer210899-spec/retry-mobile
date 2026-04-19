@@ -16,6 +16,20 @@ const BASE_RETRY_DELAY_MS = 750;
 const MAX_RETRY_DELAY_MS = 10000;
 const MAX_TARGET_PENDING_INSPECTIONS = 5;
 
+const nativeResolutionByJob = new Map();
+
+function isNativeResolutionInProgress(jobId) {
+    return nativeResolutionByJob.get(jobId)?.inProgress === true;
+}
+
+function getNativeResolutionPromise(jobId) {
+    return nativeResolutionByJob.get(jobId)?.promise || null;
+}
+
+function clearNativeResolution(jobId) {
+    nativeResolutionByJob.delete(jobId);
+}
+
 async function runJob(job, environment) {
     acquireWakeLock();
     job.jobController ??= new AbortController();
@@ -379,7 +393,7 @@ async function awaitNativeOutcome(job) {
             return;
         }
 
-        if (job.nativeResolutionInProgress) {
+        if (isNativeResolutionInProgress(job.jobId)) {
             await observeNativeResolution(job);
             continue;
         }
@@ -408,8 +422,9 @@ async function awaitNativeOutcome(job) {
 }
 
 async function resolvePendingNativeState(job, cause) {
+    nativeResolutionByJob.set(job.jobId, { inProgress: true, promise: null });
     job.nativeResolutionInProgress = true;
-    job.nativeResolutionPromise = (async () => {
+    const resolutionPromise = (async () => {
         try {
             if (job.state !== 'running' || job.cancelRequested) {
                 return { outcome: 'cancelled' };
@@ -465,21 +480,25 @@ async function resolvePendingNativeState(job, cause) {
                 inspection,
             };
         } finally {
-            job.nativeResolutionPromise = null;
+            clearNativeResolution(job.jobId);
             job.nativeResolutionInProgress = false;
         }
     })();
 
-    return await job.nativeResolutionPromise;
+    if (nativeResolutionByJob.has(job.jobId)) {
+        nativeResolutionByJob.set(job.jobId, { inProgress: true, promise: resolutionPromise });
+    }
+    return await resolutionPromise;
 }
 
 async function waitForNativeResolutionIdle(job, timeoutMs) {
-    if (!job?.nativeResolutionInProgress || !job.nativeResolutionPromise) {
+    const promise = getNativeResolutionPromise(job?.jobId);
+    if (!promise) {
         return true;
     }
 
     const result = await Promise.race([
-        job.nativeResolutionPromise.then(() => 'resolved'),
+        promise.then(() => 'resolved'),
         sleep(timeoutMs).then(() => 'timed_out'),
     ]);
 
@@ -509,7 +528,7 @@ async function confirmNativeAssistant(job, assistantMessageIndex) {
         nativeGraceDeadline: new Date(Date.now() + (Number(job.nativeGraceSeconds || 30) * 1000)).toISOString(),
     });
     appendLifecycleLog(job, 'native_confirming_persisted', `Frontend confirmed native assistant turn ${liveAssistantIndex}; backend is waiting for the saved chat to expose it.`);
-    if (!job.nativeResolutionInProgress) {
+    if (!isNativeResolutionInProgress(job.jobId)) {
         void resolvePendingNativeState(job, 'frontend_confirmed');
     }
     return {
@@ -600,11 +619,12 @@ async function inspectPendingNativeState(job) {
 }
 
 async function observeNativeResolution(job) {
-    if (!job?.nativeResolutionPromise) {
+    const promise = getNativeResolutionPromise(job?.jobId);
+    if (!promise) {
         return;
     }
 
-    await job.nativeResolutionPromise;
+    await promise;
 }
 
 async function ensureNativeWriteReady(job, attemptRecord) {
