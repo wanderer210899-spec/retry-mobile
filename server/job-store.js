@@ -4,7 +4,6 @@ const { deleteJobLog } = require('./job-log-store');
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
 const TERMINAL_JOB_RETENTION = 50;
-const CIRCUIT_BREAKER_THRESHOLD = 3;
 const UNKNOWN_SCHEMA_REASON = 'unknown_schema_version';
 
 let resolveUserDirectories = null;
@@ -28,7 +27,6 @@ function getRetryMobileUserPaths(handle, directories = null) {
         retryRoot,
         jobsDir: path.join(retryRoot, 'jobs'),
         generationFile: path.join(retryRoot, 'chat-generation.json'),
-        circuitBreakerFile: path.join(retryRoot, 'circuit-breaker.json'),
     };
 }
 
@@ -148,41 +146,6 @@ function advanceGeneration(handle, directories, chatKey) {
     state[chatKey] = nextGeneration;
     writeJsonCrashResistant(paths.generationFile, state);
     return nextGeneration;
-}
-
-function getCircuitBreakerState(handle, directories, chatKey) {
-    const paths = getRetryMobileUserPaths(handle, directories);
-    const state = readJsonIfExists(paths.circuitBreakerFile) || {};
-    const entry = state?.[chatKey];
-    const count = Number.isFinite(Number(entry?.count)) ? Number(entry.count) : 0;
-    return {
-        count,
-        blocked: count >= CIRCUIT_BREAKER_THRESHOLD,
-        updatedAt: entry?.updatedAt || null,
-    };
-}
-
-function incrementCircuitBreaker(handle, directories, chatKey) {
-    const paths = getRetryMobileUserPaths(handle, directories);
-    fs.mkdirSync(path.dirname(paths.circuitBreakerFile), { recursive: true });
-    const state = readJsonIfExists(paths.circuitBreakerFile) || {};
-    const current = Number.isFinite(Number(state?.[chatKey]?.count)) ? Number(state[chatKey].count) : 0;
-    state[chatKey] = {
-        count: current + 1,
-        updatedAt: new Date().toISOString(),
-    };
-    writeJsonCrashResistant(paths.circuitBreakerFile, state);
-    return getCircuitBreakerState(handle, directories, chatKey);
-}
-
-function resetCircuitBreaker(handle, directories, chatKey) {
-    const paths = getRetryMobileUserPaths(handle, directories);
-    const state = readJsonIfExists(paths.circuitBreakerFile) || {};
-    if (state?.[chatKey]) {
-        delete state[chatKey];
-        writeJsonCrashResistant(paths.circuitBreakerFile, state);
-    }
-    return getCircuitBreakerState(handle, directories, chatKey);
 }
 
 function writeJsonCrashResistant(filePath, data) {
@@ -314,7 +277,6 @@ function isTerminalState(state) {
 module.exports = {
     SNAPSHOT_SCHEMA_VERSION,
     TERMINAL_JOB_RETENTION,
-    CIRCUIT_BREAKER_THRESHOLD,
     configureJobStore,
     getRetryMobileUserPaths,
     writeJobSnapshot,
@@ -322,8 +284,5 @@ module.exports = {
     pruneTerminalJobUnits,
     getCurrentGeneration,
     advanceGeneration,
-    getCircuitBreakerState,
-    incrementCircuitBreaker,
-    resetCircuitBreaker,
     writeUnknownSchemaRecoverySidecar,
 };

@@ -13,7 +13,6 @@ const { createStructuredError, toStructuredError } = require('./retry-error');
 const {
     advanceGeneration,
     configureJobStore,
-    getCircuitBreakerState,
     getCurrentGeneration,
     loadPersistedJobSnapshots,
     pruneTerminalJobUnits,
@@ -88,13 +87,10 @@ async function init(router) {
             const { handle, directories } = getUserContext(request);
             const chatKey = buildChatKey(identity);
             const generation = getCurrentGeneration(handle, directories, chatKey);
-            const breaker = getCircuitBreakerState(handle, directories, chatKey);
             const termux = getTermuxStatus();
             return response.send({
                 chatKey,
                 currentGeneration: generation,
-                toggleFailureCount: breaker.count,
-                toggleBlocked: breaker.blocked,
                 termux: Boolean(termux.available),
                 termuxCheckedAt: termux.checkedAt,
             });
@@ -155,9 +151,6 @@ async function init(router) {
         }
 
         const compatibility = getCompatibilitySnapshot();
-        const breaker = job?.userContext?.handle && job?.chatKey
-            ? getCircuitBreakerState(job.userContext.handle, job.userContext.directories, job.chatKey)
-            : null;
         const cursor = ensureJobLog(job);
         return response.send({
             jobId: job.jobId,
@@ -167,7 +160,6 @@ async function init(router) {
             entryCount: cursor.entryCount,
             text: renderJobLog(job, {
                 compatibility,
-                circuitBreaker: breaker,
             }),
         });
     });
@@ -321,7 +313,6 @@ async function init(router) {
                 });
             }
 
-            const breaker = getCircuitBreakerState(handle, directories, chatKey);
             const normalizedRunConfig = normalizeRunConfig(request.body.runConfig);
             const generationNumber = advanceGeneration(handle, directories, chatKey);
             const termux = refreshTermuxStatusForStart();
@@ -358,9 +349,7 @@ async function init(router) {
                     handle,
                     directories,
                 },
-                lastError: breaker.blocked && normalizedRunConfig.runMode === 'toggle'
-                    ? 'Toggle mode circuit breaker is active for this chat.'
-                    : '',
+                lastError: '',
             });
             ensureJobLog(job);
             appendJobLog(job, {
@@ -386,8 +375,6 @@ async function init(router) {
                 job: serializeJob(job),
                 protocolVersion: PROTOCOL_VERSION,
                 currentGeneration: generationNumber,
-                toggleFailureCount: breaker.count,
-                toggleBlocked: breaker.blocked,
                 termux: Boolean(termux.available),
                 termuxCheckedAt: termux.checkedAt,
             });

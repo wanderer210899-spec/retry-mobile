@@ -86,7 +86,6 @@ function renderJobLog(job, options = {}) {
     const entries = readJobLogEntries(job);
     const title = job?.logTitle || buildJobLogTitle(job);
     const compatibility = options.compatibility || {};
-    const circuitBreaker = options.circuitBreaker || null;
     const latestAttempt = getLatestAttempt(job);
     const lines = [
         title,
@@ -156,7 +155,7 @@ function renderJobLog(job, options = {}) {
     }
 
     lines.push('', 'Warnings:');
-    const warnings = collectWarnings(job, circuitBreaker);
+    const warnings = collectWarnings(job);
     if (warnings.length === 0) {
         lines.push('none');
     } else {
@@ -388,14 +387,11 @@ function formatRecoveryMode(mode) {
     }
 }
 
-function collectWarnings(job, circuitBreaker) {
+function collectWarnings(job) {
     const warnings = [];
     const graceDeadlineMs = Date.parse(job?.nativeGraceDeadline || '');
     if (job?.nativeState === 'pending' && Number.isFinite(graceDeadlineMs) && graceDeadlineMs < Date.now()) {
         warnings.push('native grace deadline expired while native resolution is still pending.');
-    }
-    if (circuitBreaker?.blocked) {
-        warnings.push(`toggle circuit breaker is active after ${Number(circuitBreaker.count) || 0} failure(s).`);
     }
     return warnings;
 }

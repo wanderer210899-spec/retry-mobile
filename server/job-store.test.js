@@ -5,15 +5,11 @@ const os = require('node:os');
 const path = require('node:path');
 
 const {
-    CIRCUIT_BREAKER_THRESHOLD,
     advanceGeneration,
     configureJobStore,
-    getCircuitBreakerState,
     getCurrentGeneration,
     getRetryMobileUserPaths,
-    incrementCircuitBreaker,
     pruneTerminalJobUnits,
-    resetCircuitBreaker,
     writeJobSnapshot,
 } = require('./job-store');
 
@@ -46,27 +42,6 @@ test('generation index starts at zero and increments per chat', () => {
     assert.equal(advanceGeneration('default-user', directories, chatKey), 1);
     assert.equal(advanceGeneration('default-user', directories, chatKey), 2);
     assert.equal(getCurrentGeneration('default-user', directories, chatKey), 2);
-
-    fs.rmSync(sandboxRoot, { recursive: true, force: true });
-});
-
-test('circuit breaker persists counts and resets cleanly', () => {
-    const { sandboxRoot, directories } = setupStore();
-    const chatKey = 'character::chat-2::';
-
-    assert.deepEqual(getCircuitBreakerState('default-user', directories, chatKey), {
-        count: 0,
-        blocked: false,
-        updatedAt: null,
-    });
-
-    for (let index = 0; index < CIRCUIT_BREAKER_THRESHOLD; index += 1) {
-        const state = incrementCircuitBreaker('default-user', directories, chatKey);
-        assert.equal(state.count, index + 1);
-    }
-
-    assert.equal(getCircuitBreakerState('default-user', directories, chatKey).blocked, true);
-    assert.equal(resetCircuitBreaker('default-user', directories, chatKey).count, 0);
 
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
 });

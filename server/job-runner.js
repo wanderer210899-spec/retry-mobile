@@ -1,6 +1,6 @@
 const { acquireWakeLock, notify, releaseWakeLock } = require('./notifier');
 const { appendJobLog } = require('./job-log-store');
-const { incrementCircuitBreaker, pruneTerminalJobUnits, resetCircuitBreaker } = require('./job-store');
+const { pruneTerminalJobUnits } = require('./job-store');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { validateAcceptedText } = require('./validation');
 const { appendAttemptLog, touchJob } = require('./state');
@@ -311,7 +311,6 @@ async function runJob(job, environment) {
                 event: 'job_completed',
                 summary: `Retry Mobile completed with ${job.acceptedCount}/${job.targetAcceptedCount} accepted outputs.`,
             });
-            resetCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
             pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
             notify(job.runConfig, 'completed', {
                 attemptCount: job.attemptCount,
@@ -338,7 +337,6 @@ async function runJob(job, environment) {
             summary: structuredError.message,
             detail: structuredError.detail || buildAttemptSummary(job),
         });
-        incrementCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
         pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
     } catch (error) {
         const structuredError = toStructuredError(error, 'backend_write_failed', 'Retry Mobile backend job failed.');
@@ -357,7 +355,6 @@ async function runJob(job, environment) {
             summary: structuredError.message,
             detail: structuredError.detail || buildAttemptSummary(job),
         });
-        incrementCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
         pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
         console.error('[retry-mobile:backend] Job failed:', job.jobId, error);
     } finally {
@@ -880,7 +877,6 @@ function finalizeCancelled(job) {
         event: 'job_cancelled',
         summary: 'Retry Mobile cancelled this backend job.',
     });
-    resetCircuitBreaker(job.userContext.handle, job.userContext.directories, job.chatKey);
     pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
 }
 

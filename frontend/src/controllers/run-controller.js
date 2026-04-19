@@ -69,14 +69,6 @@ export function createRunController({ runtime, render, statusController }) {
 
         await statusController.refreshChatState(identity);
 
-        if (runtime.settings.runMode === RUN_MODE.TOGGLE && runtime.chatState?.toggleBlocked) {
-            statusController.applyErrorState(createStructuredError(
-                'toggle_blocked',
-                'Retry Mobile toggle mode is temporarily blocked for this chat after repeated failures. Start a single run or wait until the next successful run resets the breaker.',
-            ));
-            return;
-        }
-
         if (runtime.settings.maxAttempts < runtime.settings.targetAcceptedCount) {
             statusController.applyErrorState(createStructuredError(
                 'handoff_request_failed',
@@ -189,14 +181,6 @@ export function createRunController({ runtime, render, statusController }) {
         if (!previousChat || !isSameChat(previousChat, liveIdentity)) {
             runtime.machine.recordEvent('state', 'toggle_rearm_skipped', 'Skipped toggle re-arm because the active chat changed.');
             render();
-            return;
-        }
-
-        await statusController.refreshChatState(liveIdentity);
-        if (runtime.chatState?.toggleBlocked) {
-            runtime.machine.recordEvent('state', 'toggle_rearm_blocked', 'Skipped toggle re-arm because the backend circuit breaker is active for this chat.');
-            render();
-            showToast('warning', EXTENSION_NAME, 'Toggle mode paused after repeated failures in this chat.');
             return;
         }
 
@@ -347,8 +331,6 @@ export function createRunController({ runtime, render, statusController }) {
                 ...(runtime.chatState || {}),
                 chatKey: result.job?.chatKey || runtime.chatState?.chatKey || '',
                 currentGeneration: Number(result.currentGeneration) || Number(runtime.chatState?.currentGeneration) || 0,
-                toggleFailureCount: Number(result.toggleFailureCount) || 0,
-                toggleBlocked: Boolean(result.toggleBlocked),
                 termux: Boolean(result.termux),
                 termuxCheckedAt: result.termuxCheckedAt || null,
             };
