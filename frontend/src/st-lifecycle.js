@@ -417,6 +417,11 @@ export function waitForNativeCompletion({
                     return;
                 }
 
+                if (document.body?.dataset?.generating) {
+                    lastVisibleProgressAt = Date.now();
+                    return;
+                }
+
                 if ((Date.now() - lastVisibleProgressAt) >= (Math.max(10, Number(nativeGraceSeconds) || 30) * 1000)) {
                     settleFailed(
                         'rendered_without_end',

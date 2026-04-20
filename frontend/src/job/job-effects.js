@@ -124,6 +124,7 @@ export function createJobEffects({ runtime, machine, render }) {
                             payload: {
                                 error: getStructuredErrorFromApi(error, 'Retry Mobile could not confirm the native assistant turn.'),
                                 recoverable: true,
+                                isConflict: error?.status === 409,
                             },
                         });
                     }

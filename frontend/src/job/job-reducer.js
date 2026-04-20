@@ -322,6 +322,11 @@ export function reduceJobState(state, event, env) {
             }
 
             if (type === 'backend.native_confirm_failed') {
+                if (payload.isConflict) {
+                    return commit(current, JOB_PHASE.WAITING_NATIVE, {
+                        error: null,
+                    });
+                }
                 const error = normalizeStructuredError(payload.error, 'handoff_request_failed');
                 return commit(current, JOB_PHASE.RECOVERING, {
                     error,

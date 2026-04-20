@@ -96,6 +96,17 @@ export function bootRetryMobile() {
         stopPlugin,
     });
 
+    window.__rmTeardown?.();
+    window.__rmTeardown = () => {
+        runtime.jobEffects?.teardown?.();
+        if (runtime.hostObserver) {
+            clearInterval(runtime.hostObserver);
+            runtime.hostObserver = 0;
+        }
+    };
+    window.__rmDispatch = (type, payload) => runtime.jobMachine?.dispatch({ type, payload });
+    window.__rmLogEvent = (event, summary, detail) => sendFrontendLogEvent(runtime, { event, summary, detail });
+
     ensurePanelMounted();
     bindHostObserver(ensurePanelMounted);
     bindPageObservers();
@@ -185,42 +196,26 @@ function scheduleMountRetry(ensurePanelMounted) {
 }
 
 function bindPageObservers() {
+    if (window.__rmPageObserversBound) {
+        return;
+    }
+    window.__rmPageObserversBound = true;
+
     document.addEventListener('visibilitychange', () => {
         const hidden = document.visibilityState === 'hidden';
-        runtime.jobMachine.dispatch({
-            type: hidden ? 'page.hidden' : 'page.visible',
-            payload: {},
-        });
-        void sendFrontendLogEvent(runtime, {
-            event: 'visibility_changed',
-            summary: `Frontend visibility changed to ${document.visibilityState}.`,
-            detail: {
-                visibilityState: document.visibilityState,
-            },
+        window.__rmDispatch?.(hidden ? 'page.hidden' : 'page.visible', {});
+        void window.__rmLogEvent?.('visibility_changed', `Frontend visibility changed to ${document.visibilityState}.`, {
+            visibilityState: document.visibilityState,
         });
     });
 
     window.addEventListener('focus', () => {
-        runtime.jobMachine.dispatch({
-            type: 'window.focused',
-            payload: {},
-        });
-        void sendFrontendLogEvent(runtime, {
-            event: 'window_focus',
-            summary: 'Frontend window regained focus.',
-            detail: null,
-        });
+        window.__rmDispatch?.('window.focused', {});
+        void window.__rmLogEvent?.('window_focus', 'Frontend window regained focus.', null);
     });
 
     window.addEventListener('online', () => {
-        runtime.jobMachine.dispatch({
-            type: 'network.online',
-            payload: {},
-        });
-        void sendFrontendLogEvent(runtime, {
-            event: 'browser_online',
-            summary: 'Frontend browser reported an online transition.',
-            detail: null,
-        });
+        window.__rmDispatch?.('network.online', {});
+        void window.__rmLogEvent?.('browser_online', 'Frontend browser reported an online transition.', null);
     });
 }
