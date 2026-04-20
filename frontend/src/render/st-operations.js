@@ -24,8 +24,13 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
     const targetMessageIndex = Number(status?.targetMessageIndex);
     const targetMessageVersion = Number(status?.targetMessageVersion) || 0;
     const targetMessage = cloneValue(status?.targetMessage);
+    const targetAssistantAnchorId = String(
+        status?.targetAssistantAnchorId
+        || targetMessage?.extra?.retryMobileAssistantAnchorId
+        || '',
+    ).trim();
     const liveChat = Array.isArray(context?.chat) ? context.chat : null;
-    if (!Number.isInteger(targetMessageIndex) || targetMessageIndex < 0 || !targetMessage || !liveChat) {
+    if (!Number.isInteger(targetMessageIndex) || targetMessageIndex < 0 || !targetMessage || !liveChat || !targetAssistantAnchorId) {
         return {
             ok: false,
             recoveryRequired: true,
@@ -60,6 +65,17 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
+    if (!assistantTargetMatches(existing, targetMessage, targetAssistantAnchorId)) {
+        return {
+            ok: false,
+            recoveryRequired: true,
+            error: createStructuredError(
+                'backend_write_failed',
+                'Retry Mobile refused to patch a live assistant turn whose anchor no longer matches backend truth.',
+            ),
+        };
+    }
+
     liveChat[targetMessageIndex] = {
         ...existing,
         ...targetMessage,
@@ -85,6 +101,65 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ),
         };
     }
+}
+
+export function assistantTargetMatches(message, targetMessage, expectedAnchorId) {
+    const liveAnchorId = getAssistantAnchorId(message);
+    if (liveAnchorId) {
+        return liveAnchorId === expectedAnchorId;
+    }
+
+    return canAdoptUnanchoredSeedTurn(message, targetMessage);
+}
+
+function getAssistantAnchorId(message) {
+    const direct = String(message?.extra?.retryMobileAssistantAnchorId || '').trim();
+    if (direct) {
+        return direct;
+    }
+
+    const swipeInfo = Array.isArray(message?.swipe_info) ? message.swipe_info : [];
+    for (const row of swipeInfo) {
+        const candidate = String(row?.extra?.retryMobileAssistantAnchorId || '').trim();
+        if (candidate) {
+            return candidate;
+        }
+    }
+
+    return '';
+}
+
+function canAdoptUnanchoredSeedTurn(message, targetMessage) {
+    if (!messageHasMeaningfulContent(message)) {
+        return true;
+    }
+
+    const visibleText = normalizeText(message?.mes);
+    if (!visibleText) {
+        return true;
+    }
+
+    if (visibleText === normalizeText(targetMessage?.mes)) {
+        return true;
+    }
+
+    const targetSwipes = Array.isArray(targetMessage?.swipes) ? targetMessage.swipes : [];
+    return targetSwipes.some((swipe) => normalizeText(swipe) === visibleText);
+}
+
+function messageHasMeaningfulContent(message) {
+    if (normalizeText(message?.mes)) {
+        return true;
+    }
+
+    const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
+    return swipes.some((swipe) => Boolean(normalizeText(swipe)));
+}
+
+function normalizeText(value) {
+    return String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
 }
 
 export async function finishTerminalUi({ outcome, status, chatIdentity, signal }) {

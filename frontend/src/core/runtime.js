@@ -16,6 +16,7 @@ function createDefaultCapabilities() {
 export function createRuntime() {
     return {
         settings: null,
+        sessionId: '',
         diagnostics: null,
         releaseInfo: null,
         chatState: null,

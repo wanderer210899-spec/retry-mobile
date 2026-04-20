@@ -15,6 +15,7 @@ const FORCED_NATIVE_INSPECTION_DELAYS_MS = [0, 1000, 2000, 4000, 8000];
 const BASE_RETRY_DELAY_MS = 750;
 const MAX_RETRY_DELAY_MS = 10000;
 const MAX_TARGET_PENDING_INSPECTIONS = 5;
+const FRONTEND_STALE_FAILSAFE_MS = 5 * 60 * 1000;
 
 const nativeResolutionByJob = new Map();
 
@@ -382,7 +383,7 @@ async function awaitNativeOutcome(job) {
         nativeState: 'pending',
         phase: 'pending_native',
         structuredError: null,
-        nativeGraceDeadline: new Date(Date.now() + (Number(job.nativeGraceSeconds || 30) * 1000)).toISOString(),
+        nativeGraceDeadline: '',
     });
 
     while (!job.cancelRequested) {
@@ -406,11 +407,13 @@ async function awaitNativeOutcome(job) {
             return;
         }
 
-        const graceDeadlineMs = Number.isFinite(Date.parse(job.nativeGraceDeadline))
-            ? Date.parse(job.nativeGraceDeadline)
-            : 0;
-        if (graceDeadlineMs > 0 && Date.now() >= graceDeadlineMs) {
-            await resolvePendingNativeState(job, job.nativeResolutionCause || 'grace_expired');
+        if (shouldTriggerHiddenTakeover(job)) {
+            await resolvePendingNativeState(job, job.nativeResolutionCause || 'hidden_timeout');
+            continue;
+        }
+
+        if (shouldTriggerFrontendStaleTakeover(job)) {
+            await resolvePendingNativeState(job, job.nativeResolutionCause || 'frontend_stale');
             continue;
         }
 
@@ -460,7 +463,7 @@ async function resolvePendingNativeState(job, cause) {
                     phase: job.phase === 'native_confirming_persisted'
                         ? 'native_confirming_persisted'
                         : 'pending_native',
-                    nativeGraceDeadline: new Date(Date.now() + (Number(job.nativeGraceSeconds || 30) * 1000)).toISOString(),
+                    nativeGraceDeadline: '',
                 });
                 return {
                     outcome: 'pending',
@@ -522,7 +525,7 @@ async function confirmNativeAssistant(job, assistantMessageIndex) {
         lastError: '',
         structuredError: null,
         inspectionAttempts: 0,
-        nativeGraceDeadline: new Date(Date.now() + (Number(job.nativeGraceSeconds || 30) * 1000)).toISOString(),
+        nativeGraceDeadline: '',
     });
     appendLifecycleLog(job, 'native_confirming_persisted', `Frontend confirmed native assistant turn ${liveAssistantIndex}; backend is waiting for the saved chat to expose it.`);
     if (!isNativeResolutionInProgress(job.jobId)) {
@@ -622,6 +625,28 @@ async function observeNativeResolution(job) {
     }
 
     await promise;
+}
+
+function shouldTriggerHiddenTakeover(job) {
+    if (String(job?.frontendVisibilityState || '') !== 'hidden') {
+        return false;
+    }
+
+    const hiddenSinceMs = Date.parse(String(job?.frontendHiddenSince || ''));
+    if (!Number.isFinite(hiddenSinceMs) || hiddenSinceMs <= 0) {
+        return false;
+    }
+
+    return (Date.now() - hiddenSinceMs) >= (Math.max(10, Number(job?.nativeGraceSeconds) || 30) * 1000);
+}
+
+function shouldTriggerFrontendStaleTakeover(job) {
+    const lastSeenMs = Date.parse(String(job?.lastFrontendSeenAt || ''));
+    if (!Number.isFinite(lastSeenMs) || lastSeenMs <= 0) {
+        return false;
+    }
+
+    return (Date.now() - lastSeenMs) >= FRONTEND_STALE_FAILSAFE_MS;
 }
 
 async function ensureNativeWriteReady(job, attemptRecord) {

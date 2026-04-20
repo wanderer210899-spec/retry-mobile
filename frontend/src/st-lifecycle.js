@@ -1,7 +1,7 @@
 import {
     NATIVE_CONFIRM_POLL_MS,
     NATIVE_CONFIRM_TIMEOUT_MS,
-    NATIVE_HIDDEN_DEBOUNCE_MS,
+    NATIVE_RENDERED_STALL_TIMEOUT_MS,
     NATIVE_VISIBLE_PROGRESS_POLL_MS,
     NATIVE_WAIT_PROGRESS_TIMEOUT_MS,
     NATIVE_WAIT_TIMEOUT_MS,
@@ -307,7 +307,7 @@ export function waitForNativeCompletion({
                     'Retry Mobile stopped waiting for native completion because the browser remained hidden during native completion.',
                     describeObservedEvents() || 'The tab remained hidden for more than the debounce window while native completion was pending.',
                 );
-            }, Math.min(timeoutMs, NATIVE_HIDDEN_DEBOUNCE_MS));
+            }, Math.min(timeoutMs, Math.max(10, Number(nativeGraceSeconds) || 30) * 1000));
         }
 
         function clearHiddenTimeout() {
@@ -422,7 +422,7 @@ export function waitForNativeCompletion({
                     return;
                 }
 
-                if ((Date.now() - lastVisibleProgressAt) >= (Math.max(10, Number(nativeGraceSeconds) || 30) * 1000)) {
+                if ((Date.now() - lastVisibleProgressAt) >= NATIVE_RENDERED_STALL_TIMEOUT_MS) {
                     settleFailed(
                         'rendered_without_end',
                         'Retry Mobile saw the native assistant render, but SillyTavern stopped making visible progress before the completion event arrived.',

@@ -57,7 +57,7 @@ export function buildPanelTemplate() {
                                 <input id="${EXTENSION_ID}-timeout" class="rm-number-input" type="number" min="1" step="1" />
                             </div>
                             <div class="rm-inline-row">
-                                <label class="rm-inline-row__label" for="${EXTENSION_ID}-native-grace">Native silence window (s)</label>
+                                <label class="rm-inline-row__label" for="${EXTENSION_ID}-native-grace">Hidden-tab takeover delay (s)</label>
                                 <input id="${EXTENSION_ID}-native-grace" class="rm-number-input" type="number" min="10" step="1" />
                             </div>
                         </div>

@@ -41,6 +41,7 @@ async function writeAcceptedResult(job, accepted) {
     }
 
     const targetMessage = currentChat[targetIndex];
+    stampResolvedAnchors(job, currentChat, targetIndex);
     const timestamp = new Date().toISOString();
     applyAcceptedResultToMessage(job, targetMessage, accepted, timestamp);
 
@@ -321,13 +322,14 @@ function ensureAssistantSlotForWrite(job, chat) {
     }
 
     const previousMessage = chat[state.persistedAssistantIndex - 1];
-    if (previousMessage?.is_user !== true || previousMessage.mes !== job.targetFingerprint?.userMessageText) {
+    if (previousMessage?.is_user !== true || !isMatchingTargetUserMessage(job, previousMessage)) {
         throw createStructuredError(
             'backend_turn_changed',
             'The live assistant target no longer points at the captured user turn.',
         );
     }
 
+    stampResolvedAnchors(job, chat, state.persistedAssistantIndex);
     job.assistantMessageIndex = state.assistantMessageIndex;
     job.targetMessageIndex = state.assistantMessageIndex;
     return state.persistedAssistantIndex;
@@ -335,9 +337,12 @@ function ensureAssistantSlotForWrite(job, chat) {
 
 function inspectAdjacentAssistantState(job, chat) {
     const persistedUserIndex = getPersistedUserIndex(job, chat);
-    const persistedAssistantIndex = Number.isFinite(persistedUserIndex) && persistedUserIndex >= 0
-        ? persistedUserIndex + 1
-        : -1;
+    const anchoredAssistantIndex = findAnchoredMessageIndex(chat, job?.targetAssistantAnchorId, { requireUser: false });
+    const persistedAssistantIndex = anchoredAssistantIndex >= 0
+        ? anchoredAssistantIndex
+        : (Number.isFinite(persistedUserIndex) && persistedUserIndex >= 0
+            ? persistedUserIndex + 1
+            : -1);
     const assistantMessage = persistedAssistantIndex >= 0
         ? chat[persistedAssistantIndex]
         : null;
@@ -409,6 +414,7 @@ function buildUserSeedMessage(job) {
         mes: String(job.targetFingerprint?.userMessageText || ''),
         extra: {
             isSmallSys: false,
+            retryMobileUserAnchorId: String(job.targetUserAnchorId || ''),
         },
     };
 
@@ -421,7 +427,9 @@ function buildUserSeedMessage(job) {
 }
 
 function buildAssistantSeedMessage(job) {
-    const extra = {};
+    const extra = {
+        retryMobileAssistantAnchorId: String(job.targetAssistantAnchorId || ''),
+    };
     const model = firstString(job.capturedRequest?.model);
     const api = firstString(job.capturedRequest?.chat_completion_source);
 
@@ -535,6 +543,8 @@ function createSwipeInfo(timestamp, extra = {}) {
 function buildAcceptedExtra(job, currentExtra, accepted) {
     return {
         ...(currentExtra || {}),
+        retryMobileUserAnchorId: String(job.targetUserAnchorId || ''),
+        retryMobileAssistantAnchorId: String(job.targetAssistantAnchorId || ''),
         retryMobileJobId: job.jobId,
         retryMobileAcceptedCount: job.acceptedCount + 1,
         retryMobileCharacterCount: accepted.characterCount,
@@ -576,6 +586,11 @@ function getSaveTarget(job) {
 }
 
 function getPersistedUserIndex(job, chat) {
+    const anchoredIndex = findAnchoredMessageIndex(chat, job?.targetUserAnchorId, { requireUser: true });
+    if (anchoredIndex >= 0) {
+        return anchoredIndex;
+    }
+
     const liveIndex = Number(job.targetFingerprint?.userMessageIndex);
     if (!Number.isFinite(liveIndex) || liveIndex < 0) {
         return -1;
@@ -607,6 +622,8 @@ function resolveTargetUserState(job, chat) {
         );
     }
 
+    stampMessageAnchor(current, 'retryMobileUserAnchorId', job.targetUserAnchorId);
+
     if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
         throw createStructuredError(
             'backend_turn_changed',
@@ -619,6 +636,93 @@ function resolveTargetUserState(job, chat) {
         persistedUserIndex,
         userMessage: current,
     };
+}
+
+function isMatchingTargetUserMessage(job, message) {
+    const anchoredUserId = String(job?.targetUserAnchorId || '');
+    if (anchoredUserId && getMessageAnchorId(message, 'retryMobileUserAnchorId') === anchoredUserId) {
+        return true;
+    }
+
+    return String(message?.mes ?? '') === String(job?.targetFingerprint?.userMessageText ?? '');
+}
+
+function stampResolvedAnchors(job, chat, persistedAssistantIndex) {
+    const persistedUserIndex = getPersistedUserIndex(job, chat);
+    if (persistedUserIndex >= 0 && chat[persistedUserIndex]) {
+        stampMessageAnchor(chat[persistedUserIndex], 'retryMobileUserAnchorId', job.targetUserAnchorId);
+    }
+
+    if (Number.isInteger(persistedAssistantIndex) && persistedAssistantIndex >= 0 && chat[persistedAssistantIndex]) {
+        stampMessageAnchor(chat[persistedAssistantIndex], 'retryMobileAssistantAnchorId', job.targetAssistantAnchorId);
+    }
+}
+
+function findAnchoredMessageIndex(chat, anchorId, options = {}) {
+    const targetAnchor = String(anchorId || '').trim();
+    if (!targetAnchor || !Array.isArray(chat)) {
+        return -1;
+    }
+
+    for (let index = 0; index < chat.length; index += 1) {
+        const message = chat[index];
+        if (!message || typeof message !== 'object') {
+            continue;
+        }
+
+        if (options.requireUser === true && message.is_user !== true) {
+            continue;
+        }
+
+        if (options.requireUser === false && message.is_user === true) {
+            continue;
+        }
+
+        if (getMessageAnchorId(message, options.requireUser === true ? 'retryMobileUserAnchorId' : 'retryMobileAssistantAnchorId') === targetAnchor) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function getMessageAnchorId(message, key) {
+    const direct = String(message?.extra?.[key] || '').trim();
+    if (direct) {
+        return direct;
+    }
+
+    const swipeInfo = Array.isArray(message?.swipe_info) ? message.swipe_info : [];
+    for (const row of swipeInfo) {
+        const candidate = String(row?.extra?.[key] || '').trim();
+        if (candidate) {
+            return candidate;
+        }
+    }
+
+    return '';
+}
+
+function stampMessageAnchor(message, key, anchorId) {
+    const targetAnchor = String(anchorId || '').trim();
+    if (!message || !targetAnchor) {
+        return;
+    }
+
+    message.extra = {
+        ...(message.extra || {}),
+        [key]: targetAnchor,
+    };
+
+    if (Array.isArray(message.swipe_info)) {
+        message.swipe_info = message.swipe_info.map((row) => ({
+            ...(row || {}),
+            extra: {
+                ...(row?.extra || {}),
+                [key]: targetAnchor,
+            },
+        }));
+    }
 }
 
 function shouldCreateMissingUserAnchor(job) {

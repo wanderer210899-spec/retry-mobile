@@ -144,6 +144,9 @@ function createReducerEnv(runtime) {
         },
         getContext,
         getChatIdentity,
+        getSessionId() {
+            return runtime.sessionId || '';
+        },
     };
 }
 

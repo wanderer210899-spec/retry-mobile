@@ -1,4 +1,24 @@
 const STORAGE_PREFIX = 'retry-mobile:active-run:';
+const SESSION_ID_STORAGE_KEY = 'retry-mobile:session-id';
+
+export function getFrontendSessionId(storage = getSessionStorage()) {
+    if (!storage) {
+        return createSessionId();
+    }
+
+    try {
+        const existing = String(storage.getItem(SESSION_ID_STORAGE_KEY) || '').trim();
+        if (existing) {
+            return existing;
+        }
+
+        const next = createSessionId();
+        storage.setItem(SESSION_ID_STORAGE_KEY, next);
+        return next;
+    } catch {
+        return createSessionId();
+    }
+}
 
 export function buildChatKey(chatIdentity) {
     if (!chatIdentity?.chatId) {
@@ -70,6 +90,7 @@ export function syncActiveRunBindingFromState(state, storage = getSessionStorage
 
 export async function recoverBoundStatus({
     chatIdentity,
+    sessionId,
     fetchStatus,
     fetchActive,
     readBinding = readActiveRunBinding,
@@ -95,7 +116,24 @@ export async function recoverBoundStatus({
         }
     }
 
-    const active = await fetchActive(chatIdentity);
+    if (sessionId) {
+        const sameSessionActive = await fetchActive(chatIdentity, {
+            sessionId,
+            sameSessionOnly: true,
+        });
+        if (isRunningStatus(sameSessionActive) && isStatusForChat(sameSessionActive, chatIdentity)) {
+            return {
+                status: sameSessionActive,
+                source: 'same_session_active',
+                binding: null,
+            };
+        }
+    }
+
+    const active = await fetchActive(chatIdentity, {
+        sessionId,
+        sameSessionOnly: false,
+    });
     if (isRunningStatus(active) && isStatusForChat(active, chatIdentity)) {
         return {
             status: active,
@@ -112,7 +150,7 @@ export async function recoverBoundStatus({
 }
 
 export function buildBindingFromState(state) {
-    if (!state?.jobId || !state?.runId || !state?.chatIdentity) {
+    if (!state?.jobId || !state?.runId || !state?.chatIdentity || !state?.sessionId) {
         return null;
     }
 
@@ -128,6 +166,7 @@ export function buildBindingFromState(state) {
     return normalizeBinding({
         runId: state.runId,
         jobId: state.jobId,
+        sessionId: state.sessionId,
         chatKey,
         chatIdentity: state.chatIdentity,
         lastKnownTargetMessageVersion: Number(state.activeStatus?.targetMessageVersion || state.lastAppliedVersion || 0),
@@ -145,13 +184,15 @@ function normalizeBinding(binding, fallbackChatIdentity = null) {
 
     const runId = String(binding?.runId || '').trim();
     const jobId = String(binding?.jobId || '').trim();
-    if (!runId || !jobId) {
+    const sessionId = String(binding?.sessionId || '').trim();
+    if (!runId || !jobId || !sessionId) {
         return null;
     }
 
     return {
         runId,
         jobId,
+        sessionId,
         chatKey,
         chatIdentity,
         lastKnownTargetMessageVersion: Number(binding?.lastKnownTargetMessageVersion) || 0,
@@ -165,6 +206,7 @@ function normalizeBinding(binding, fallbackChatIdentity = null) {
 function isBindingMatch(status, binding, chatIdentity) {
     return String(status?.jobId || '') === String(binding?.jobId || '')
         && String(status?.runId || '') === String(binding?.runId || '')
+        && String(status?.ownerSessionId || '') === String(binding?.sessionId || '')
         && isStatusForChat(status, chatIdentity);
 }
 
@@ -207,4 +249,12 @@ function getSessionStorage() {
     } catch {
         return null;
     }
+}
+
+function createSessionId() {
+    if (globalThis.crypto?.randomUUID) {
+        return globalThis.crypto.randomUUID();
+    }
+
+    return `rm-session-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }

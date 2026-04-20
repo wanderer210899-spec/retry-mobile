@@ -35,6 +35,7 @@ const {
     createJob,
     getJob,
     getJobByChat,
+    getJobByChatSession,
     getLatestJobByChat,
     serializeJob,
     setPersistenceHandler,
@@ -107,7 +108,11 @@ async function init(router) {
             return response.send({});
         }
 
-        const existing = getJobByChat(identity);
+        const sessionId = getSessionIdFromRequest(request);
+        const sameSessionOnly = String(request.query?.sameSessionOnly || '').toLowerCase() === 'true';
+        const existing = sameSessionOnly && sessionId
+            ? getJobByChatSession(identity, sessionId)
+            : getJobByChatSession(identity, sessionId) || getJobByChat(identity);
         return response.send(existing ? serializeJob(existing) : {});
     });
 
@@ -134,6 +139,10 @@ async function init(router) {
             });
         }
 
+        touchFrontendPresence(job, {
+            at: new Date().toISOString(),
+            sessionId: getSessionIdFromRequest(request),
+        });
         return response.send(serializeJob(job));
     });
 
@@ -317,6 +326,9 @@ async function init(router) {
             const generationNumber = advanceGeneration(handle, directories, chatKey);
             const termux = refreshTermuxStatusForStart();
             const nativeGraceSeconds = normalizeNativeGraceSeconds(request.body.nativeGraceSeconds);
+            const sessionId = normalizeSessionId(request.body?.sessionId);
+            const visibilityState = normalizeVisibilityState(request.body?.visibilityState);
+            const seenAt = new Date().toISOString();
             const job = createJob({
                 jobId: crypto.randomUUID(),
                 runId: typeof request.body.runId === 'string' && request.body.runId
@@ -324,12 +336,16 @@ async function init(router) {
                     : crypto.randomUUID(),
                 chatIdentity: identity,
                 chatKey,
+                ownerSessionId: sessionId,
                 targetAcceptedCount: normalizedRunConfig.targetAcceptedCount,
                 maxAttempts: normalizedRunConfig.maxAttempts,
                 runConfig: normalizedRunConfig,
                 capturedRequest: request.body.capturedRequest,
                 captureMeta: request.body.captureMeta || {},
                 targetFingerprint: request.body.targetFingerprint,
+                frontendVisibilityState: visibilityState,
+                frontendHiddenSince: visibilityState === 'hidden' ? seenAt : null,
+                lastFrontendSeenAt: seenAt,
                 acceptedCount: 0,
                 attemptCount: 0,
                 generationNumber,
@@ -337,7 +353,9 @@ async function init(router) {
                 nativeState: 'pending',
                 phase: 'pending_native',
                 nativeGraceSeconds,
-                nativeGraceDeadline: new Date(Date.now() + (nativeGraceSeconds * 1000)).toISOString(),
+                nativeGraceDeadline: '',
+                targetUserAnchorId: crypto.randomUUID(),
+                targetAssistantAnchorId: crypto.randomUUID(),
                 capturedChatIntegrity: typeof request.body.capturedChatIntegrity === 'string'
                     ? request.body.capturedChatIntegrity
                     : '',
@@ -399,6 +417,12 @@ async function init(router) {
             if (runIdMismatch) {
                 return response.status(409).send(runIdMismatch);
             }
+
+            touchFrontendPresence(job, {
+                at: new Date().toISOString(),
+                sessionId: normalizeSessionId(request.body?.sessionId),
+                visibilityState: 'visible',
+            });
 
             if (job.state !== 'running') {
                 return response.status(409).send(buildConflictResponse(
@@ -477,6 +501,11 @@ async function init(router) {
                 return response.status(409).send(runIdMismatch);
             }
 
+            touchFrontendPresence(job, {
+                at: new Date().toISOString(),
+                sessionId: normalizeSessionId(request.body?.sessionId),
+            });
+
             if (job.state !== 'running') {
                 return response.status(409).send(buildConflictResponse(
                     job,
@@ -517,6 +546,44 @@ async function init(router) {
         } catch (error) {
             console.error('[retry-mobile:backend] Native failure hint failed:', error);
             const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not process the native failure hint.');
+            return response.status(500).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+    });
+
+    router.post('/frontend-presence/:jobId', async (request, response) => {
+        try {
+            const job = getJob(request.params.jobId);
+            if (!job) {
+                return response.status(404).send(buildMissingJobResponse());
+            }
+
+            const runIdMismatch = getRunIdMismatchError(job, request.body?.runId, 'The frontend presence update did not match the active Retry Mobile run.');
+            if (runIdMismatch) {
+                return response.status(409).send(runIdMismatch);
+            }
+
+            if (job.state !== 'running') {
+                return response.status(409).send(buildConflictResponse(
+                    job,
+                    'The backend job is no longer running.',
+                ));
+            }
+
+            touchFrontendPresence(job, {
+                at: typeof request.body?.at === 'string' && request.body.at ? request.body.at : new Date().toISOString(),
+                sessionId: normalizeSessionId(request.body?.sessionId),
+                visibilityState: normalizeVisibilityState(request.body?.visibilityState),
+            });
+            return response.send({
+                ok: true,
+                job: serializeJob(job),
+            });
+        } catch (error) {
+            console.error('[retry-mobile:backend] Frontend presence failed:', error);
+            const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not record frontend presence.');
             return response.status(500).send({
                 error: structuredError.message,
                 structuredError,
@@ -671,6 +738,10 @@ function getChatIdentityFromRequest(request) {
     };
 }
 
+function getSessionIdFromRequest(request) {
+    return normalizeSessionId(request.query?.sessionId);
+}
+
 function validateProtocol(clientProtocolVersion) {
     const version = Number(clientProtocolVersion);
     if (Number.isFinite(version) && version >= MIN_SUPPORTED_PROTOCOL_VERSION && version <= PROTOCOL_VERSION) {
@@ -711,6 +782,45 @@ function normalizeRunConfig(runConfig = {}) {
             : '',
         allowHeuristicTokenFallback: runConfig.allowHeuristicTokenFallback === true,
     };
+}
+
+function normalizeSessionId(value) {
+    return typeof value === 'string' && value.trim()
+        ? value.trim()
+        : '';
+}
+
+function normalizeVisibilityState(value) {
+    return value === 'hidden' ? 'hidden' : 'visible';
+}
+
+function touchFrontendPresence(job, input = {}) {
+    if (!job) {
+        return null;
+    }
+
+    const patch = {
+        lastFrontendSeenAt: typeof input.at === 'string' && input.at
+            ? input.at
+            : new Date().toISOString(),
+    };
+
+    const sessionId = normalizeSessionId(input.sessionId);
+    if (sessionId) {
+        patch.ownerSessionId = sessionId;
+    }
+
+    if (typeof input.visibilityState === 'string' && input.visibilityState) {
+        const visibilityState = normalizeVisibilityState(input.visibilityState);
+        patch.frontendVisibilityState = visibilityState;
+        patch.frontendHiddenSince = visibilityState === 'hidden'
+            ? (job.frontendVisibilityState === 'hidden' && job.frontendHiddenSince
+                ? job.frontendHiddenSince
+                : patch.lastFrontendSeenAt)
+            : null;
+    }
+
+    return touchJob(job, patch);
 }
 
 function normalizeNativeGraceSeconds(value) {

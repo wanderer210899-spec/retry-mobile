@@ -10,11 +10,13 @@ import { mountPanel } from './ui/panel-bindings.js';
 import { createSystemController } from './controllers/system-controller.js';
 import { createJobMachine } from './job/job-machine.js';
 import { createJobEffects } from './job/job-effects.js';
+import { getFrontendSessionId } from './job/run-binding.js';
 
 const runtime = createRuntime();
 
 export function bootRetryMobile() {
     runtime.settings = readSettings(getContext());
+    runtime.sessionId = getFrontendSessionId();
 
     const render = createRenderer({ runtime });
     runtime.jobMachine = createJobMachine({ runtime, render });

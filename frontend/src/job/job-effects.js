@@ -5,6 +5,7 @@ import {
     fetchChatState,
     fetchJobStatus,
     getStructuredErrorFromApi,
+    reportFrontendPresence,
     reportNativeFailure,
     startBackendJob,
 } from '../backend-api.js';
@@ -110,6 +111,7 @@ export function createJobEffects({ runtime, machine, render }) {
                     try {
                         const result = await confirmNativeJob(command.payload.jobId, {
                             runId: command.payload.runId,
+                            sessionId: runtime.sessionId || '',
                             assistantMessageIndex: command.payload.assistantMessageIndex,
                         });
                         machine.dispatch({
@@ -135,6 +137,7 @@ export function createJobEffects({ runtime, machine, render }) {
                     try {
                         const result = await reportNativeFailure(command.payload.jobId, {
                             runId: command.payload.runId,
+                            sessionId: runtime.sessionId || '',
                             reason: command.payload.reason,
                             detail: command.payload.detail,
                         });
@@ -152,6 +155,33 @@ export function createJobEffects({ runtime, machine, render }) {
                                 recoverable: true,
                             },
                         });
+                    }
+                });
+                return;
+            case 'backend.report_frontend_presence':
+                await runBackendRequest('report_frontend_presence', command.payload.runId, async () => {
+                    try {
+                        const result = await reportFrontendPresence(command.payload.jobId, {
+                            runId: command.payload.runId,
+                            sessionId: runtime.sessionId || '',
+                            visibilityState: command.payload.visibilityState,
+                            at: command.payload.at || new Date().toISOString(),
+                        });
+                        if (result?.job) {
+                            machine.dispatch({
+                                type: 'backend.presence_acknowledged',
+                                payload: {
+                                    status: result.job,
+                                },
+                            });
+                        }
+                    } catch (error) {
+                        machine.recordEvent(
+                            'effects',
+                            'frontend_presence_failed',
+                            'Retry Mobile could not report frontend presence to the backend.',
+                            getStructuredErrorFromApi(error, 'Retry Mobile could not report frontend presence.'),
+                        );
                     }
                 });
                 return;
@@ -482,6 +512,7 @@ export function createJobEffects({ runtime, machine, render }) {
     async function recoverStatus(identity, signal) {
         const result = await recoverBoundStatus({
             chatIdentity: identity,
+            sessionId: runtime.sessionId || '',
             fetchStatus: fetchJobStatus,
             fetchActive: fetchActiveJob,
         });
@@ -497,10 +528,12 @@ export function createJobEffects({ runtime, machine, render }) {
         return {
             clientProtocolVersion: runtime.capabilities?.protocolVersion || 4,
             runId: payload.runId,
+            sessionId: runtime.sessionId || '',
             chatIdentity: payload.chatIdentity,
             runConfig: payload.runConfig,
             expectedPreviousGeneration: Number(chatState?.currentGeneration) || 0,
             nativeGraceSeconds: payload.nativeGraceSeconds,
+            visibilityState: payload.visibilityState || document.visibilityState || 'visible',
             capturedChatIntegrity: String(context?.chatMetadata?.integrity || ''),
             capturedChatLength: Array.isArray(context?.chat) ? context.chat.length : 0,
             tokenizerDescriptor: buildTokenizerDescriptor(context),

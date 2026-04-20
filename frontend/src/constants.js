@@ -85,6 +85,7 @@ export const NATIVE_HIDDEN_DEBOUNCE_MS = 2500;
 export const NATIVE_CONFIRM_TIMEOUT_MS = 4000;
 export const NATIVE_CONFIRM_POLL_MS = 120;
 export const NATIVE_VISIBLE_PROGRESS_POLL_MS = 1000;
+export const NATIVE_RENDERED_STALL_TIMEOUT_MS = 15000;
 // Calibrate these DOM-facing waits further after the machine refactor has live traces.
 export const RENDER_MESSAGE_POLL_MS = 50;
 export const RENDER_MESSAGE_WAIT_MS = 1800;

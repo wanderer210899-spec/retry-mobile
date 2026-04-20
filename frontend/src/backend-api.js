@@ -38,6 +38,20 @@ export async function reportNativeFailure(jobId, payload) {
     });
 }
 
+export async function reportFrontendPresence(jobId, payload) {
+    if (!jobId) {
+        throw createStructuredError(
+            'handoff_request_failed',
+            'Retry Mobile could not report frontend presence because no backend job is active.',
+        );
+    }
+
+    return requestJson(`${BASE_URL}/frontend-presence/${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+    });
+}
+
 export async function cancelBackendJob(jobId) {
     if (!jobId) {
         return { ok: false };
@@ -82,13 +96,19 @@ export async function fetchReleaseInfo() {
     });
 }
 
-export async function fetchActiveJob(identity) {
+export async function fetchActiveJob(identity, options = {}) {
     const query = new URLSearchParams();
     if (identity?.chatId) {
         query.set('chatId', identity.chatId);
     }
     if (identity?.groupId) {
         query.set('groupId', identity.groupId);
+    }
+    if (options?.sessionId) {
+        query.set('sessionId', String(options.sessionId));
+    }
+    if (options?.sameSessionOnly) {
+        query.set('sameSessionOnly', 'true');
     }
 
     const suffix = query.toString() ? `?${query.toString()}` : '';

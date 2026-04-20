@@ -40,11 +40,15 @@ function createJob(input = {}) {
         maxAttempts: Number(input.maxAttempts) || 0,
         chatIdentity: input.chatIdentity ?? null,
         chatKey: typeof input.chatKey === 'string' ? input.chatKey : buildChatKey(input.chatIdentity),
+        ownerSessionId: typeof input.ownerSessionId === 'string' ? input.ownerSessionId : '',
         targetFingerprint: input.targetFingerprint ?? null,
         nativeState: typeof input.nativeState === 'string' ? input.nativeState : 'pending',
         recoveryMode: typeof input.recoveryMode === 'string' ? input.recoveryMode : '',
         nativeResolutionCause: typeof input.nativeResolutionCause === 'string' ? input.nativeResolutionCause : '',
         nativeFailureHintedAt: input.nativeFailureHintedAt ?? null,
+        frontendVisibilityState: typeof input.frontendVisibilityState === 'string' ? input.frontendVisibilityState : 'unknown',
+        frontendHiddenSince: input.frontendHiddenSince ?? null,
+        lastFrontendSeenAt: input.lastFrontendSeenAt ?? null,
         nativeResolutionInProgress: false,
         nativeResolutionPromise: null,
         captureConfirmedAt: input.captureConfirmedAt || new Date().toISOString(),
@@ -61,6 +65,8 @@ function createJob(input = {}) {
         generationNumber: Number.isFinite(Number(input.generationNumber)) ? Number(input.generationNumber) : 0,
         expectedPreviousGeneration: Number.isFinite(Number(input.expectedPreviousGeneration)) ? Number(input.expectedPreviousGeneration) : 0,
         inspectionAttempts: Number.isFinite(Number(input.inspectionAttempts)) ? Number(input.inspectionAttempts) : 0,
+        targetUserAnchorId: typeof input.targetUserAnchorId === 'string' ? input.targetUserAnchorId : '',
+        targetAssistantAnchorId: typeof input.targetAssistantAnchorId === 'string' ? input.targetAssistantAnchorId : '',
         capturedChatIntegrity: typeof input.capturedChatIntegrity === 'string' ? input.capturedChatIntegrity : '',
         capturedChatLength: Number.isFinite(Number(input.capturedChatLength)) ? Number(input.capturedChatLength) : 0,
         tokenizerDescriptor: input.tokenizerDescriptor ?? null,
@@ -112,6 +118,22 @@ function getLatestJobByChat(chatIdentity) {
     }
 
     return latestJob;
+}
+
+function getJobByChatSession(chatIdentity, ownerSessionId) {
+    const chatKey = buildChatKey(chatIdentity);
+    const sessionId = typeof ownerSessionId === 'string' ? ownerSessionId : '';
+    if (!chatKey || !sessionId) {
+        return null;
+    }
+
+    for (const job of jobs.values()) {
+        if (job.chatKey === chatKey && job.state === 'running' && String(job.ownerSessionId || '') === sessionId) {
+            return job;
+        }
+    }
+
+    return null;
 }
 
 function touchJob(job, patch = {}) {
@@ -169,6 +191,7 @@ function serializeJob(job) {
         maxAttempts: job.maxAttempts,
         chatIdentity: job.chatIdentity,
         chatKey: job.chatKey,
+        ownerSessionId: job.ownerSessionId,
         lastError: job.lastError,
         structuredError: job.structuredError,
         cancelRequested: job.cancelRequested,
@@ -180,6 +203,9 @@ function serializeJob(job) {
         recoveryMode: job.recoveryMode,
         nativeResolutionCause: job.nativeResolutionCause || '',
         nativeFailureHintedAt: job.nativeFailureHintedAt ?? null,
+        frontendVisibilityState: job.frontendVisibilityState || 'unknown',
+        frontendHiddenSince: job.frontendHiddenSince ?? null,
+        lastFrontendSeenAt: job.lastFrontendSeenAt ?? null,
         captureConfirmedAt: job.captureConfirmedAt,
         nativeGraceDeadline: job.nativeGraceDeadline,
         assistantMessageIndex: job.assistantMessageIndex == null ? null : Number(job.assistantMessageIndex),
@@ -189,6 +215,8 @@ function serializeJob(job) {
         attemptLog: Array.isArray(job.attemptLog) ? job.attemptLog : [],
         generationNumber: Number(job.generationNumber) || 0,
         inspectionAttempts: Number(job.inspectionAttempts) || 0,
+        targetUserAnchorId: job.targetUserAnchorId || '',
+        targetAssistantAnchorId: job.targetAssistantAnchorId || '',
         orphanedAcceptedPreview: buildOrphanPreview(job.orphanedAcceptedResults),
         logTitle: typeof job.logTitle === 'string' ? job.logTitle : '',
         logUpdatedAt: typeof job.logUpdatedAt === 'string' ? job.logUpdatedAt : null,
@@ -223,11 +251,15 @@ function snapshotJobForPersistence(job) {
         maxAttempts: job.maxAttempts,
         chatIdentity: cloneValue(job.chatIdentity),
         chatKey: job.chatKey,
+        ownerSessionId: job.ownerSessionId,
         targetFingerprint: cloneValue(job.targetFingerprint),
         nativeState: job.nativeState,
         recoveryMode: job.recoveryMode,
         nativeResolutionCause: job.nativeResolutionCause,
         nativeFailureHintedAt: job.nativeFailureHintedAt,
+        frontendVisibilityState: job.frontendVisibilityState,
+        frontendHiddenSince: job.frontendHiddenSince,
+        lastFrontendSeenAt: job.lastFrontendSeenAt,
         captureConfirmedAt: job.captureConfirmedAt,
         nativeGraceDeadline: job.nativeGraceDeadline,
         lastAcceptedAt: job.lastAcceptedAt,
@@ -242,6 +274,8 @@ function snapshotJobForPersistence(job) {
         generationNumber: job.generationNumber,
         expectedPreviousGeneration: job.expectedPreviousGeneration,
         inspectionAttempts: job.inspectionAttempts,
+        targetUserAnchorId: job.targetUserAnchorId,
+        targetAssistantAnchorId: job.targetAssistantAnchorId,
         capturedChatIntegrity: job.capturedChatIntegrity,
         capturedChatLength: job.capturedChatLength,
         tokenizerDescriptor: cloneValue(job.tokenizerDescriptor),
@@ -358,6 +392,7 @@ module.exports = {
     createJob,
     getJob,
     getJobByChat,
+    getJobByChatSession,
     getLatestJobByChat,
     jobs,
     appendAttemptLog,

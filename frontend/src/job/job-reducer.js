@@ -37,6 +37,7 @@ export function createInitialJobState() {
     return {
         phase: JOB_PHASE.IDLE,
         chatIdentity: null,
+        sessionId: null,
         runId: null,
         jobId: null,
         pollSessionId: null,
@@ -84,7 +85,7 @@ export function reduceJobState(state, event, env) {
     if (type === 'page.hidden') {
         return commit(current, current.phase, {
             visibility: VISIBILITY_STATE.HIDDEN,
-        });
+        }, buildPresenceCommands(current, VISIBILITY_STATE.HIDDEN));
     }
 
     if (type === 'page.visible') {
@@ -94,6 +95,7 @@ export function reduceJobState(state, event, env) {
                 renderTask: RENDER_TASK.RECOVERING_STATUS,
                 error: null,
             }, [
+                ...buildPresenceCommands(current, VISIBILITY_STATE.VISIBLE),
                 command('recover.reconnect_status', {
                     runId: current.runId,
                     chatIdentity: current.chatIdentity,
@@ -104,7 +106,7 @@ export function reduceJobState(state, event, env) {
 
         return commit(current, current.phase, {
             visibility: VISIBILITY_STATE.VISIBLE,
-        });
+        }, buildPresenceCommands(current, VISIBILITY_STATE.VISIBLE));
     }
 
     if ((type === 'window.focused' || type === 'network.online')
@@ -130,6 +132,7 @@ export function reduceJobState(state, event, env) {
 
         return commit(current, JOB_PHASE.RECOVERING, {
             chatIdentity,
+            sessionId: current.sessionId || env.getSessionId?.() || null,
             renderTask: RENDER_TASK.RECOVERING_STATUS,
             error: null,
         }, [
@@ -150,6 +153,7 @@ export function reduceJobState(state, event, env) {
                 const runId = env.createRunId();
                 return commit(current, JOB_PHASE.ARMED, {
                     chatIdentity: payload.chatIdentity,
+                    sessionId: env.getSessionId?.() || current.sessionId || null,
                     runId,
                     jobId: null,
                     pollSessionId: null,
@@ -187,12 +191,14 @@ export function reduceJobState(state, event, env) {
                     }),
                     command('backend.reserve_job', {
                         runId: current.runId,
+                        sessionId: current.sessionId,
                         chatIdentity: current.chatIdentity,
                         runConfig: buildRunConfig(env.runtime?.settings),
                         nativeGraceSeconds: Number(env.runtime?.settings?.nativeGraceSeconds) || 30,
                         capturedRequest: payload.capturedRequest,
                         targetFingerprint: payload.fingerprint,
                         captureMeta: buildCaptureMeta(env),
+                        visibilityState: current.visibility,
                     }),
                 ]);
             }
@@ -245,6 +251,12 @@ export function reduceJobState(state, event, env) {
                         fingerprint: current.captureFingerprint,
                         nativeGraceSeconds: Number(env.runtime?.settings?.nativeGraceSeconds) || 30,
                     }),
+                    ...buildPresenceCommands({
+                        ...current,
+                        phase: JOB_PHASE.WAITING_NATIVE,
+                        jobId: payload.jobId,
+                        activeStatus: payload.status,
+                    }, current.visibility),
                 ]);
             }
 
@@ -264,6 +276,12 @@ export function reduceJobState(state, event, env) {
                         pollSessionId,
                         cadence: 'fast',
                     }),
+                    ...buildPresenceCommands({
+                        ...current,
+                        phase: JOB_PHASE.BACKEND_RUNNING,
+                        jobId: payload.jobId,
+                        activeStatus: payload.status,
+                    }, current.visibility),
                 ]);
             }
 
@@ -292,6 +310,7 @@ export function reduceJobState(state, event, env) {
                     command('backend.confirm_native', {
                         runId: current.runId,
                         jobId: current.jobId,
+                        sessionId: current.sessionId,
                         assistantMessageIndex: payload.assistantMessageIndex,
                     }),
                 ]);
@@ -303,10 +322,17 @@ export function reduceJobState(state, event, env) {
                     command('backend.report_native_failure', {
                         runId: current.runId,
                         jobId: current.jobId,
+                        sessionId: current.sessionId,
                         reason: error.code,
                         detail: error.detail || error.message,
                     }),
                 ]);
+            }
+
+            if (type === 'backend.presence_acknowledged') {
+                return commit(current, JOB_PHASE.WAITING_NATIVE, {
+                    activeStatus: payload.status || current.activeStatus,
+                });
             }
 
             if (type === 'backend.native_confirm_succeeded') {
@@ -415,6 +441,12 @@ export function reduceJobState(state, event, env) {
                         jobId: current.jobId,
                     }),
                 ]);
+            }
+
+            if (type === 'backend.presence_acknowledged') {
+                return commit(current, JOB_PHASE.BACKEND_RUNNING, {
+                    activeStatus: payload.status || current.activeStatus,
+                });
             }
             break;
 
@@ -664,6 +696,7 @@ export function reduceJobState(state, event, env) {
                     const nextState = {
                         activeStatus: payload.status,
                         jobId: payload.status.jobId || current.jobId,
+                        sessionId: current.sessionId || env.getSessionId?.() || null,
                         nativeDisposition: String(payload.status?.nativeState || current.nativeDisposition),
                         renderTask: targetVersion > Number(current.lastAppliedVersion || 0)
                             ? RENDER_TASK.APPLYING_OUTPUT
@@ -679,6 +712,12 @@ export function reduceJobState(state, event, env) {
                             pollSessionId,
                             cadence: 'fast',
                         }),
+                        ...buildPresenceCommands({
+                            ...current,
+                            jobId: payload.status.jobId || current.jobId,
+                            runId: current.runId,
+                            sessionId: current.sessionId,
+                        }, current.visibility),
                     ];
                     if (targetVersion > Number(current.lastAppliedVersion || 0)) {
                         commands.push(command('render.apply_accepted_output', {
@@ -758,6 +797,27 @@ export function reduceJobState(state, event, env) {
 
         case JOB_PHASE.COMPLETING:
             if (type === 'render.terminal_ui_finished') {
+                if (shouldAutoRearm(current, payload.outcome, env)) {
+                    const runId = env.createRunId();
+                    return commit(current, JOB_PHASE.ARMED, {
+                        runId,
+                        jobId: null,
+                        pollSessionId: null,
+                        capturedRequest: null,
+                        captureFingerprint: null,
+                        assistantMessageIndex: null,
+                        renderTask: RENDER_TASK.IDLE,
+                        pendingStop: false,
+                        terminalOutcome: payload.outcome,
+                        error: null,
+                    }, [
+                        command('st.start_capture_session', {
+                            runId,
+                            chatIdentity: current.chatIdentity,
+                        }),
+                    ]);
+                }
+
                 const outcome = payload.outcome === 'cancelled'
                     ? JOB_PHASE.CANCELLED
                     : payload.outcome === 'failed'
@@ -826,6 +886,44 @@ function buildCaptureMeta(env) {
         userName: String(context?.name1 || context?.user_name || 'You'),
         userAvatar: String(context?.user_avatar || ''),
     };
+}
+
+function buildPresenceCommands(state, visibilityState) {
+    if (!state?.jobId || !state?.runId || !state?.sessionId) {
+        return [];
+    }
+
+    if (!isJobRunningLikePhase(state.phase)) {
+        return [];
+    }
+
+    return [
+        command('backend.report_frontend_presence', {
+            runId: state.runId,
+            jobId: state.jobId,
+            sessionId: state.sessionId,
+            visibilityState,
+            at: new Date().toISOString(),
+        }),
+    ];
+}
+
+function shouldAutoRearm(state, outcome, env) {
+    if (String(env.runtime?.settings?.runMode || '') !== 'toggle') {
+        return false;
+    }
+
+    if (outcome !== 'completed' && outcome !== 'failed') {
+        return false;
+    }
+
+    return isSameChatIdentity(state?.chatIdentity, env.getChatIdentity?.() || null);
+}
+
+function isSameChatIdentity(left, right) {
+    return String(left?.kind || '') === String(right?.kind || '')
+        && String(left?.chatId || '') === String(right?.chatId || '')
+        && String(left?.groupId || '') === String(right?.groupId || '');
 }
 
 function matchesCurrentPoll(state, payload) {
