@@ -48,7 +48,7 @@ export function createRenderer({ runtime }) {
             runtime.ui.systemPane.hidden = !showSystem;
         }
 
-        runtime.ui.panel.querySelectorAll('.rm-tab').forEach((button) => {
+        runtime.ui.tabButtons.forEach((button) => {
             const tab = button.dataset.tab === 'system' ? 'system' : 'main';
             button.classList.toggle('rm-tab--active', runtime.ui.activeTab === tab);
         });
@@ -66,9 +66,8 @@ export function createRenderer({ runtime }) {
             runtime.ui.quickReplyToggleButton.classList.toggle('rm-qr-toggle--active', attached);
         }
 
-        const toggleLogButton = runtime.ui.panel.querySelector('[data-action="toggle-log"]');
-        if (toggleLogButton) {
-            toggleLogButton.textContent = runtime.log.show ? 'Hide' : 'Show';
+        if (runtime.ui.toggleLogButton) {
+            runtime.ui.toggleLogButton.textContent = runtime.log.show ? 'Hide' : 'Show';
         }
     };
 }

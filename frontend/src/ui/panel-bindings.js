@@ -82,6 +82,8 @@ function cachePanelElements(runtime, drawer) {
     runtime.ui.quickReplyToggleButton = drawer.querySelector('[data-action="toggle-qr"]');
     runtime.ui.mainPane = drawer.querySelector('[data-role="main-pane"]');
     runtime.ui.systemPane = drawer.querySelector('[data-role="system-pane"]');
+    runtime.ui.tabButtons = Array.from(drawer.querySelectorAll('.rm-tab'));
+    runtime.ui.toggleLogButton = drawer.querySelector('[data-action="toggle-log"]');
 }
 
 function bindPanelEvents(drawer, runtime, {

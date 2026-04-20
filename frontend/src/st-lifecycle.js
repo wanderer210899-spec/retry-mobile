@@ -460,10 +460,6 @@ function readMessageProgressSignature(messageId) {
 
     const swipeCount = Array.isArray(message.swipes) ? message.swipes.length : 0;
     const swipeId = Number.isFinite(Number(message.swipe_id)) ? Number(message.swipe_id) : -1;
-    const mes = String(message.mes || '');
-    return JSON.stringify({
-        mes,
-        swipeCount,
-        swipeId,
-    });
+    const mesLen = String(message.mes || '').length;
+    return `${mesLen}/${swipeCount}/${swipeId}`;
 }

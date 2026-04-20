@@ -166,15 +166,11 @@ function bindHostObserver(ensurePanelMounted) {
         return;
     }
 
-    runtime.hostObserver = new MutationObserver(() => {
+    runtime.hostObserver = window.setInterval(() => {
         if (!document.getElementById('retry-mobile-panel')) {
             ensurePanelMounted();
         }
-    });
-    runtime.hostObserver.observe(document.body, {
-        childList: true,
-        subtree: true,
-    });
+    }, 2000);
 }
 
 function scheduleMountRetry(ensurePanelMounted) {

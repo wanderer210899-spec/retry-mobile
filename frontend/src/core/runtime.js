@@ -60,6 +60,8 @@ export function createRuntime() {
             retryLogShell: null,
             retryLogContainer: null,
             releaseInfoContainer: null,
+            tabButtons: [],
+            toggleLogButton: null,
             activeTab: 'main',
         },
     };

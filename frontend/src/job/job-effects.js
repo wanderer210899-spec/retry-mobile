@@ -288,7 +288,6 @@ export function createJobEffects({ runtime, machine, render }) {
             },
             onEvent: (event, summary) => {
                 machine.recordEvent('st', event, summary);
-                render();
             },
         });
     }
@@ -363,7 +362,6 @@ export function createJobEffects({ runtime, machine, render }) {
                     signal: controller.signal,
                     onEvent: (event, summary) => {
                         machine.recordEvent('st', event, summary);
-                        render();
                     },
                 });
                 if (controller.signal.aborted) {
