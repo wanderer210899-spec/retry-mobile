@@ -18,7 +18,8 @@ export const RENDER_TASK = Object.freeze({
     IDLE: 'idle',
     APPLYING_OUTPUT: 'applying_output',
     FINISHING_UI: 'finishing_ui',
-    RECOVERING_UI: 'recovering_ui',
+    RECOVERING_STATUS: 'recovering_status',
+    REFRESHING_CHAT: 'refreshing_chat',
 });
 
 export const VISIBILITY_STATE = Object.freeze({
@@ -90,9 +91,10 @@ export function reduceJobState(state, event, env) {
         if (current.phase === JOB_PHASE.BACKEND_RUNNING && current.transport === TRANSPORT_STATE.DEFERRED_DISCONNECT) {
             return commit(current, JOB_PHASE.RECOVERING, {
                 visibility: VISIBILITY_STATE.VISIBLE,
-                renderTask: RENDER_TASK.RECOVERING_UI,
+                renderTask: RENDER_TASK.RECOVERING_STATUS,
+                error: null,
             }, [
-                command('render.recover_session', {
+                command('recover.reconnect_status', {
                     runId: current.runId,
                     chatIdentity: current.chatIdentity,
                     reason: 'page_visible',
@@ -109,9 +111,10 @@ export function reduceJobState(state, event, env) {
         && current.phase === JOB_PHASE.BACKEND_RUNNING
         && current.transport === TRANSPORT_STATE.DEFERRED_DISCONNECT) {
         return commit(current, JOB_PHASE.RECOVERING, {
-            renderTask: RENDER_TASK.RECOVERING_UI,
+            renderTask: RENDER_TASK.RECOVERING_STATUS,
+            error: null,
         }, [
-            command('render.recover_session', {
+            command('recover.reconnect_status', {
                 runId: current.runId,
                 chatIdentity: current.chatIdentity,
                 reason: type,
@@ -127,10 +130,10 @@ export function reduceJobState(state, event, env) {
 
         return commit(current, JOB_PHASE.RECOVERING, {
             chatIdentity,
-            renderTask: RENDER_TASK.RECOVERING_UI,
+            renderTask: RENDER_TASK.RECOVERING_STATUS,
             error: null,
         }, [
-            command('render.recover_session', {
+            command('recover.reconnect_status', {
                 runId: current.runId,
                 chatIdentity,
                 reason: payload.reason || 'boot',
@@ -252,6 +255,7 @@ export function reduceJobState(state, event, env) {
                     activeStatus: payload.status,
                     nativeDisposition: String(payload.status?.nativeState || 'none'),
                     pollSessionId,
+                    transport: TRANSPORT_STATE.HEALTHY,
                     error: null,
                 }, [
                     command('backend.start_poll', {
@@ -309,6 +313,7 @@ export function reduceJobState(state, event, env) {
                 return commit(current, JOB_PHASE.BACKEND_RUNNING, {
                     activeStatus: payload.status,
                     nativeDisposition: 'confirmed',
+                    transport: TRANSPORT_STATE.HEALTHY,
                     error: null,
                 });
             }
@@ -317,6 +322,7 @@ export function reduceJobState(state, event, env) {
                 return commit(current, JOB_PHASE.BACKEND_RUNNING, {
                     activeStatus: payload.status,
                     nativeDisposition: payload.status?.nativeState === 'abandoned' ? 'abandoned' : current.nativeDisposition,
+                    transport: TRANSPORT_STATE.HEALTHY,
                     error: null,
                 });
             }
@@ -327,10 +333,9 @@ export function reduceJobState(state, event, env) {
                         error: null,
                     });
                 }
-                const error = normalizeStructuredError(payload.error, 'handoff_request_failed');
                 return commit(current, JOB_PHASE.RECOVERING, {
-                    error,
-                    renderTask: RENDER_TASK.RECOVERING_UI,
+                    error: null,
+                    renderTask: RENDER_TASK.RECOVERING_STATUS,
                     transport: payload.recoverable ? TRANSPORT_STATE.DEFERRED_DISCONNECT : current.transport,
                 }, [
                     command('backend.stop_poll', {
@@ -338,7 +343,7 @@ export function reduceJobState(state, event, env) {
                         pollSessionId: current.pollSessionId,
                         reason: 'native_confirm_failed',
                     }),
-                    command('render.recover_session', {
+                    command('recover.reconnect_status', {
                         runId: current.runId,
                         chatIdentity: current.chatIdentity,
                         reason: 'native_confirm_failed',
@@ -353,6 +358,7 @@ export function reduceJobState(state, event, env) {
                         nativeDisposition: String(payload.status?.nativeState || current.nativeDisposition),
                         renderTask: RENDER_TASK.FINISHING_UI,
                         terminalOutcome: payload.status.state,
+                        transport: TRANSPORT_STATE.HEALTHY,
                         error: null,
                     }, [
                         command('backend.stop_poll', {
@@ -373,6 +379,7 @@ export function reduceJobState(state, event, env) {
                     return commit(current, JOB_PHASE.BACKEND_RUNNING, {
                         activeStatus: payload.status,
                         nativeDisposition: String(payload.status.nativeState),
+                        transport: TRANSPORT_STATE.HEALTHY,
                         error: null,
                     });
                 }
@@ -381,16 +388,16 @@ export function reduceJobState(state, event, env) {
             if (type === 'backend.status_failed' && matchesCurrentPoll(current, payload)) {
                 if (payload.kind === 'fatal' || payload.kind === 'deferred') {
                     return commit(current, JOB_PHASE.RECOVERING, {
-                        error: normalizeStructuredError(payload.error, 'backend_polling_failed'),
+                        error: null,
                         transport: payload.kind === 'deferred' ? TRANSPORT_STATE.DEFERRED_DISCONNECT : current.transport,
-                        renderTask: RENDER_TASK.RECOVERING_UI,
+                        renderTask: RENDER_TASK.RECOVERING_STATUS,
                     }, [
                         command('backend.stop_poll', {
                             runId: current.runId,
                             pollSessionId: current.pollSessionId,
                             reason: 'status_failed',
                         }),
-                        command('render.recover_session', {
+                        command('recover.reconnect_status', {
                             runId: current.runId,
                             chatIdentity: current.chatIdentity,
                             reason: 'status_failed',
@@ -419,6 +426,7 @@ export function reduceJobState(state, event, env) {
                         nativeDisposition: String(payload.status?.nativeState || current.nativeDisposition),
                         renderTask: RENDER_TASK.FINISHING_UI,
                         terminalOutcome: payload.status.state,
+                        transport: TRANSPORT_STATE.HEALTHY,
                         error: null,
                     }, [
                         command('backend.stop_poll', {
@@ -438,6 +446,7 @@ export function reduceJobState(state, event, env) {
                 if (targetVersion > Number(current.lastAppliedVersion || 0)) {
                     return commit(current, JOB_PHASE.BACKEND_RUNNING, {
                         activeStatus: payload.status,
+                        transport: TRANSPORT_STATE.HEALTHY,
                         renderTask: RENDER_TASK.APPLYING_OUTPUT,
                     }, [
                         command('render.apply_accepted_output', {
@@ -451,6 +460,8 @@ export function reduceJobState(state, event, env) {
 
                 return commit(current, JOB_PHASE.BACKEND_RUNNING, {
                     activeStatus: payload.status,
+                    transport: TRANSPORT_STATE.HEALTHY,
+                    error: null,
                     nativeDisposition: payload.status?.nativeState
                         ? String(payload.status.nativeState)
                         : current.nativeDisposition,
@@ -473,18 +484,18 @@ export function reduceJobState(state, event, env) {
 
                 if (payload.kind === 'fatal' || payload.kind === 'deferred') {
                     return commit(current, JOB_PHASE.RECOVERING, {
-                        error: normalizeStructuredError(payload.error, 'backend_polling_failed'),
+                        error: null,
                         transport: payload.kind === 'deferred'
                             ? TRANSPORT_STATE.DEFERRED_DISCONNECT
                             : current.transport,
-                        renderTask: RENDER_TASK.RECOVERING_UI,
+                        renderTask: RENDER_TASK.RECOVERING_STATUS,
                     }, [
                         command('backend.stop_poll', {
                             runId: current.runId,
                             pollSessionId: current.pollSessionId,
                             reason: 'status_failed',
                         }),
-                        command('render.recover_session', {
+                        command('recover.reconnect_status', {
                             runId: current.runId,
                             chatIdentity: current.chatIdentity,
                             reason: 'status_failed',
@@ -507,9 +518,10 @@ export function reduceJobState(state, event, env) {
             if ((type === 'page.visible' || type === 'window.focused' || type === 'network.online')
                 && current.transport === TRANSPORT_STATE.DEFERRED_DISCONNECT) {
                 return commit(current, JOB_PHASE.RECOVERING, {
-                    renderTask: RENDER_TASK.RECOVERING_UI,
+                    renderTask: RENDER_TASK.RECOVERING_STATUS,
+                    error: null,
                 }, [
-                    command('render.recover_session', {
+                    command('recover.reconnect_status', {
                         runId: current.runId,
                         chatIdentity: current.chatIdentity,
                         reason: type,
@@ -519,6 +531,7 @@ export function reduceJobState(state, event, env) {
 
             if (type === 'render.accepted_output_applied') {
                 return commit(current, JOB_PHASE.BACKEND_RUNNING, {
+                    activeStatus: payload.status || current.activeStatus,
                     lastAppliedVersion: Number(payload.targetMessageVersion) || current.lastAppliedVersion,
                     renderTask: RENDER_TASK.IDLE,
                     error: null,
@@ -528,12 +541,14 @@ export function reduceJobState(state, event, env) {
             if (type === 'render.accepted_output_failed') {
                 if (payload.recoveryRequired) {
                     return commit(current, JOB_PHASE.RECOVERING, {
-                        error: normalizeStructuredError(payload.error, 'backend_write_failed'),
-                        renderTask: RENDER_TASK.RECOVERING_UI,
+                        activeStatus: payload.status || current.activeStatus,
+                        error: null,
+                        renderTask: RENDER_TASK.REFRESHING_CHAT,
                     }, [
-                        command('render.recover_session', {
+                        command('render.refresh_chat', {
                             runId: current.runId,
-                            chatIdentity: current.chatIdentity,
+                            mode: 'accepted_output',
+                            status: payload.status || current.activeStatus,
                             reason: 'accepted_output_failed',
                         }),
                     ]);
@@ -605,6 +620,7 @@ export function reduceJobState(state, event, env) {
                     activeStatus: payload.status,
                     renderTask: RENDER_TASK.FINISHING_UI,
                     terminalOutcome: payload.status.state,
+                    transport: TRANSPORT_STATE.HEALTHY,
                     pendingStop: false,
                 }, [
                     command('render.finish_terminal_ui', {
@@ -619,6 +635,7 @@ export function reduceJobState(state, event, env) {
             if (type === 'backend.status_received' && matchesCurrentPoll(current, payload)) {
                 return commit(current, JOB_PHASE.STOPPING, {
                     activeStatus: payload.status,
+                    transport: TRANSPORT_STATE.HEALTHY,
                     nativeDisposition: payload.status?.nativeState
                         ? String(payload.status.nativeState)
                         : current.nativeDisposition,
@@ -627,10 +644,10 @@ export function reduceJobState(state, event, env) {
 
             if (type === 'backend.cancel_failed' || type === 'backend.status_failed') {
                 return commit(current, JOB_PHASE.RECOVERING, {
-                    error: normalizeStructuredError(payload.error, 'handoff_request_failed'),
-                    renderTask: RENDER_TASK.RECOVERING_UI,
+                    error: null,
+                    renderTask: RENDER_TASK.RECOVERING_STATUS,
                 }, [
-                    command('render.recover_session', {
+                    command('recover.reconnect_status', {
                         runId: current.runId,
                         chatIdentity: current.chatIdentity,
                         reason: type,
@@ -643,21 +660,35 @@ export function reduceJobState(state, event, env) {
             if (type === 'recovery.completed') {
                 if (payload.status?.state === 'running') {
                     const pollSessionId = env.createPollSessionId(current.runId);
-                    return commit(current, JOB_PHASE.BACKEND_RUNNING, {
+                    const targetVersion = Number(payload.status?.targetMessageVersion) || 0;
+                    const nextState = {
                         activeStatus: payload.status,
                         jobId: payload.status.jobId || current.jobId,
                         nativeDisposition: String(payload.status?.nativeState || current.nativeDisposition),
-                        renderTask: RENDER_TASK.IDLE,
+                        renderTask: targetVersion > Number(current.lastAppliedVersion || 0)
+                            ? RENDER_TASK.APPLYING_OUTPUT
+                            : RENDER_TASK.IDLE,
                         error: null,
+                        transport: TRANSPORT_STATE.HEALTHY,
                         pollSessionId,
-                    }, [
+                    };
+                    const commands = [
                         command('backend.start_poll', {
                             runId: current.runId,
                             jobId: payload.status.jobId || current.jobId,
                             pollSessionId,
                             cadence: 'fast',
                         }),
-                    ]);
+                    ];
+                    if (targetVersion > Number(current.lastAppliedVersion || 0)) {
+                        commands.push(command('render.apply_accepted_output', {
+                            runId: current.runId,
+                            jobId: payload.status.jobId || current.jobId,
+                            chatIdentity: current.chatIdentity,
+                            status: payload.status,
+                        }));
+                    }
+                    return commit(current, JOB_PHASE.BACKEND_RUNNING, nextState, commands);
                 }
 
                 if (isTerminalStatus(payload.status)) {
@@ -665,6 +696,7 @@ export function reduceJobState(state, event, env) {
                         activeStatus: payload.status,
                         renderTask: RENDER_TASK.FINISHING_UI,
                         terminalOutcome: payload.status.state,
+                        transport: TRANSPORT_STATE.HEALTHY,
                         error: null,
                     }, [
                         command('render.finish_terminal_ui', {
@@ -677,6 +709,16 @@ export function reduceJobState(state, event, env) {
             }
 
             if (type === 'recovery.empty') {
+                if (current.runId || current.jobId) {
+                    return commit(current, JOB_PHASE.FAILED, {
+                        error: createStructuredError(
+                            'backend_job_missing',
+                            'Retry Mobile could not reattach to the active backend job.',
+                        ),
+                        renderTask: RENDER_TASK.IDLE,
+                        terminalOutcome: 'failed',
+                    });
+                }
                 return commit(createInitialJobState(), JOB_PHASE.IDLE, {
                     visibility: current.visibility,
                 });
@@ -690,6 +732,24 @@ export function reduceJobState(state, event, env) {
                 }
                 return commit(current, JOB_PHASE.FAILED, {
                     error: normalizeStructuredError(payload.error, 'handoff_request_failed'),
+                    renderTask: RENDER_TASK.IDLE,
+                    terminalOutcome: 'failed',
+                });
+            }
+
+            if (type === 'render.chat_refresh_applied') {
+                return commit(current, JOB_PHASE.BACKEND_RUNNING, {
+                    activeStatus: payload.status || current.activeStatus,
+                    renderTask: RENDER_TASK.IDLE,
+                    transport: TRANSPORT_STATE.HEALTHY,
+                    lastAppliedVersion: Number(payload.targetMessageVersion) || current.lastAppliedVersion,
+                    error: null,
+                });
+            }
+
+            if (type === 'render.chat_refresh_failed') {
+                return commit(current, JOB_PHASE.FAILED, {
+                    error: normalizeStructuredError(payload.error, 'backend_write_failed'),
                     renderTask: RENDER_TASK.IDLE,
                     terminalOutcome: 'failed',
                 });
@@ -718,12 +778,15 @@ export function reduceJobState(state, event, env) {
 
             if (type === 'render.terminal_ui_failed' && payload.recoveryRequired) {
                 return commit(current, JOB_PHASE.RECOVERING, {
-                    error: normalizeStructuredError(payload.error, 'backend_write_failed'),
-                    renderTask: RENDER_TASK.RECOVERING_UI,
+                    activeStatus: payload.status || current.activeStatus,
+                    error: null,
+                    renderTask: RENDER_TASK.REFRESHING_CHAT,
                 }, [
-                    command('render.recover_session', {
+                    command('render.refresh_chat', {
                         runId: current.runId,
-                        chatIdentity: current.chatIdentity,
+                        mode: 'terminal_ui',
+                        outcome: current.terminalOutcome,
+                        status: payload.status || current.activeStatus,
                         reason: 'terminal_ui_failed',
                     }),
                 ]);

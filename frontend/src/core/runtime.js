@@ -27,6 +27,7 @@ export function createRuntime() {
         activeJobId: null,
         activeJobStatus: null,
         activeJobStatusObservedAt: null,
+        activeRunBinding: null,
         committedReloadKeys: new Set(),
         lastAppliedVersion: 0,
         mountRetryHandle: 0,

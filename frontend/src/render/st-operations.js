@@ -2,6 +2,10 @@ import { createStructuredError } from '../retry-error.js';
 import { getChatIdentity, getContext } from '../st-context.js';
 import { isSameChat, reloadCurrentChatSafe } from '../st-chat.js';
 import { readMessageText, waitForMessageElement, waitForStableText, waitForUiSettled } from './readiness.js';
+import {
+    RENDER_MESSAGE_RETRY_WAIT_MS,
+    TERMINAL_UI_SETTLE_RETRY_TIMEOUT_MS,
+} from '../constants.js';
 
 export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
     const context = getContext();
@@ -32,7 +36,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    const element = await waitForMessageElement(targetMessageIndex, { signal });
+    const element = await waitForPatchedMessageElement(targetMessageIndex, signal);
     if (!element) {
         return {
             ok: false,
@@ -68,6 +72,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         return {
             ok: true,
             jobId: String(status?.jobId || ''),
+            status,
             targetMessageVersion,
         };
     } catch (error) {
@@ -88,7 +93,7 @@ export async function finishTerminalUi({ outcome, status, chatIdentity, signal }
     try {
         context?.activateSendButtons?.();
         context?.swipe?.refresh?.(true);
-        const settled = await waitForUiSettled({ signal });
+        const settled = await waitForTerminalUiWithRetry(signal);
         if (!settled) {
             return {
                 ok: false,
@@ -133,7 +138,7 @@ async function applyFinalMessageIfNeeded({ chatIdentity, status, signal }) {
         return { appliedVersion: 0 };
     }
 
-    const element = await waitForMessageElement(targetMessageIndex, { signal });
+    const element = await waitForPatchedMessageElement(targetMessageIndex, signal);
     if (!element) {
         return { appliedVersion: 0 };
     }
@@ -168,4 +173,35 @@ function cloneValue(value) {
     }
 
     return JSON.parse(JSON.stringify(value));
+}
+
+async function waitForPatchedMessageElement(targetMessageIndex, signal) {
+    let element = await waitForMessageElement(targetMessageIndex, { signal });
+    if (element) {
+        return element;
+    }
+
+    const context = getContext();
+    context?.swipe?.refresh?.(true);
+    element = await waitForMessageElement(targetMessageIndex, {
+        signal,
+        timeoutMs: RENDER_MESSAGE_RETRY_WAIT_MS,
+    });
+    return element;
+}
+
+async function waitForTerminalUiWithRetry(signal) {
+    let settled = await waitForUiSettled({ signal });
+    if (settled) {
+        return true;
+    }
+
+    const context = getContext();
+    context?.activateSendButtons?.();
+    context?.swipe?.refresh?.(true);
+    settled = await waitForUiSettled({
+        signal,
+        timeoutMs: TERMINAL_UI_SETTLE_RETRY_TIMEOUT_MS,
+    });
+    return settled;
 }

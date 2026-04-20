@@ -87,10 +87,12 @@ export const NATIVE_CONFIRM_POLL_MS = 120;
 export const NATIVE_VISIBLE_PROGRESS_POLL_MS = 1000;
 // Calibrate these DOM-facing waits further after the machine refactor has live traces.
 export const RENDER_MESSAGE_POLL_MS = 50;
-export const RENDER_MESSAGE_WAIT_MS = 900;
+export const RENDER_MESSAGE_WAIT_MS = 1800;
+export const RENDER_MESSAGE_RETRY_WAIT_MS = 1800;
 export const RENDER_STABLE_TEXT_INTERVAL_MS = 100;
-export const RENDER_STABLE_TEXT_TIMEOUT_MS = 2200;
-export const TERMINAL_UI_SETTLE_TIMEOUT_MS = 700;
+export const RENDER_STABLE_TEXT_TIMEOUT_MS = 3200;
+export const TERMINAL_UI_SETTLE_TIMEOUT_MS = 1600;
+export const TERMINAL_UI_SETTLE_RETRY_TIMEOUT_MS = 1600;
 export const DEBUG_EVENT_LIMIT = 16;
 
 export const LOG_PREFIX = Object.freeze({

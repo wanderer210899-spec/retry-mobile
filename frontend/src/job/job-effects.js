@@ -4,7 +4,6 @@ import {
     fetchActiveJob,
     fetchChatState,
     fetchJobStatus,
-    fetchLatestJob,
     getStructuredErrorFromApi,
     reportNativeFailure,
     startBackendJob,
@@ -17,10 +16,11 @@ import {
 import { createArmCaptureSession } from '../st-capture.js';
 import { getContext, showToast } from '../st-context.js';
 import { waitForNativeCompletion } from '../st-lifecycle.js';
-import { clearRetryLog, syncRetryLogForStatus } from '../logs/retry-log.js';
+import { clearRetryLog, sendFrontendLogEvent, syncRetryLogForStatus } from '../logs/retry-log.js';
 import { createStructuredError, normalizeStructuredError } from '../retry-error.js';
 import { reloadSessionUi, applyAcceptedOutput, finishTerminalUi } from '../render/st-operations.js';
 import { isTerminalStatus } from './job-reducer.js';
+import { recoverBoundStatus } from './run-binding.js';
 
 export function createJobEffects({ runtime, machine, render }) {
     const familyControllers = {
@@ -182,11 +182,13 @@ export function createJobEffects({ runtime, machine, render }) {
                         payload: result.ok
                             ? {
                                 jobId: result.jobId,
+                                status: result.status,
                                 targetMessageVersion: result.targetMessageVersion,
                             }
                             : {
                                 error: result.error,
                                 recoveryRequired: result.recoveryRequired,
+                                status: command.payload.status,
                             },
                     });
                 });
@@ -219,22 +221,36 @@ export function createJobEffects({ runtime, machine, render }) {
                         payload: {
                             error: result.error,
                             recoveryRequired: result.recoveryRequired,
+                            status: command.payload.status,
                         },
                     });
                 });
                 return;
-            case 'render.recover_session':
+            case 'recover.reconnect_status':
                 await runRecoveryCommand(async (signal) => {
                     try {
                         const status = await recoverStatus(command.payload.chatIdentity, signal);
                         if (!status) {
                             clearRetryLog(runtime);
-                            machine.dispatch({ type: 'recovery.empty', payload: {} });
+                            machine.dispatch(
+                                command.payload.runId
+                                    ? {
+                                        type: 'recovery.failed',
+                                        payload: {
+                                            error: createStructuredError(
+                                                'backend_job_missing',
+                                                'Retry Mobile could not reattach to the active backend job.',
+                                            ),
+                                        },
+                                    }
+                                    : {
+                                        type: 'recovery.empty',
+                                        payload: {},
+                                    },
+                            );
                             return;
                         }
 
-                        await reloadSessionUi(signal);
-                        if (signal.aborted) return;
                         await syncRetryLogForStatus(runtime, status, {
                             force: true,
                             clearWhenMissing: false,
@@ -254,6 +270,53 @@ export function createJobEffects({ runtime, machine, render }) {
                             },
                         });
                     }
+                });
+                return;
+            case 'render.refresh_chat':
+                await runRenderCommand('render', async (signal) => {
+                    const ok = await reloadSessionUi(signal);
+                    if (signal.aborted) {
+                        return;
+                    }
+
+                    if (!ok) {
+                        machine.dispatch({
+                            type: 'render.chat_refresh_failed',
+                            payload: {
+                                error: createStructuredError(
+                                    'backend_write_failed',
+                                    'Retry Mobile could not repair the chat view with a canonical reload.',
+                                ),
+                            },
+                        });
+                        return;
+                    }
+
+                    const context = getContext();
+                    context?.activateSendButtons?.();
+                    context?.swipe?.refresh?.(true);
+
+                    if (command.payload.mode === 'terminal_ui') {
+                        if (lastToastedRunId !== command.payload.runId) {
+                            lastToastedRunId = command.payload.runId;
+                            showTerminalToast(command.payload.outcome);
+                        }
+                        machine.dispatch({
+                            type: 'render.terminal_ui_finished',
+                            payload: {
+                                outcome: command.payload.outcome,
+                            },
+                        });
+                        return;
+                    }
+
+                    machine.dispatch({
+                        type: 'render.chat_refresh_applied',
+                        payload: {
+                            status: command.payload.status || null,
+                            targetMessageVersion: Number(command.payload.status?.targetMessageVersion) || 0,
+                        },
+                    });
                 });
                 return;
             default:
@@ -337,11 +400,24 @@ export function createJobEffects({ runtime, machine, render }) {
                     if (controller.signal.aborted) {
                         return;
                     }
+                    const kind = classifyPollFailure(error);
+                    if (kind !== 'fatal') {
+                        void logSoftWarning(
+                            runtime,
+                            'status_poll_warning',
+                            'Frontend lost direct status polling and is trying to recover backend truth.',
+                            {
+                                kind,
+                                jobId: payload.jobId,
+                                message: error?.message || 'Retry Mobile status polling failed.',
+                            },
+                        );
+                    }
                     machine.dispatch({
                         type: 'backend.status_failed',
                         payload: {
                             error: getStructuredErrorFromApi(error, 'Retry Mobile status polling failed.'),
-                            kind: classifyPollFailure(error),
+                            kind,
                             pollSessionId: payload.pollSessionId,
                             runId: payload.runId,
                         },
@@ -404,19 +480,15 @@ export function createJobEffects({ runtime, machine, render }) {
     }
 
     async function recoverStatus(identity, signal) {
-        const active = await fetchActiveJob(identity);
+        const result = await recoverBoundStatus({
+            chatIdentity: identity,
+            fetchStatus: fetchJobStatus,
+            fetchActive: fetchActiveJob,
+        });
         if (signal.aborted) {
             return null;
         }
-        if (active?.jobId) {
-            return active;
-        }
-
-        const latest = await fetchLatestJob(identity);
-        if (signal.aborted) {
-            return null;
-        }
-        return latest?.jobId ? latest : null;
+        return result.status || null;
     }
 
     async function buildReservePayload(payload) {
@@ -467,7 +539,7 @@ export function createJobEffects({ runtime, machine, render }) {
     }
 
     async function runRecoveryCommand(fn) {
-        abortFamily('recovery', 'recover_session');
+        abortFamily('recovery', 'recover_status');
         const controller = createFamilyController('recovery');
         await fn(controller.signal);
     }
@@ -539,4 +611,12 @@ function showTerminalToast(outcome) {
         return;
     }
     showToast('warning', 'Retry Mobile', 'Retry Mobile failed.');
+}
+
+async function logSoftWarning(runtime, event, summary, detail) {
+    await sendFrontendLogEvent(runtime, {
+        event,
+        summary,
+        detail,
+    });
 }

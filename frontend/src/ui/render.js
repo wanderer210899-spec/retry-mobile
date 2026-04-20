@@ -12,9 +12,11 @@ export function createRenderer({ runtime }) {
         const snapshot = machine.getSnapshot();
         const state = snapshot.phase;
         const activeStatus = snapshot.activeStatus;
-        const errorText = formatStructuredError(snapshot.error);
+        const errorText = shouldShowError(snapshot)
+            ? formatStructuredError(snapshot.error)
+            : '';
 
-        runtime.ui.statusText.textContent = formatVisibleStateLabel(state, activeStatus);
+        runtime.ui.statusText.textContent = formatVisibleStateLabel(state, activeStatus, snapshot.transport);
         runtime.ui.statusText.dataset.state = state;
 
         runtime.ui.stats.innerHTML = [
@@ -70,6 +72,18 @@ export function createRenderer({ runtime }) {
             runtime.ui.toggleLogButton.textContent = runtime.log.show ? 'Hide' : 'Show';
         }
     };
+}
+
+function shouldShowError(snapshot) {
+    if (!snapshot?.error) {
+        return false;
+    }
+
+    return snapshot.phase !== 'waiting_native'
+        && snapshot.phase !== 'backend_running'
+        && snapshot.phase !== 'recovering'
+        && snapshot.phase !== 'completing'
+        && snapshot.phase !== 'stopping';
 }
 
 function renderStat(title, value) {

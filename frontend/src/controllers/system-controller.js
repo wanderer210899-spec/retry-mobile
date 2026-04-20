@@ -5,17 +5,19 @@ import {
     SLASH_COMMAND_PREFIX,
 } from '../constants.js';
 import { createLogger } from '../logger.js';
-import { fetchReleaseInfo } from '../backend-api.js';
+import { fetchLatestJob, fetchReleaseInfo } from '../backend-api.js';
 import { runDiagnostics } from '../diagnostics.js';
 import { getQuickReplyStatus, setQuickReplyAttached } from '../quick-reply.js';
 import {
     focusPanelDrawer,
+    getChatIdentity,
     getContext,
     registerSlashCommand,
     showToast,
 } from '../st-context.js';
 import {
     buildRetryLogFileName,
+    clearRetryLog,
     getRetryLogContext,
     syncRetryLogForStatus,
 } from '../logs/retry-log.js';
@@ -134,10 +136,7 @@ export function createSystemController({
     }
 
     async function copyRetryLogFromUi() {
-        await syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
-            force: Boolean(runtime.activeJobStatus?.jobId),
-            clearWhenMissing: false,
-        });
+        await syncVisibleRetryLog();
         const logContext = getRetryLogContext(runtime);
         const text = logContext.text || '';
         if (!text.trim()) {
@@ -155,10 +154,7 @@ export function createSystemController({
     }
 
     async function downloadRetryLogFromUi() {
-        await syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
-            force: Boolean(runtime.activeJobStatus?.jobId),
-            clearWhenMissing: false,
-        });
+        await syncVisibleRetryLog();
         const logContext = getRetryLogContext(runtime);
         const text = logContext.text || '';
         if (!text.trim()) {
@@ -228,10 +224,7 @@ export function createSystemController({
         runtime.ui.activeTab = tab === 'system' ? 'system' : 'main';
         if (runtime.ui.activeTab === 'system') {
             void refreshReleaseInfo();
-            void syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
-                force: Boolean(runtime.activeJobStatus?.jobId),
-                clearWhenMissing: false,
-            }).then(() => render());
+            void syncVisibleRetryLog().then(() => render());
         }
         render();
     }
@@ -240,11 +233,29 @@ export function createSystemController({
         runtime.log.show = !runtime.log.show;
         runtime.ui.activeTab = 'system';
         if (runtime.log.show) {
-            void syncRetryLogForStatus(runtime, runtime.activeJobStatus || null, {
-                force: Boolean(runtime.activeJobStatus?.jobId),
-                clearWhenMissing: false,
-            }).then(() => render());
+            void syncVisibleRetryLog().then(() => render());
         }
         render();
+    }
+
+    async function syncVisibleRetryLog() {
+        if (runtime.activeJobStatus?.jobId) {
+            await syncRetryLogForStatus(runtime, runtime.activeJobStatus, {
+                force: true,
+                clearWhenMissing: false,
+            });
+            return;
+        }
+
+        const latest = await fetchLatestJob(getChatIdentity(getContext()));
+        if (latest?.jobId) {
+            await syncRetryLogForStatus(runtime, latest, {
+                force: true,
+                clearWhenMissing: false,
+            });
+            return;
+        }
+
+        clearRetryLog(runtime);
     }
 }

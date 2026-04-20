@@ -67,7 +67,16 @@ export function formatStateLabel(state) {
     }
 }
 
-export function formatVisibleStateLabel(state, status) {
+export function formatVisibleStateLabel(state, status, transport = 'healthy') {
+    if ((state === JOB_PHASE.RECOVERING || state === JOB_PHASE.BACKEND_RUNNING)
+        && transport !== 'healthy') {
+        return 'Reconnecting to backend';
+    }
+
+    if (state === JOB_PHASE.RECOVERING && !status) {
+        return 'Reattaching to backend run';
+    }
+
     if (!status) {
         return formatStateLabel(state);
     }

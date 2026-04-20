@@ -1,5 +1,6 @@
 import { getChatIdentity, getContext } from '../st-context.js';
 import { createInitialJobState, reduceJobState } from './job-reducer.js';
+import { syncActiveRunBindingFromState } from './run-binding.js';
 
 export function createJobMachine({ runtime, render }) {
     let state = createInitialJobState();
@@ -126,6 +127,7 @@ function syncRuntimeMirror(runtime, state) {
     runtime.activeJobStatus = state.activeStatus || null;
     runtime.activeJobStatusObservedAt = state.activeStatus?.updatedAt || null;
     runtime.lastAppliedVersion = Number(state.lastAppliedVersion) || 0;
+    runtime.activeRunBinding = syncActiveRunBindingFromState(state);
 }
 
 function createReducerEnv(runtime) {

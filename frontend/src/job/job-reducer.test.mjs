@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     JOB_PHASE,
     RENDER_TASK,
+    TRANSPORT_STATE,
     createInitialJobState,
     isTerminalStatus,
     reduceJobState,
@@ -199,6 +200,95 @@ test('backend running with a newer target version emits accepted-output render',
     assert.equal(result.state.renderTask, RENDER_TASK.APPLYING_OUTPUT);
     assert.equal(result.commands.length, 1);
     assert.equal(result.commands[0].type, 'render.apply_accepted_output');
+});
+
+test('successful status polling clears reconnect transport state back to healthy', () => {
+    const env = makeEnv();
+    const state = {
+        ...createInitialJobState(),
+        phase: JOB_PHASE.BACKEND_RUNNING,
+        runId: 'run-1',
+        jobId: 'job-1',
+        pollSessionId: 'run-1-poll-1',
+        transport: TRANSPORT_STATE.TRANSIENT_ERROR,
+    };
+
+    const result = reduceJobState(state, {
+        type: 'backend.status_received',
+        payload: {
+            runId: 'run-1',
+            pollSessionId: 'run-1-poll-1',
+            status: {
+                jobId: 'job-1',
+                state: 'running',
+                targetMessageVersion: 0,
+            },
+        },
+    }, env);
+
+    assert.equal(result.state.transport, TRANSPORT_STATE.HEALTHY);
+});
+
+test('visibility recovery reattaches through backend truth instead of forcing a chat reload command', () => {
+    const env = makeEnv();
+    const state = {
+        ...createInitialJobState(),
+        phase: JOB_PHASE.BACKEND_RUNNING,
+        runId: 'run-1',
+        jobId: 'job-1',
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+        transport: TRANSPORT_STATE.DEFERRED_DISCONNECT,
+    };
+
+    const result = reduceJobState(state, {
+        type: 'page.visible',
+        payload: {},
+    }, env);
+
+    assert.equal(result.state.phase, JOB_PHASE.RECOVERING);
+    assert.equal(result.commands.length, 1);
+    assert.equal(result.commands[0].type, 'recover.reconnect_status');
+});
+
+test('recovery with a newer backend target version reapplies output after reattachment', () => {
+    const env = makeEnv();
+    const state = {
+        ...createInitialJobState(),
+        phase: JOB_PHASE.RECOVERING,
+        runId: 'run-1',
+        jobId: 'job-1',
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+        pollSessionId: 'old-poll',
+        lastAppliedVersion: 1,
+        transport: TRANSPORT_STATE.DEFERRED_DISCONNECT,
+    };
+
+    const result = reduceJobState(state, {
+        type: 'recovery.completed',
+        payload: {
+            status: {
+                jobId: 'job-1',
+                state: 'running',
+                targetMessageVersion: 3,
+                nativeState: 'confirmed',
+            },
+        },
+    }, env);
+
+    assert.equal(result.state.phase, JOB_PHASE.BACKEND_RUNNING);
+    assert.equal(result.state.renderTask, RENDER_TASK.APPLYING_OUTPUT);
+    assert.deepEqual(result.commands.map((entry) => entry.type), [
+        'backend.start_poll',
+        'render.apply_accepted_output',
+    ]);
 });
 
 test('stop during reserving preserves stop intent and cancels once reserve succeeds', () => {

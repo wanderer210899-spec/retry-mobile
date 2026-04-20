@@ -2,6 +2,8 @@ import { getChatIdentity, getContext, getCurrentChatArray } from './st-context.j
 import { createStructuredError } from './retry-error.js';
 
 const INTERNAL_CHAT_RELOAD_GRACE_MS = 1500;
+const CAPTURE_TAIL_WINDOW = 4;
+const CONFIRM_INDEX_WINDOW = 2;
 
 let internalChatReloadState = {
     at: 0,
@@ -26,35 +28,7 @@ export function buildFingerprint({ chatIdentity, chat, requestType, messageIdHin
     }
 
     const type = normalizeRequestType(requestType);
-    let userMessageIndex = -1;
-
-    if ((type === 'swipe' || type === 'regenerate') && Number.isInteger(messageIdHint) && messageIdHint > 0) {
-        userMessageIndex = chat[messageIdHint - 1]?.is_user === true
-            ? messageIdHint - 1
-            : -1;
-    }
-
-    if (userMessageIndex < 0 && type !== 'swipe' && type !== 'regenerate' && Number.isInteger(messageIdHint) && messageIdHint >= 0) {
-        if (chat[messageIdHint]?.is_user === true) {
-            userMessageIndex = messageIdHint;
-        }
-    }
-
-    if (userMessageIndex < 0 && (type === 'swipe' || type === 'regenerate')) {
-        for (let i = chat.length - 1; i >= 0; i--) {
-            if (chat[i]?.is_user === true) {
-                userMessageIndex = i;
-                break;
-            }
-        }
-    }
-
-    if (userMessageIndex < 0) {
-        const lastIndex = chat.length - 1;
-        if (chat[lastIndex]?.is_user === true) {
-            userMessageIndex = lastIndex;
-        }
-    }
+    const userMessageIndex = resolveCapturedUserIndex(chat, type, messageIdHint);
 
     if (userMessageIndex < 0) {
         return null;
@@ -68,7 +42,12 @@ export function buildFingerprint({ chatIdentity, chat, requestType, messageIdHin
     return {
         chatIdentity,
         userMessageIndex,
+        userIndexAtCapture: userMessageIndex,
         userMessageText: String(targetMessage.mes ?? ''),
+        precedingMessageText: userMessageIndex > 0
+            ? String(chat[userMessageIndex - 1]?.mes ?? '')
+            : '',
+        capturedChatLength: chat.length,
         capturedAt: new Date().toISOString(),
         requestType: type,
         messageIdHint: Number.isInteger(messageIdHint) ? messageIdHint : null,
@@ -90,56 +69,43 @@ export function confirmTargetTurn(fingerprint, assistantMessageIndex) {
     }
 
     const chat = getCurrentChatArray(context);
-    const userIndex = Number(fingerprint.userMessageIndex);
-    const userMessage = chat[userIndex];
-    if (!userMessage || userMessage.is_user !== true || String(userMessage.mes ?? '') !== fingerprint.userMessageText) {
+    const attemptedAssistantIndices = resolveCandidateAssistantIndices(fingerprint, assistantMessageIndex, chat.length);
+    let sawAssistantGap = false;
+
+    for (const candidateAssistantIndex of attemptedAssistantIndices) {
+        const assistantMessage = chat[candidateAssistantIndex];
+        if (!assistantMessage || assistantMessage.is_user === true) {
+            sawAssistantGap = true;
+            continue;
+        }
+
+        const userIndex = candidateAssistantIndex - 1;
+        if (!isMatchingCapturedUser(chat, fingerprint, userIndex)) {
+            continue;
+        }
+
         return {
-            ok: false,
-            reason: 'user_mismatch',
-            error: createStructuredError(
-                'native_turn_mismatch',
-                'Retry Mobile could not confirm the original user turn before backend handoff.',
-            ),
+            ok: true,
+            chat,
+            assistantMessageIndex: candidateAssistantIndex,
+            assistantMessage,
         };
     }
 
-    const assistantIndex = Number(assistantMessageIndex);
-    const assistantMessage = chat[assistantIndex];
-    if (!assistantMessage || assistantMessage.is_user === true) {
+    if (sawAssistantGap) {
         return {
             ok: false,
             reason: 'assistant_missing',
         };
     }
 
-    const previous = chat[assistantIndex - 1];
-    if (assistantIndex !== userIndex + 1 && previous?.is_user !== true) {
-        return {
-            ok: false,
-            reason: 'assistant_mismatch',
-            error: createStructuredError(
-                'native_turn_mismatch',
-                'Retry Mobile saw a native completion event, but it did not map back to the captured user turn.',
-            ),
-        };
-    }
-
-    if (assistantIndex !== userIndex + 1 && String(previous?.mes ?? '') !== fingerprint.userMessageText) {
-        return {
-            ok: false,
-            reason: 'assistant_mismatch',
-            error: createStructuredError(
-                'native_turn_mismatch',
-                'Retry Mobile saw a native completion event, but the preceding user turn no longer matched the captured request.',
-            ),
-        };
-    }
-
     return {
-        ok: true,
-        chat,
-        assistantMessageIndex: assistantIndex,
-        assistantMessage,
+        ok: false,
+        reason: 'assistant_mismatch',
+        error: createStructuredError(
+            'native_turn_mismatch',
+            'Retry Mobile saw a native completion event, but it did not map back to the captured user turn.',
+        ),
     };
 }
 
@@ -208,3 +174,79 @@ function cloneChatIdentity(chatIdentity) {
     };
 }
 
+function resolveCapturedUserIndex(chat, type, messageIdHint) {
+    const preferred = [];
+    if (Number.isInteger(messageIdHint)) {
+        if (type === 'swipe' || type === 'regenerate') {
+            preferred.push(messageIdHint - 1, messageIdHint);
+        } else {
+            preferred.push(messageIdHint, messageIdHint - 1);
+        }
+    }
+
+    for (const index of preferred) {
+        if (Number.isInteger(index) && index >= 0 && chat[index]?.is_user === true) {
+            return index;
+        }
+    }
+
+    for (let index = chat.length - 1; index >= Math.max(0, chat.length - CAPTURE_TAIL_WINDOW); index -= 1) {
+        if (chat[index]?.is_user === true) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function resolveCandidateAssistantIndices(fingerprint, observedAssistantIndex, chatLength) {
+    const candidateIndices = [];
+    pushCandidateIndex(candidateIndices, observedAssistantIndex, chatLength);
+
+    const anchoredUserIndex = Number.isInteger(fingerprint?.userIndexAtCapture)
+        ? fingerprint.userIndexAtCapture
+        : null;
+    if (Number.isInteger(anchoredUserIndex) && anchoredUserIndex >= 0) {
+        for (let offset = -CONFIRM_INDEX_WINDOW; offset <= CONFIRM_INDEX_WINDOW; offset += 1) {
+            pushCandidateIndex(candidateIndices, anchoredUserIndex + 1 + offset, chatLength);
+        }
+    }
+
+    const hintIndex = Number.isInteger(fingerprint?.messageIdHint)
+        ? fingerprint.messageIdHint
+        : null;
+    if (Number.isInteger(hintIndex) && hintIndex >= 0) {
+        for (let offset = -CONFIRM_INDEX_WINDOW; offset <= CONFIRM_INDEX_WINDOW; offset += 1) {
+            pushCandidateIndex(candidateIndices, hintIndex + offset, chatLength);
+        }
+    }
+
+    return candidateIndices;
+}
+
+function pushCandidateIndex(candidateIndices, value, chatLength) {
+    if (!Number.isInteger(value) || value < 0 || value >= chatLength) {
+        return;
+    }
+    if (!candidateIndices.includes(value)) {
+        candidateIndices.push(value);
+    }
+}
+
+function isMatchingCapturedUser(chat, fingerprint, userIndex) {
+    const userMessage = Number.isInteger(userIndex) && userIndex >= 0
+        ? chat[userIndex]
+        : null;
+    if (!userMessage || userMessage.is_user !== true || String(userMessage.mes ?? '') !== fingerprint.userMessageText) {
+        return false;
+    }
+
+    if (!fingerprint?.precedingMessageText) {
+        return true;
+    }
+
+    const precedingText = userIndex > 0
+        ? String(chat[userIndex - 1]?.mes ?? '')
+        : '';
+    return precedingText === fingerprint.precedingMessageText;
+}
