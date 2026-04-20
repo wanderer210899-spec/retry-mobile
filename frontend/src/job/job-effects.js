@@ -31,6 +31,7 @@ export function createJobEffects({ runtime, machine, render }) {
     };
     const inFlightRequests = new Map();
     let captureSession = null;
+    let lastToastedRunId = null;
 
     return {
         run,
@@ -174,6 +175,7 @@ export function createJobEffects({ runtime, machine, render }) {
                         status: command.payload.status,
                         signal,
                     });
+                    if (signal.aborted) return;
                     machine.dispatch({
                         type: result.ok ? 'render.accepted_output_applied' : 'render.accepted_output_failed',
                         payload: result.ok
@@ -197,8 +199,12 @@ export function createJobEffects({ runtime, machine, render }) {
                         chatIdentity: state.chatIdentity,
                         signal,
                     });
+                    if (signal.aborted) return;
                     if (result.ok) {
-                        showTerminalToast(command.payload.outcome);
+                        if (lastToastedRunId !== command.payload.runId) {
+                            lastToastedRunId = command.payload.runId;
+                            showTerminalToast(command.payload.outcome);
+                        }
                         machine.dispatch({
                             type: 'render.terminal_ui_finished',
                             payload: {
@@ -227,6 +233,7 @@ export function createJobEffects({ runtime, machine, render }) {
                         }
 
                         await reloadSessionUi(signal);
+                        if (signal.aborted) return;
                         await syncRetryLogForStatus(runtime, status, {
                             force: true,
                             clearWhenMissing: false,
@@ -238,6 +245,7 @@ export function createJobEffects({ runtime, machine, render }) {
                             },
                         });
                     } catch (error) {
+                        if (signal.aborted) return;
                         machine.dispatch({
                             type: 'recovery.failed',
                             payload: {
@@ -352,6 +360,7 @@ export function createJobEffects({ runtime, machine, render }) {
                 const result = await waitForNativeCompletion({
                     fingerprint: payload.fingerprint,
                     nativeGraceSeconds: payload.nativeGraceSeconds,
+                    signal: controller.signal,
                     onEvent: (event, summary) => {
                         machine.recordEvent('st', event, summary);
                         render();

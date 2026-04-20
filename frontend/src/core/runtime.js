@@ -1,4 +1,3 @@
-import { createStateMachine } from '../state-machine.js';
 
 function createDefaultCapabilities() {
     return {
@@ -23,38 +22,16 @@ export function createRuntime() {
         quickReplyStatus: null,
         capabilities: createDefaultCapabilities(),
         termuxAvailable: false,
-        machine: createStateMachine(),
         jobMachine: null,
         jobEffects: null,
         activeJobId: null,
         activeJobStatus: null,
-        activeJobStatusSource: 'none',
         activeJobStatusObservedAt: null,
         committedReloadKeys: new Set(),
         lastAppliedVersion: 0,
-        manualStopRequested: false,
-        nativeFailureCompatWarned: false,
-        nativeFailureReported: false,
         mountRetryHandle: 0,
         hostObserver: null,
         quickReplyRefreshHandle: 0,
-        recoveryHandle: 0,
-        recoveryPromise: null,
-        recoverySignalsBound: false,
-        poll: {
-            handle: 0,
-            unchangedCount: 0,
-            transientFailures: 0,
-            unexpectedServerFailures: 0,
-            signature: '',
-        },
-        transport: {
-            lastError: null,
-            lastEndpoint: '',
-            lastErrorAt: null,
-            errorContext: null,
-            disconnectPolicy: 'none',
-        },
         capture: {
             session: null,
             request: null,

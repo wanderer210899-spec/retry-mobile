@@ -122,7 +122,7 @@ export function createSystemController({
             return;
         }
 
-        (runtime.jobMachine || runtime.machine).clearError();
+        runtime.jobMachine.clearError();
         showToast(
             'success',
             EXTENSION_NAME,

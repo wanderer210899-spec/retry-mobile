@@ -295,9 +295,7 @@ export function reduceJobState(state, event, env) {
 
             if (type === 'native.failed' && current.jobId) {
                 const error = normalizeStructuredError(payload.error, 'native_wait_timeout');
-                return commit(current, JOB_PHASE.WAITING_NATIVE, {
-                    error,
-                }, [
+                return commit(current, JOB_PHASE.WAITING_NATIVE, {}, [
                     command('backend.report_native_failure', {
                         runId: current.runId,
                         jobId: current.jobId,
@@ -350,6 +348,7 @@ export function reduceJobState(state, event, env) {
                         nativeDisposition: String(payload.status?.nativeState || current.nativeDisposition),
                         renderTask: RENDER_TASK.FINISHING_UI,
                         terminalOutcome: payload.status.state,
+                        error: null,
                     }, [
                         command('backend.stop_poll', {
                             runId: current.runId,
@@ -360,7 +359,6 @@ export function reduceJobState(state, event, env) {
                             runId: current.runId,
                             outcome: payload.status.state,
                             status: payload.status,
-                            error: current.error,
                         }),
                     ]);
                 }
@@ -416,6 +414,7 @@ export function reduceJobState(state, event, env) {
                         nativeDisposition: String(payload.status?.nativeState || current.nativeDisposition),
                         renderTask: RENDER_TASK.FINISHING_UI,
                         terminalOutcome: payload.status.state,
+                        error: null,
                     }, [
                         command('backend.stop_poll', {
                             runId: current.runId,
@@ -426,7 +425,6 @@ export function reduceJobState(state, event, env) {
                             runId: current.runId,
                             outcome: payload.status.state,
                             status: payload.status,
-                            error: current.error,
                         }),
                     ]);
                 }
@@ -537,7 +535,6 @@ export function reduceJobState(state, event, env) {
                 }
 
                 return commit(current, JOB_PHASE.BACKEND_RUNNING, {
-                    error: normalizeStructuredError(payload.error, 'backend_write_failed'),
                     renderTask: RENDER_TASK.IDLE,
                 });
             }
@@ -663,12 +660,12 @@ export function reduceJobState(state, event, env) {
                         activeStatus: payload.status,
                         renderTask: RENDER_TASK.FINISHING_UI,
                         terminalOutcome: payload.status.state,
+                        error: null,
                     }, [
                         command('render.finish_terminal_ui', {
                             runId: current.runId,
                             outcome: payload.status.state,
                             status: payload.status,
-                            error: current.error,
                         }),
                     ]);
                 }
@@ -681,6 +678,11 @@ export function reduceJobState(state, event, env) {
             }
 
             if (type === 'recovery.failed') {
+                if (!current.runId) {
+                    return commit(createInitialJobState(), JOB_PHASE.IDLE, {
+                        visibility: current.visibility,
+                    });
+                }
                 return commit(current, JOB_PHASE.FAILED, {
                     error: normalizeStructuredError(payload.error, 'handoff_request_failed'),
                     renderTask: RENDER_TASK.IDLE,

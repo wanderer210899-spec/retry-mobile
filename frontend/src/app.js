@@ -132,7 +132,7 @@ function getArmValidationError(runtime) {
 
     if (Number(runtime.settings?.maxAttempts) < Number(runtime.settings?.targetAcceptedCount)) {
         return createStructuredError(
-            'handoff_request_failed',
+            'validation_config_invalid',
             'Maximum attempts must be at least as large as the accepted outputs goal.',
         );
     }

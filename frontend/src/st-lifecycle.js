@@ -15,12 +15,18 @@ export function waitForNativeCompletion({
     timeoutMs = NATIVE_WAIT_TIMEOUT_MS,
     nativeGraceSeconds = 30,
     onEvent,
+    signal,
 }) {
     return new Promise((resolve, reject) => {
         const context = getContext();
         const eventTypes = getEventTypes(context);
         const stopListening = [];
         let settled = false;
+
+        if (signal?.aborted) {
+            resolve({ outcome: 'aborted' });
+            return;
+        }
         let confirming = false;
         let timeoutHandle = 0;
         let progressTimeoutHandle = 0;
@@ -39,6 +45,17 @@ export function waitForNativeCompletion({
                 'Retry Mobile could not subscribe to SillyTavern generation completion events.',
             ));
             return;
+        }
+
+        if (signal) {
+            const onAbort = () => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve({ outcome: 'aborted' });
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+            stopListening.push(() => signal.removeEventListener('abort', onAbort));
         }
 
         document.addEventListener('visibilitychange', onVisibilityChange);
