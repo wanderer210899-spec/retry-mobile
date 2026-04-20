@@ -13,6 +13,7 @@ import {
     POLL_INTERVAL_FAST_MS,
     POLL_INTERVAL_SLOW_MS,
     POLL_INTERVAL_STEADY_MS,
+    PROTOCOL_VERSION,
 } from '../constants.js';
 import { createArmCaptureSession } from '../st-capture.js';
 import { getContext, showToast } from '../st-context.js';
@@ -526,7 +527,7 @@ export function createJobEffects({ runtime, machine, render }) {
         const context = getContext();
         const chatState = await fetchChatState(payload.chatIdentity);
         return {
-            clientProtocolVersion: runtime.capabilities?.protocolVersion || 4,
+            clientProtocolVersion: PROTOCOL_VERSION,
             runId: payload.runId,
             sessionId: runtime.sessionId || '',
             chatIdentity: payload.chatIdentity,

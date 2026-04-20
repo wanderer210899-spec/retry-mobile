@@ -75,7 +75,7 @@ export const REQUIRED_PAYLOAD_KEYS = Object.freeze([
     'messages',
 ]);
 
-export const PROTOCOL_VERSION = 4; // Must match PROTOCOL_VERSION in server/plugin-meta.js
+export const PROTOCOL_VERSION = 5; // Must match PROTOCOL_VERSION in server/plugin-meta.js
 export const POLL_INTERVAL_FAST_MS = 1800;
 export const POLL_INTERVAL_STEADY_MS = 4000;
 export const POLL_INTERVAL_SLOW_MS = 8000;
