@@ -2,6 +2,7 @@ const { acquireWakeLock, notify, releaseWakeLock } = require('./notifier');
 const { appendJobLog } = require('./job-log-store');
 const { pruneTerminalJobUnits } = require('./job-store');
 const { createStructuredError, toStructuredError } = require('./retry-error');
+const { countTextTokensWithSt } = require('./st-runtime');
 const { validateAcceptedText } = require('./validation');
 const { appendAttemptLog, touchJob } = require('./state');
 const {
@@ -133,7 +134,12 @@ async function runJob(job, environment) {
             }
 
             const text = extractResponseText(responsePayload);
-            const validation = validateAcceptedText(text, job.runConfig);
+            const validation = await validateAcceptedText(text, job.runConfig, {
+                countTokens: (value) => countTextTokensWithSt(value, {
+                    tokenizerDescriptor: job.tokenizerDescriptor,
+                    requestModel: job.capturedRequest?.model,
+                }),
+            });
 
             if (!validation.accepted) {
                 job.lastError = `Rejected response: ${formatValidationRejection(validation)}`;
@@ -148,6 +154,9 @@ async function runJob(job, environment) {
                     phase: 'validation_rejected',
                     characterCount: validation.metrics.characterCount,
                     tokenCount: validation.metrics.tokenCount,
+                    tokenCountSource: validation.metrics.tokenCountSource,
+                    tokenCountModel: validation.metrics.tokenizerModel,
+                    tokenCountDetail: validation.metrics.tokenCountDetail,
                 });
                 touchJob(job, {
                     phase: 'validation_rejected',
@@ -161,6 +170,9 @@ async function runJob(job, environment) {
                         reason: validation.reason,
                         characterCount: validation.metrics.characterCount,
                         tokenCount: validation.metrics.tokenCount,
+                        tokenCountSource: validation.metrics.tokenCountSource,
+                        tokenCountModel: validation.metrics.tokenizerModel,
+                        tokenCountDetail: validation.metrics.tokenCountDetail,
                     },
                 });
                 await waitBeforeNextAttempt(job, 'validation');
@@ -220,6 +232,8 @@ async function runJob(job, environment) {
                         text: validation.metrics.text,
                         characterCount: validation.metrics.characterCount,
                         tokenCount: validation.metrics.tokenCount,
+                        tokenCountSource: validation.metrics.tokenCountSource,
+                        tokenizerModel: validation.metrics.tokenizerModel,
                     });
                 }
 
@@ -233,6 +247,9 @@ async function runJob(job, environment) {
                         phase: 'writing_chat',
                         characterCount: validation.metrics.characterCount,
                         tokenCount: validation.metrics.tokenCount,
+                        tokenCountSource: validation.metrics.tokenCountSource,
+                        tokenCountModel: validation.metrics.tokenizerModel,
+                        tokenCountDetail: validation.metrics.tokenCountDetail,
                     });
                     appendJobLog(job, {
                         source: 'backend',
@@ -243,6 +260,9 @@ async function runJob(job, environment) {
                             code: structuredError.code,
                             characterCount: validation.metrics.characterCount,
                             tokenCount: validation.metrics.tokenCount,
+                            tokenCountSource: validation.metrics.tokenCountSource,
+                            tokenCountModel: validation.metrics.tokenizerModel,
+                            tokenCountDetail: validation.metrics.tokenCountDetail,
                         },
                     });
                     throw error;
@@ -253,6 +273,8 @@ async function runJob(job, environment) {
                 text: validation.metrics.text,
                 characterCount: validation.metrics.characterCount,
                 tokenCount: validation.metrics.tokenCount,
+                tokenCountSource: validation.metrics.tokenCountSource,
+                tokenizerModel: validation.metrics.tokenizerModel,
             });
             job.acceptedCount += 1;
             job.lastAcceptedMetrics = validation.metrics;
@@ -272,6 +294,9 @@ async function runJob(job, environment) {
                 phase: 'awaiting_retry_results',
                 characterCount: validation.metrics.characterCount,
                 tokenCount: validation.metrics.tokenCount,
+                tokenCountSource: validation.metrics.tokenCountSource,
+                tokenCountModel: validation.metrics.tokenizerModel,
+                tokenCountDetail: validation.metrics.tokenCountDetail,
                 targetMessageVersion: writeResult?.targetMessageVersion,
                 targetMessageIndex: writeResult?.targetMessageIndex,
             });
@@ -283,6 +308,9 @@ async function runJob(job, environment) {
                     attemptNumber: job.attemptCount,
                     characterCount: validation.metrics.characterCount,
                     tokenCount: validation.metrics.tokenCount,
+                    tokenCountSource: validation.metrics.tokenCountSource,
+                    tokenCountModel: validation.metrics.tokenizerModel,
+                    tokenCountDetail: validation.metrics.tokenCountDetail,
                     targetMessageVersion: writeResult?.targetMessageVersion ?? null,
                     targetMessageIndex: writeResult?.targetMessageIndex ?? null,
                 },
@@ -872,6 +900,13 @@ function formatValidationRejection(validation) {
 
     if (validation.reason === 'below_min_tokens') {
         return `The response only had ${validation.metrics.tokenCount} tokens, below the required ${validation.threshold}.`;
+    }
+
+    if (validation.reason === 'tokenizer_unavailable') {
+        const detail = validation.metrics?.tokenCountDetail
+            ? ` ${validation.metrics.tokenCountDetail}`
+            : '';
+        return `Retry Mobile could not verify token length with a real tokenizer and heuristic fallback is disabled.${detail}`;
     }
 
     return 'Validation rejected the response.';

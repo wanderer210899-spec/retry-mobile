@@ -99,6 +99,10 @@ function renderJobLog(job, options = {}) {
         `phase: ${job?.phase || 'unknown'}`,
         `accepted: ${Number(job?.acceptedCount) || 0}/${Number(job?.targetAcceptedCount) || 0}`,
         `attempts: ${Number(job?.attemptCount) || 0}/${Number(job?.maxAttempts) || 0}`,
+        `validationMode: ${job?.runConfig?.validationMode || 'characters'}`,
+        `validationThreshold: ${resolveValidationThreshold(job?.runConfig)}`,
+        `allowHeuristicTokenFallback: ${job?.runConfig?.allowHeuristicTokenFallback === true ? 'yes' : 'no'}`,
+        `tokenizerDescriptor: ${formatDetail(job?.tokenizerDescriptor || null)}`,
         `nativeState: ${job?.nativeState || 'unknown'}`,
         `recoveryMode: ${formatRecoveryMode(job?.recoveryMode)}`,
         `nativeResolutionCause: ${job?.nativeResolutionCause || 'none'}`,
@@ -132,6 +136,9 @@ function renderJobLog(job, options = {}) {
             `attemptDurationMs: ${formatAttemptDuration(latestAttempt)}`,
             `characterCount: ${latestAttempt.characterCount == null ? 'none' : latestAttempt.characterCount}`,
             `tokenCount: ${latestAttempt.tokenCount == null ? 'none' : latestAttempt.tokenCount}`,
+            `tokenCountSource: ${latestAttempt.tokenCountSource || 'none'}`,
+            `tokenCountModel: ${latestAttempt.tokenCountModel || 'none'}`,
+            `tokenCountDetail: ${latestAttempt.tokenCountDetail || 'none'}`,
             `targetMessageVersion: ${latestAttempt.targetMessageVersion == null ? 'none' : latestAttempt.targetMessageVersion}`,
         );
     }
@@ -326,6 +333,15 @@ function formatAttemptEntry(entry) {
     if (entry?.tokenCount != null) {
         parts.push(`tokens=${entry.tokenCount}`);
     }
+    if (entry?.tokenCountSource) {
+        parts.push(`tokenSource=${entry.tokenCountSource}`);
+    }
+    if (entry?.tokenCountModel) {
+        parts.push(`tokenModel=${entry.tokenCountModel}`);
+    }
+    if (entry?.tokenCountDetail) {
+        parts.push(`tokenDetail=${entry.tokenCountDetail}`);
+    }
     if (entry?.targetMessageVersion != null) {
         parts.push(`version=${entry.targetMessageVersion}`);
     }
@@ -394,6 +410,14 @@ function collectWarnings(job) {
         warnings.push('native grace deadline expired while native resolution is still pending.');
     }
     return warnings;
+}
+
+function resolveValidationThreshold(runConfig = {}) {
+    if (runConfig?.validationMode === 'tokens') {
+        return Number(runConfig?.minTokens) || 0;
+    }
+
+    return Number(runConfig?.minCharacters) || 0;
 }
 
 module.exports = {

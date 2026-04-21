@@ -8,6 +8,8 @@ const COMPAT_FILE_NAME = 'compat-probe.jsonl';
 const runtimeState = {
     initialized: false,
     initializing: null,
+    tokenizerHelpers: null,
+    tokenizerHelpersLoading: null,
     compatibility: {
         nativeSaveSupport: false,
         userDirectorySupport: false,
@@ -170,6 +172,142 @@ function resolveModuleFunction(moduleNamespace, name) {
     return null;
 }
 
+async function getTokenizerHelpers() {
+    if (runtimeState.tokenizerHelpers) {
+        return runtimeState.tokenizerHelpers;
+    }
+
+    if (runtimeState.tokenizerHelpersLoading) {
+        return await runtimeState.tokenizerHelpersLoading;
+    }
+
+    runtimeState.tokenizerHelpersLoading = (async () => {
+        const tokenizersModule = await importModuleFromServer(path.join('endpoints', 'tokenizers.js'));
+        const helpers = {
+            getSentencepiceTokenizer: resolveModuleFunction(tokenizersModule, 'getSentencepiceTokenizer'),
+            getTokenizerModel: resolveModuleFunction(tokenizersModule, 'getTokenizerModel'),
+            getTiktokenTokenizer: resolveModuleFunction(tokenizersModule, 'getTiktokenTokenizer'),
+            getWebTokenizer: resolveModuleFunction(tokenizersModule, 'getWebTokenizer'),
+        };
+
+        if (typeof helpers.getTokenizerModel !== 'function') {
+            throw new Error('SillyTavern tokenizer model helper is unavailable.');
+        }
+
+        if (typeof helpers.getTiktokenTokenizer !== 'function') {
+            throw new Error('SillyTavern tiktoken helper is unavailable.');
+        }
+
+        runtimeState.tokenizerHelpers = helpers;
+        return helpers;
+    })();
+
+    try {
+        return await runtimeState.tokenizerHelpersLoading;
+    } finally {
+        runtimeState.tokenizerHelpersLoading = null;
+    }
+}
+
+function resolveTokenizerModelHint(tokenizerDescriptor = null, requestModel = '') {
+    const descriptor = tokenizerDescriptor && typeof tokenizerDescriptor === 'object'
+        ? tokenizerDescriptor
+        : null;
+    const descriptorSource = typeof descriptor?.source === 'string'
+        ? descriptor.source.trim()
+        : '';
+    const descriptorModel = typeof descriptor?.model === 'string'
+        ? descriptor.model.trim()
+        : '';
+    const normalizedRequestModel = typeof requestModel === 'string'
+        ? requestModel.trim()
+        : '';
+
+    return descriptorModel || descriptorSource || normalizedRequestModel || '';
+}
+
+async function countTextTokensWithSt(text, options = {}) {
+    const normalizedText = typeof text === 'string'
+        ? text
+        : String(text ?? '');
+    const modelHint = resolveTokenizerModelHint(options.tokenizerDescriptor, options.requestModel);
+    if (!modelHint) {
+        return {
+            ok: false,
+            tokenCount: null,
+            source: 'unavailable',
+            tokenizerModel: null,
+            detail: 'Retry Mobile did not receive a tokenizer model hint from SillyTavern chat metadata or the captured request.',
+        };
+    }
+
+    const helpers = await getTokenizerHelpers();
+    const canonicalModel = helpers.getTokenizerModel(modelHint) || modelHint;
+
+    try {
+        const webTokenizer = typeof helpers.getWebTokenizer === 'function'
+            ? helpers.getWebTokenizer(canonicalModel) || helpers.getWebTokenizer(modelHint)
+            : null;
+        if (webTokenizer) {
+            const instance = await webTokenizer.get();
+            if (!instance) {
+                throw new Error(`SillyTavern could not load the "${canonicalModel}" web tokenizer.`);
+            }
+
+            const tokenCount = Array.from(instance.encode(normalizedText)).length;
+            return {
+                ok: true,
+                tokenCount,
+                source: 'sillytavern_web_tokenizer',
+                tokenizerModel: canonicalModel,
+                detail: '',
+            };
+        }
+
+        const sentencepieceTokenizer = typeof helpers.getSentencepiceTokenizer === 'function'
+            ? helpers.getSentencepiceTokenizer(canonicalModel) || helpers.getSentencepiceTokenizer(modelHint)
+            : null;
+        if (sentencepieceTokenizer) {
+            const instance = await sentencepieceTokenizer.get();
+            if (!instance) {
+                throw new Error(`SillyTavern could not load the "${canonicalModel}" sentencepiece tokenizer.`);
+            }
+
+            const encoded = instance.encodeIds(normalizedText);
+            const tokenCount = Array.from(encoded ?? []).length;
+            return {
+                ok: true,
+                tokenCount,
+                source: 'sillytavern_sentencepiece_tokenizer',
+                tokenizerModel: canonicalModel,
+                detail: '',
+            };
+        }
+
+        const tiktoken = helpers.getTiktokenTokenizer(canonicalModel);
+        if (!tiktoken || typeof tiktoken.encode !== 'function') {
+            throw new Error(`SillyTavern could not resolve a tokenizer implementation for "${canonicalModel}".`);
+        }
+
+        const tokenCount = Array.from(tiktoken.encode(normalizedText)).length;
+        return {
+            ok: true,
+            tokenCount,
+            source: 'sillytavern_tiktoken',
+            tokenizerModel: canonicalModel,
+            detail: '',
+        };
+    } catch (error) {
+        return {
+            ok: false,
+            tokenCount: null,
+            source: 'unavailable',
+            tokenizerModel: canonicalModel,
+            detail: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+
 function buildUserDirectoriesListGetter(moduleNamespace, getUserDirectories, getAllUserHandles) {
     const directGetter = resolveModuleFunction(moduleNamespace, 'getUserDirectoriesList');
     if (typeof directGetter === 'function') {
@@ -256,6 +394,8 @@ async function runCompatibilityProbe(trySaveChat) {
 module.exports = {
     COMPAT_DIR_NAME,
     buildUserDirectoriesListGetter,
+    countTextTokensWithSt,
+    resolveTokenizerModelHint,
     initializeStRuntime,
     getCompatibilitySnapshot,
     getUserDirectories,

@@ -1,8 +1,9 @@
-import { fetchCapabilities, getStructuredErrorFromApi } from './backend-api.js';
+import { fetchCapabilities, fetchChatState, getStructuredErrorFromApi } from './backend-api.js';
 import { sendFrontendLogEvent } from './logs/retry-log.js';
 import { createStructuredError } from './retry-error.js';
 import { writeSettings, readSettings } from './settings.js';
 import { getChatIdentity, getContext } from './st-context.js';
+import { PROTOCOL_VERSION } from './constants.js';
 import { createRuntime } from './core/runtime.js';
 import { isRunningLikeState } from './core/run-state.js';
 import { createRenderer } from './ui/render.js';
@@ -50,7 +51,8 @@ export function bootRetryMobile() {
     backendPort = {
         ...baseBackendPort,
         startJob(payload) {
-            void baseBackendPort.startJob(payload)
+            void buildStartPayload(payload)
+                .then((startPayload) => baseBackendPort.startJob(startPayload))
                 .then((result) => {
                     if (!result?.jobId) {
                         throw createStructuredError(
@@ -437,6 +439,27 @@ export function bootRetryMobile() {
         if (fallbackJobId) {
             runtime.activeJobId = fallbackJobId;
         }
+    }
+
+    async function buildStartPayload(payload) {
+        const context = getContext();
+        const chatState = await fetchChatState(payload.chatIdentity);
+
+        return {
+            ...payload,
+            clientProtocolVersion: PROTOCOL_VERSION,
+            sessionId: runtime.sessionId || '',
+            expectedPreviousGeneration: Number(chatState?.currentGeneration) || 0,
+            visibilityState: document.visibilityState || 'visible',
+            capturedChatIntegrity: String(context?.chatMetadata?.integrity || ''),
+            capturedChatLength: Array.isArray(context?.chat) ? context.chat.length : 0,
+            tokenizerDescriptor: buildTokenizerDescriptor(context),
+        };
+    }
+
+    function buildTokenizerDescriptor(context) {
+        const source = context?.chatMetadata?.tokenizer || context?.chatMetadata?.tokenizer_name || '';
+        return source ? { source: String(source) } : null;
     }
 
     function syncRuntimeFromFsm(fsm) {
