@@ -2,6 +2,7 @@ import { createStructuredError } from './retry-error.js';
 import { BACKEND_PLUGIN_ID } from './constants.js';
 
 const BASE_URL = `/api/plugins/${BACKEND_PLUGIN_ID}`;
+let requestHeadersHelperPromise = null;
 
 export async function startBackendJob(payload) {
     return requestJson(`${BASE_URL}/start`, {
@@ -179,11 +180,10 @@ export async function postJobLogEvent(jobId, payload) {
 }
 
 async function requestJson(url, options) {
+    const headers = await buildRequestHeaders(options?.headers);
     const response = await fetch(url, {
         credentials: 'same-origin',
-        headers: {
-            'Content-Type': 'application/json',
-        },
+        headers,
         ...options,
     });
 
@@ -206,6 +206,61 @@ async function requestJson(url, options) {
     }
 
     return data;
+}
+
+async function buildRequestHeaders(extraHeaders) {
+    const helper = await resolveRequestHeadersHelper();
+    const baseHeaders = typeof helper === 'function'
+        ? safeGetRequestHeaders(helper)
+        : {
+            'Content-Type': 'application/json',
+        };
+
+    return {
+        ...baseHeaders,
+        ...(extraHeaders || {}),
+    };
+}
+
+async function resolveRequestHeadersHelper() {
+    if (typeof globalThis.getRequestHeaders === 'function') {
+        return globalThis.getRequestHeaders;
+    }
+
+    const contextHelper = globalThis.window?.SillyTavern?.getContext?.()?.getRequestHeaders;
+    if (typeof contextHelper === 'function') {
+        return contextHelper;
+    }
+
+    requestHeadersHelperPromise ??= loadStRequestHeadersHelper();
+    return requestHeadersHelperPromise;
+}
+
+async function loadStRequestHeadersHelper() {
+    try {
+        const scriptModuleUrl = new URL('../../../../../script.js', import.meta.url);
+        const scriptModule = await import(scriptModuleUrl);
+        return typeof scriptModule?.getRequestHeaders === 'function'
+            ? scriptModule.getRequestHeaders
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function safeGetRequestHeaders(helper) {
+    try {
+        const headers = helper();
+        if (headers && typeof headers === 'object') {
+            return headers;
+        }
+    } catch {
+        // Fall back to JSON headers if SillyTavern's helper is unavailable.
+    }
+
+    return {
+        'Content-Type': 'application/json',
+    };
 }
 
 export function getStructuredErrorFromApi(error, fallbackMessage) {
