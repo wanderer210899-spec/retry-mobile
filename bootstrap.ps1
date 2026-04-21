@@ -1,12 +1,44 @@
-$RepoBranchArgument = if ($args.Count -gt 0) { [string]$args[0] } else { '' }
+param(
+    [Parameter(Position = 0)]
+    [string]$Branch = '',
+
+    [Alias('b')]
+    [string]$BranchOverride = '',
+
+    [switch]$Help
+)
+
 $ErrorActionPreference = 'Stop'
 
 $RepoUrl = 'https://github.com/wanderer210899-spec/retry-mobile.git'
-# BOOTSTRAP_BRANCH: the default branch cloned when no argument or env var is supplied.
-# Update this string whenever the canonical release branch is renamed or merged to main.
-$BootstrapBranch = 'feature/screen_off_initial_generation'
-$RepoBranch = if ($RepoBranchArgument) {
-    $RepoBranchArgument
+# BOOTSTRAP_BRANCH: the default branch cloned when no CLI override or env var is supplied.
+$BootstrapBranch = 'main'
+
+if ($Help) {
+    @'
+Usage:
+  irm <bootstrap-url> | iex
+  & ([scriptblock]::Create((irm <bootstrap-url>))) <branch>
+  & ([scriptblock]::Create((irm <bootstrap-url>))) -Branch <branch>
+
+Override precedence:
+  1. CLI branch argument
+  2. RETRY_MOBILE_BRANCH environment variable
+  3. main
+'@ | Write-Host
+    exit 0
+}
+
+$CliBranch = if ($BranchOverride) {
+    [string]$BranchOverride
+} elseif ($Branch) {
+    [string]$Branch
+} else {
+    ''
+}
+
+$RepoBranch = if ($CliBranch) {
+    $CliBranch
 } elseif ($env:RETRY_MOBILE_BRANCH) {
     [string]$env:RETRY_MOBILE_BRANCH
 } else {
