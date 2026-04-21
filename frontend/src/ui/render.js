@@ -8,8 +8,7 @@ export function createRenderer({ runtime }) {
             return;
         }
 
-        const machine = runtime.jobMachine;
-        const snapshot = machine.getSnapshot();
+        const snapshot = getControlSnapshot(runtime);
         const state = snapshot.phase;
         const activeStatus = snapshot.activeStatus;
         const errorText = shouldShowError(snapshot)
@@ -74,16 +73,27 @@ export function createRenderer({ runtime }) {
     };
 }
 
+function getControlSnapshot(runtime) {
+    const context = runtime.retryFsm?.getContext?.() || null;
+    const phase = context?.state || 'idle';
+    const activeStatus = runtime.activeJobStatus
+        || context?.lastTerminalResult?.status
+        || null;
+
+    return {
+        phase,
+        activeStatus,
+        error: runtime.controlError || context?.error || null,
+        transport: 'healthy',
+    };
+}
+
 function shouldShowError(snapshot) {
     if (!snapshot?.error) {
         return false;
     }
 
-    return snapshot.phase !== 'waiting_native'
-        && snapshot.phase !== 'backend_running'
-        && snapshot.phase !== 'recovering'
-        && snapshot.phase !== 'completing'
-        && snapshot.phase !== 'stopping';
+    return snapshot.phase !== 'running';
 }
 
 function renderStat(title, value) {

@@ -27,12 +27,16 @@ export function resolveRunStateFromStatus(status) {
 export function formatStateLabel(state) {
     switch (state) {
         case JOB_PHASE.ARMED:
+        case 'armed':
             return 'Armed for next qualifying request';
+        case 'capturing':
+            return 'Capturing request and starting backend handoff';
         case JOB_PHASE.RESERVING:
             return 'Reserving backend job';
         case JOB_PHASE.WAITING_NATIVE:
             return 'Waiting for native first reply';
         case JOB_PHASE.BACKEND_RUNNING:
+        case 'running':
             return 'Retry loop active';
         case JOB_PHASE.STOPPING:
             return 'Stopping';
@@ -68,6 +72,10 @@ export function formatStateLabel(state) {
 }
 
 export function formatVisibleStateLabel(state, status, transport = 'healthy') {
+    if (state === 'capturing') {
+        return formatStateLabel(state);
+    }
+
     if ((state === JOB_PHASE.RECOVERING || state === JOB_PHASE.BACKEND_RUNNING)
         && transport !== 'healthy') {
         return 'Reconnecting to backend';
@@ -114,6 +122,9 @@ export function formatVisibleStateLabel(state, status, transport = 'healthy') {
 
 export function isRunningLikeState(state) {
     return state === JOB_PHASE.ARMED
+        || state === 'armed'
+        || state === 'capturing'
+        || state === 'running'
         || state === JOB_PHASE.RESERVING
         || state === JOB_PHASE.WAITING_NATIVE
         || state === JOB_PHASE.BACKEND_RUNNING

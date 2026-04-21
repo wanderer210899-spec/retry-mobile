@@ -30,6 +30,7 @@ export function createSystemController({
     runtime,
     render,
     setJobError,
+    clearJobError,
     armPluginFromUi,
     stopPlugin,
 }) {
@@ -124,7 +125,7 @@ export function createSystemController({
             return;
         }
 
-        runtime.jobMachine.clearError();
+        clearJobError?.();
         showToast(
             'success',
             EXTENSION_NAME,

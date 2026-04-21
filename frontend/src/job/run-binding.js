@@ -49,6 +49,38 @@ export function readActiveRunBinding(chatIdentity, storage = getSessionStorage()
     }
 }
 
+export function findLatestActiveRunBinding(sessionId, storage = getSessionStorage()) {
+    const sessionKey = String(sessionId || '').trim();
+    if (!sessionKey || !storage) {
+        return null;
+    }
+
+    const bindings = [];
+    try {
+        for (let index = 0; index < storage.length; index += 1) {
+            const key = storage.key(index);
+            if (!key || !key.startsWith(STORAGE_PREFIX)) {
+                continue;
+            }
+
+            const raw = storage.getItem(key);
+            if (!raw) {
+                continue;
+            }
+
+            const binding = normalizeBinding(JSON.parse(raw));
+            if (binding?.sessionId === sessionKey) {
+                bindings.push(binding);
+            }
+        }
+    } catch {
+        return null;
+    }
+
+    bindings.sort((left, right) => Date.parse(right.updatedAt || 0) - Date.parse(left.updatedAt || 0));
+    return bindings[0] || null;
+}
+
 export function writeActiveRunBinding(binding, storage = getSessionStorage()) {
     const normalized = normalizeBinding(binding);
     if (!normalized?.chatKey || !storage) {

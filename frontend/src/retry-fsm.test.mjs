@@ -722,6 +722,91 @@ test('late jobStarted after stop during CAPTURING cancels the orphaned backend j
     assert.equal(logger.errors.at(-1)?.transition, 'jobStarted');
 });
 
+test('restoreRunning resumes an active backend job directly into RUNNING on boot', () => {
+    const { fsm, calls } = createHarness({
+        initialIntent: {
+            mode: 'toggle',
+            engaged: true,
+            singleTarget: null,
+            settings: {
+                nativeGraceSeconds: 30,
+            },
+        },
+    });
+
+    const chatIdentity = {
+        kind: 'character',
+        chatId: 'chat-1',
+        groupId: null,
+    };
+
+    const running = fsm.restoreRunning({
+        status: {
+            jobId: 'job-1',
+            runId: 'run-restore',
+            state: 'running',
+            chatIdentity,
+        },
+    });
+
+    assert.equal(running.state, RetryState.RUNNING);
+    assert.equal(running.jobId, 'job-1');
+    assert.equal(running.runId, 'run-restore');
+    assert.equal(running.pollingToken, 'poll:job-1');
+    assert.deepEqual(lastCall(calls, 'startPolling')?.args, [
+        'job-1',
+        lastCall(calls, 'startPolling')?.args[1],
+        lastCall(calls, 'startPolling')?.args[2],
+    ]);
+    assert.deepEqual(lastCall(calls, 'setGeneratingIndicator')?.args[0], chatIdentity);
+});
+
+test('restoreRunning from CAPTURING adopts an attached running job without cancellation cleanup', () => {
+    const { fsm, calls } = createHarness();
+    const chatIdentity = {
+        kind: 'character',
+        chatId: 'chat-1',
+        groupId: null,
+    };
+    const target = {
+        chatIdentity,
+        assistantAnchorId: 'assistant-anchor-1',
+    };
+
+    fsm.arm({
+        chatIdentity,
+        intent: {
+            mode: 'toggle',
+        },
+        target,
+    });
+    fsm.capture({
+        request: {
+            messages: ['hello'],
+        },
+        target,
+    });
+
+    const running = fsm.restoreRunning({
+        status: {
+            jobId: 'job-attach',
+            runId: 'run-1',
+            state: 'running',
+            chatIdentity,
+        },
+        target,
+    });
+
+    assert.equal(running.state, RetryState.RUNNING);
+    assert.equal(running.jobId, 'job-attach');
+    assert.deepEqual(lastCall(calls, 'unsubscribeNativeObserver')?.args[0], {
+        runId: 'run-1',
+        chatIdentity,
+        target,
+    });
+    assert.equal(lastCall(calls, 'cancelJob'), null);
+});
+
 test('userStop from RUNNING cancels the backend job, disengages intent, and returns to IDLE', () => {
     const { fsm, calls, getIntent } = createHarness();
     const chatIdentity = {

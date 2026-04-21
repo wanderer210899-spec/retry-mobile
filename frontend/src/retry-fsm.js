@@ -46,6 +46,7 @@ export function createRetryFsm({
         jobStarted,
         jobCompleted,
         jobFailed,
+        restoreRunning,
         resume,
         userStop,
     };
@@ -251,6 +252,54 @@ export function createRetryFsm({
         }
 
         context = nextContext;
+        return getContext();
+    }
+
+    function restoreRunning(payload = {}) {
+        if (!isState(context, RetryState.IDLE, RetryState.ARMED, RetryState.CAPTURING)) {
+            return illegalTransition('restoreRunning', [RetryState.IDLE, RetryState.ARMED, RetryState.CAPTURING], payload);
+        }
+
+        const previous = context;
+        if (previous.state === RetryState.ARMED) {
+            leaveArmed(previous);
+        } else if (previous.state === RetryState.CAPTURING) {
+            leaveCapturing(previous);
+        }
+
+        const status = clonePlain(payload.status) || null;
+        const jobId = stringOrNull(payload.jobId) || stringOrNull(status?.jobId);
+        if (!jobId) {
+            return illegalTransition('restoreRunning', [RetryState.IDLE, RetryState.ARMED, RetryState.CAPTURING], {
+                ...payload,
+                reason: 'missing_job_id',
+            });
+        }
+
+        const runningContext = normalizeContextForState({
+            ...previous,
+            state: RetryState.RUNNING,
+            intent: readIntentSnapshot(intentPort, previous.intent),
+            chatIdentity: clonePlain(payload.chatIdentity)
+                || clonePlain(status?.chatIdentity)
+                || previous.chatIdentity
+                || null,
+            capturedRequest: null,
+            captureFingerprint: null,
+            target: clonePlain(payload.target) || clonePlain(previous.target) || null,
+            runId: stringOrNull(payload.runId) || stringOrNull(status?.runId) || previous.runId || createRunId(),
+            jobId,
+            pollingToken: null,
+            pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
+            lastTerminalResult: null,
+            error: null,
+        });
+
+        const entryPatch = enterRunning(runningContext);
+        context = normalizeContextForState({
+            ...runningContext,
+            ...entryPatch,
+        });
         return getContext();
     }
 

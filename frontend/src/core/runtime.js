@@ -23,6 +23,8 @@ export function createRuntime() {
         quickReplyStatus: null,
         capabilities: createDefaultCapabilities(),
         termuxAvailable: false,
+        retryFsm: null,
+        controlError: null,
         jobMachine: null,
         jobEffects: null,
         activeJobId: null,
@@ -40,6 +42,7 @@ export function createRuntime() {
             fingerprint: null,
             assistantMessageIndex: null,
         },
+        pendingNativeOutcome: null,
         log: {
             text: '',
             jobId: '',
