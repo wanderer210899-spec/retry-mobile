@@ -107,3 +107,188 @@ test('createArmCaptureSession ignores dry-run payloads and keeps the real captur
         global.window = originalWindow;
     }
 });
+
+test('createArmCaptureSession captures from GENERATE_AFTER_DATA when CHAT_COMPLETION_SETTINGS_READY never arrives', async () => {
+    const originalWindow = global.window;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        off(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((entry) => entry !== handler));
+        },
+        emit(eventName, payload) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of bucket) {
+                handler(payload);
+            }
+        },
+    };
+
+    const context = {
+        chat: [
+            {
+                is_user: true,
+                mes: 'fresh mobile send',
+            },
+        ],
+        eventTypes: {
+            CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
+            GENERATE_AFTER_DATA: 'generate_after_data',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+        getCurrentChatId() {
+            return 'chat-1';
+        },
+        characters: [],
+        characterId: null,
+        groupId: null,
+        name2: 'Kate',
+    };
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+
+    const captures = [];
+    const events = [];
+    const session = createArmCaptureSession({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+        onCapture(result) {
+            captures.push(result);
+        },
+        onEvent(eventName, summary) {
+            events.push([eventName, summary]);
+        },
+    });
+
+    try {
+        eventSource.emit('generate_after_data', {
+            type: 'normal',
+            chat_completion_source: 'custom',
+            messages: [{ role: 'user', content: 'hello' }],
+        });
+
+        await Promise.resolve();
+        assert.equal(captures.length, 1);
+        assert.equal(captures[0].ok, true);
+        assert.equal(captures[0].requestType, 'normal');
+        assert.equal(captures[0].fingerprint.userMessageText, 'fresh mobile send');
+        assert.deepEqual(events, []);
+    } finally {
+        session.stop();
+        global.window = originalWindow;
+    }
+});
+
+test('createArmCaptureSession ignores incomplete GENERATE_AFTER_DATA fallback payloads until the main capture event arrives', async () => {
+    const originalWindow = global.window;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        off(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((entry) => entry !== handler));
+        },
+        emit(eventName, payload) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of bucket) {
+                handler(payload);
+            }
+        },
+    };
+
+    const context = {
+        chat: [
+            {
+                is_user: true,
+                mes: 'fresh mobile send',
+            },
+        ],
+        eventTypes: {
+            CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
+            GENERATE_AFTER_DATA: 'generate_after_data',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+        getCurrentChatId() {
+            return 'chat-1';
+        },
+        characters: [],
+        characterId: null,
+        groupId: null,
+        name2: 'Kate',
+    };
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+
+    const captures = [];
+    const events = [];
+    const session = createArmCaptureSession({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+        onCapture(result) {
+            captures.push(result);
+        },
+        onEvent(eventName, summary) {
+            events.push([eventName, summary]);
+        },
+    });
+
+    try {
+        eventSource.emit('generate_after_data', {
+            type: 'normal',
+            prompt: 'preview only',
+        });
+
+        await Promise.resolve();
+        assert.equal(captures.length, 0);
+        assert.deepEqual(events, [
+            ['GENERATE_AFTER_DATA', 'Ignored fallback payload without required keys while armed.'],
+        ]);
+
+        eventSource.emit('chat_completion_settings_ready', {
+            type: 'normal',
+            chat_completion_source: 'custom',
+            messages: [{ role: 'user', content: 'hello' }],
+        });
+
+        await Promise.resolve();
+        assert.equal(captures.length, 1);
+        assert.equal(captures[0].ok, true);
+        assert.equal(captures[0].requestType, 'normal');
+    } finally {
+        session.stop();
+        global.window = originalWindow;
+    }
+});

@@ -27,10 +27,23 @@ export function createArmCaptureSession({
         );
     }
 
+    if (eventTypes.CHAT_COMPLETION_SETTINGS_READY) {
+        stopListening.push(
+            subscribeEvent(eventTypes.CHAT_COMPLETION_SETTINGS_READY, (payload) => {
+                void handleCapturePayload(payload, 'CHAT_COMPLETION_SETTINGS_READY');
+            }, context),
+        );
+    }
+
+    if (eventTypes.GENERATE_AFTER_DATA) {
+        stopListening.push(
+            subscribeEvent(eventTypes.GENERATE_AFTER_DATA, (payload) => {
+                void handleCapturePayload(payload, 'GENERATE_AFTER_DATA');
+            }, context),
+        );
+    }
+
     stopListening.push(
-        subscribeEvent(eventTypes.CHAT_COMPLETION_SETTINGS_READY, (payload) => {
-            void handleCapturePayload(payload);
-        }, context),
         subscribeEvent(eventTypes.CHAT_CHANGED, () => {
             if (closed) {
                 return;
@@ -65,7 +78,7 @@ export function createArmCaptureSession({
         stop: close,
     };
 
-    async function handleCapturePayload(payload) {
+    async function handleCapturePayload(payload, sourceEventName = 'CHAT_COMPLETION_SETTINGS_READY') {
         if (closed || capturePending) {
             return;
         }
@@ -79,14 +92,21 @@ export function createArmCaptureSession({
         // Those probes are diagnostics/capability checks, not real user sends, so they
         // must not consume the armed capture subscription.
         if (payload?.dryRun === true) {
-            onEvent?.('CHAT_COMPLETION_SETTINGS_READY', 'Ignored dry-run request while armed.');
+            onEvent?.(sourceEventName, 'Ignored dry-run request while armed.');
             return;
         }
 
         const requestType = normalizeRequestType(payload?.type);
         if (requestType === 'continue') {
-            onEvent?.('CHAT_COMPLETION_SETTINGS_READY', 'Ignored continue request while armed.');
+            onEvent?.(sourceEventName, 'Ignored continue request while armed.');
             return;
+        }
+
+        if (!payloadHasRequiredKeys(payload)) {
+            if (sourceEventName === 'GENERATE_AFTER_DATA') {
+                onEvent?.(sourceEventName, 'Ignored fallback payload without required keys while armed.');
+                return;
+            }
         }
 
         capturePending = true;
