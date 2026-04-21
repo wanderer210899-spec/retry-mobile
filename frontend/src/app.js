@@ -25,6 +25,7 @@ import {
     buildRestoreTarget,
     collectBootRestoreChatIdentities,
     getAttachedJobStatusFromStartError,
+    resolveCaptureTarget,
     resolveCaptureSubscriptionChatIdentity,
     shouldAttachRunningConflict,
 } from './app-recovery.js';
@@ -174,11 +175,21 @@ export function bootRetryMobile() {
             }
 
             runtime.controlError = null;
+            const current = retryFsm.getContext();
+            const chatIdentity = getChatIdentity(getContext());
+            const captureTarget = resolveCaptureTarget(
+                current,
+                result.fingerprint,
+                chatIdentity,
+            );
+            if (current.intent?.mode === 'single' && captureTarget) {
+                intentPort.saveSingleTarget?.(captureTarget);
+            }
             retryFsm.capture({
-                chatIdentity: getChatIdentity(getContext()),
+                chatIdentity,
                 request: result.capturedRequest,
                 fingerprint: result.fingerprint,
-                target: retryFsm.getContext().target,
+                target: captureTarget,
             });
             syncRuntimeFromFsm(retryFsm);
             render();
@@ -484,6 +495,17 @@ export function bootRetryMobile() {
         }
     }
 
+    function scheduleRestoreRetry() {
+        if (runtime.restoreRetryHandle) {
+            return;
+        }
+
+        runtime.restoreRetryHandle = window.setTimeout(() => {
+            runtime.restoreRetryHandle = 0;
+            void restoreControlState();
+        }, 250);
+    }
+
     async function restoreControlState() {
         if (retryFsm.getState() !== RetryState.IDLE) {
             return;
@@ -523,6 +545,13 @@ export function bootRetryMobile() {
                     render();
                     return;
                 }
+            }
+
+            if (intent?.engaged
+                && intent?.mode === 'toggle'
+                && !currentChatIdentity?.chatId) {
+                scheduleRestoreRetry();
+                return;
             }
 
             if (intent?.engaged

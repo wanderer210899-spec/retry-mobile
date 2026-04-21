@@ -640,6 +640,49 @@ test('jobCompleted in single mode only re-arms when the durable target identity 
     assert.deepEqual(rearmed.target, singleTarget);
 });
 
+test('jobCompleted in single mode re-arms when the saved user-turn target still matches', () => {
+    const singleTarget = {
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+        userMessageIndex: 4,
+    };
+    const { fsm } = createHarness({
+        initialIntent: {
+            mode: 'single',
+            engaged: false,
+            singleTarget: null,
+            settings: {},
+        },
+    });
+
+    fsm.arm({
+        chatIdentity: singleTarget.chatIdentity,
+        target: singleTarget,
+    });
+    fsm.capture({
+        request: {
+            messages: ['hello'],
+        },
+        target: singleTarget,
+    });
+    fsm.jobStarted({
+        jobId: 'job-1',
+        target: singleTarget,
+    });
+
+    const rearmed = fsm.jobCompleted({
+        status: {
+            state: 'completed',
+        },
+    });
+
+    assert.equal(rearmed.state, RetryState.ARMED);
+    assert.deepEqual(rearmed.target, singleTarget);
+});
+
 test('jobFailed from CAPTURING keeps durable intent armed instead of silently dropping the feature', () => {
     const { fsm } = createHarness({
         initialIntent: {

@@ -22,10 +22,51 @@ export function shouldAttachRunningConflict(fsmState, currentRunId, conflictRunI
 }
 
 export function resolveCaptureSubscriptionChatIdentity(fsmContext, fallbackChatIdentity = null) {
+    const mode = String(fsmContext?.intent?.mode || '');
+    if (mode === 'single') {
+        return cloneValue(fsmContext?.target?.chatIdentity)
+            || cloneValue(fsmContext?.chatIdentity)
+            || cloneValue(fallbackChatIdentity)
+            || null;
+    }
+
+    if (mode === 'toggle') {
+        return cloneValue(fallbackChatIdentity)
+            || cloneValue(fsmContext?.chatIdentity)
+            || null;
+    }
+
     return cloneValue(fsmContext?.target?.chatIdentity)
         || cloneValue(fsmContext?.chatIdentity)
         || cloneValue(fallbackChatIdentity)
         || null;
+}
+
+export function resolveCaptureTarget(fsmContext, fingerprint = null, fallbackChatIdentity = null) {
+    const existingTarget = cloneValue(fsmContext?.target) || null;
+    if (existingTarget) {
+        return existingTarget;
+    }
+
+    if (String(fsmContext?.intent?.mode || '') !== 'single') {
+        return null;
+    }
+
+    const chatIdentity = cloneValue(fingerprint?.chatIdentity)
+        || cloneValue(fallbackChatIdentity)
+        || null;
+    const userMessageIndex = Number.isInteger(fingerprint?.userMessageIndex)
+        ? fingerprint.userMessageIndex
+        : (Number.isInteger(fingerprint?.userIndexAtCapture) ? fingerprint.userIndexAtCapture : null);
+
+    if (!chatIdentity || userMessageIndex == null) {
+        return null;
+    }
+
+    return {
+        chatIdentity,
+        userMessageIndex,
+    };
 }
 
 export function collectBootRestoreChatIdentities({
@@ -77,7 +118,7 @@ export function buildBootArmPayload(intent, currentChatIdentity = null) {
     }
 
     const chatIdentity = cloneValue(currentChatIdentity) || null;
-    if (!chatIdentity) {
+    if (!chatIdentity?.chatId) {
         return null;
     }
 

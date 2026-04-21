@@ -728,6 +728,15 @@ function buildTargetKey(target) {
         return null;
     }
 
+    const userAnchorId = stringOrNull(
+        target.userAnchorId
+        || target.targetUserAnchorId
+        || target.userMessageId,
+    );
+    if (userAnchorId) {
+        return `user-anchor:${userAnchorId}`;
+    }
+
     const anchorId = stringOrNull(
         target.assistantAnchorId
         || target.retryMobileAssistantAnchorId
@@ -746,6 +755,14 @@ function buildTargetKey(target) {
     );
     if (chatKey && assistantIndex != null) {
         return `${chatKey}#${assistantIndex}`;
+    }
+
+    const userMessageIndex = numberOrNull(
+        target.userMessageIndex
+        ?? target.userIndexAtCapture,
+    );
+    if (chatKey && userMessageIndex != null) {
+        return `${chatKey}@user#${userMessageIndex}`;
     }
 
     return null;

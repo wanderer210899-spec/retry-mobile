@@ -1,0 +1,109 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { createArmCaptureSession } from './st-capture.js';
+
+test('createArmCaptureSession ignores dry-run payloads and keeps the real capture armed', async () => {
+    const originalWindow = global.window;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        off(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((entry) => entry !== handler));
+        },
+        emit(eventName, payload) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of bucket) {
+                handler(payload);
+            }
+        },
+    };
+
+    const context = {
+        chat: [
+            {
+                is_user: true,
+                mes: 'real user message',
+            },
+        ],
+        eventTypes: {
+            CHAT_COMPLETION_SETTINGS_READY: 'chat_completion_settings_ready',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+        getCurrentChatId() {
+            return 'chat-1';
+        },
+        characters: [],
+        characterId: null,
+        groupId: null,
+        name2: 'Kate',
+    };
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+
+    const captures = [];
+    const events = [];
+    const session = createArmCaptureSession({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+        onCapture(result) {
+            captures.push(result);
+        },
+        onCancel(error) {
+            captures.push({
+                ok: false,
+                error,
+            });
+        },
+        onEvent(eventName, summary) {
+            events.push([eventName, summary]);
+        },
+    });
+
+    try {
+        eventSource.emit('chat_completion_settings_ready', {
+            type: 'normal',
+            dryRun: true,
+            chat_completion_source: 'openai',
+            messages: [],
+        });
+
+        await Promise.resolve();
+        assert.equal(captures.length, 0);
+        assert.deepEqual(events, [
+            ['CHAT_COMPLETION_SETTINGS_READY', 'Ignored dry-run request while armed.'],
+        ]);
+
+        eventSource.emit('chat_completion_settings_ready', {
+            type: 'normal',
+            dryRun: false,
+            chat_completion_source: 'openai',
+            messages: [],
+        });
+
+        await Promise.resolve();
+        assert.equal(captures.length, 1);
+        assert.equal(captures[0].ok, true);
+        assert.equal(captures[0].fingerprint.userMessageText, 'real user message');
+    } finally {
+        session.stop();
+        global.window = originalWindow;
+    }
+});

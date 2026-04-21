@@ -6,6 +6,7 @@ import {
     buildRestoreTarget,
     collectBootRestoreChatIdentities,
     getAttachedJobStatusFromStartError,
+    resolveCaptureTarget,
     resolveCaptureSubscriptionChatIdentity,
     shouldAttachRunningConflict,
 } from './app-recovery.js';
@@ -45,6 +46,44 @@ test('resolveCaptureSubscriptionChatIdentity prefers the durable target chat', (
             assistantAnchorId: 'assistant-anchor-1',
         },
     }, fallbackChatIdentity), targetChatIdentity);
+});
+
+test('resolveCaptureSubscriptionChatIdentity follows the live chat for toggle mode', () => {
+    const previousChatIdentity = {
+        kind: 'character',
+        chatId: 'previous-chat',
+        groupId: null,
+    };
+    const fallbackChatIdentity = {
+        kind: 'character',
+        chatId: 'visible-chat',
+        groupId: null,
+    };
+
+    assert.deepEqual(resolveCaptureSubscriptionChatIdentity({
+        intent: { mode: 'toggle' },
+        chatIdentity: previousChatIdentity,
+        target: null,
+    }, fallbackChatIdentity), fallbackChatIdentity);
+});
+
+test('resolveCaptureTarget derives a durable single target from the captured user turn', () => {
+    const chatIdentity = {
+        kind: 'character',
+        chatId: 'single-chat',
+        groupId: null,
+    };
+
+    assert.deepEqual(resolveCaptureTarget({
+        intent: { mode: 'single' },
+        target: null,
+    }, {
+        chatIdentity,
+        userMessageIndex: 4,
+    }, chatIdentity), {
+        chatIdentity,
+        userMessageIndex: 4,
+    });
 });
 
 test('shouldAttachRunningConflict only adopts matching conflicts for the active capture run', () => {
@@ -119,6 +158,19 @@ test('buildBootArmPayload refuses to re-arm single mode without a durable target
     }, {
         kind: 'character',
         chatId: 'visible-chat',
+        groupId: null,
+    }), null);
+});
+
+test('buildBootArmPayload refuses to re-arm toggle mode before the visible chat is ready', () => {
+    assert.equal(buildBootArmPayload({
+        mode: 'toggle',
+        engaged: true,
+        singleTarget: null,
+        settings: {},
+    }, {
+        kind: 'character',
+        chatId: '',
         groupId: null,
     }), null);
 });

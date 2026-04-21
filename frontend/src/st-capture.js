@@ -75,6 +75,14 @@ export function createArmCaptureSession({
             return;
         }
 
+        // SillyTavern emits CHAT_COMPLETION_SETTINGS_READY for dry-run prompt probes too.
+        // Those probes are diagnostics/capability checks, not real user sends, so they
+        // must not consume the armed capture subscription.
+        if (payload?.dryRun === true) {
+            onEvent?.('CHAT_COMPLETION_SETTINGS_READY', 'Ignored dry-run request while armed.');
+            return;
+        }
+
         const requestType = normalizeRequestType(payload?.type);
         if (requestType === 'continue') {
             onEvent?.('CHAT_COMPLETION_SETTINGS_READY', 'Ignored continue request while armed.');
