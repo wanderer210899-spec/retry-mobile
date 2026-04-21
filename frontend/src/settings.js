@@ -14,8 +14,16 @@ export function writeSettings(context, nextSettings) {
         return false;
     }
 
+    const currentSource = context.extensionSettings?.[SETTINGS_KEY];
+    const preservedFields = currentSource && typeof currentSource === 'object'
+        ? { ...currentSource }
+        : {};
+
     context.extensionSettings ??= {};
-    context.extensionSettings[SETTINGS_KEY] = normalizeSettings(nextSettings || {});
+    context.extensionSettings[SETTINGS_KEY] = {
+        ...preservedFields,
+        ...normalizeSettings(nextSettings || {}),
+    };
     context.saveSettingsDebounced?.();
     return true;
 }

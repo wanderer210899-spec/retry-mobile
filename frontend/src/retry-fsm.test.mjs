@@ -14,6 +14,7 @@ function createHarness({
         singleTarget: null,
         settings: {
             targetAcceptedCount: 2,
+            nativeGraceSeconds: 30,
         },
     },
 } = {}) {
@@ -27,6 +28,8 @@ function createHarness({
     };
 
     let runCounter = 0;
+    let pollStatusHandler = null;
+    let pollErrorHandler = null;
     let intentState = {
         mode: initialIntent.mode || 'off',
         engaged: Boolean(initialIntent.engaged),
@@ -106,8 +109,10 @@ function createHarness({
         startJob(payload) {
             calls.push({ port: 'backend', method: 'startJob', args: [payload] });
         },
-        startPolling(jobId, payload) {
-            calls.push({ port: 'backend', method: 'startPolling', args: [jobId, payload] });
+        startPolling(jobId, onStatus, onError) {
+            pollStatusHandler = onStatus;
+            pollErrorHandler = onError;
+            calls.push({ port: 'backend', method: 'startPolling', args: [jobId, onStatus, onError] });
             return `poll:${jobId}`;
         },
         stopPolling(pollingToken) {
@@ -149,6 +154,12 @@ function createHarness({
                 },
             };
         },
+        async emitPolledStatus(status) {
+            await pollStatusHandler?.(status);
+        },
+        async emitPollError(error) {
+            await pollErrorHandler?.(error);
+        },
     };
 }
 
@@ -169,6 +180,7 @@ test('createInitialRetryContext exposes the explicit FSM context shape', () => {
         },
         chatIdentity: null,
         capturedRequest: null,
+        captureFingerprint: null,
         target: null,
         runId: null,
         jobId: null,
@@ -253,6 +265,10 @@ test('capture leaves ARMED, enters CAPTURING, and starts backend handoff through
         chatIdentity,
         assistantAnchorId: 'assistant-anchor-1',
     };
+    const fingerprint = {
+        chatIdentity,
+        userMessageText: 'hello',
+    };
 
     fsm.arm({
         chatIdentity,
@@ -266,6 +282,7 @@ test('capture leaves ARMED, enters CAPTURING, and starts backend handoff through
         request: {
             messages: ['hello'],
         },
+        fingerprint,
         target,
     });
 
@@ -287,16 +304,26 @@ test('capture leaves ARMED, enters CAPTURING, and starts backend handoff through
             singleTarget: null,
             settings: {
                 targetAcceptedCount: 2,
+                nativeGraceSeconds: 30,
             },
+        },
+        runConfig: {
+            targetAcceptedCount: 2,
+            nativeGraceSeconds: 30,
         },
         settings: {
             targetAcceptedCount: 2,
+            nativeGraceSeconds: 30,
         },
+        nativeGraceSeconds: 30,
+        targetFingerprint: fingerprint,
     });
     assert.deepEqual(lastCall(calls, 'subscribeNativeObserver')?.args[0], {
         runId: 'run-1',
         chatIdentity,
         target,
+        nativeGraceSeconds: 30,
+        fingerprint,
     });
 });
 
@@ -317,7 +344,7 @@ test('illegal transitions no-op and log a structured developer error', () => {
     assert.equal(logger.errors[0].state, RetryState.IDLE);
 });
 
-test('jobStarted enters RUNNING, starts polling, and applies the generating indicator', () => {
+test('jobStarted enters RUNNING, starts callback-driven polling, and applies the generating indicator', () => {
     const { fsm, calls } = createHarness();
     const chatIdentity = {
         kind: 'character',
@@ -358,13 +385,57 @@ test('jobStarted enters RUNNING, starts polling, and applies the generating indi
     });
     assert.deepEqual(lastCall(calls, 'startPolling')?.args, [
         'job-1',
-        {
-            runId: 'run-1',
-            chatIdentity,
-            target,
-        },
+        lastCall(calls, 'startPolling')?.args[1],
+        lastCall(calls, 'startPolling')?.args[2],
     ]);
+    assert.equal(typeof lastCall(calls, 'startPolling')?.args[1], 'function');
+    assert.equal(typeof lastCall(calls, 'startPolling')?.args[2], 'function');
     assert.deepEqual(lastCall(calls, 'setGeneratingIndicator')?.args[0], chatIdentity);
+});
+
+test('terminal poll status re-enters the FSM through the polling callbacks', async () => {
+    const { fsm, emitPolledStatus } = createHarness();
+    const chatIdentity = {
+        kind: 'character',
+        chatId: 'chat-1',
+        groupId: null,
+    };
+    const target = {
+        chatIdentity,
+        assistantAnchorId: 'assistant-anchor-1',
+    };
+
+    fsm.arm({
+        chatIdentity,
+        intent: {
+            mode: 'toggle',
+        },
+        target,
+    });
+    fsm.capture({
+        request: {
+            messages: ['hello'],
+        },
+        fingerprint: {
+            chatIdentity,
+            userMessageText: 'hello',
+        },
+        target,
+    });
+    fsm.jobStarted({
+        jobId: 'job-1',
+        target,
+    });
+
+    await emitPolledStatus({
+        jobId: 'job-1',
+        state: 'completed',
+    });
+
+    const state = fsm.getContext();
+    assert.equal(state.state, RetryState.ARMED);
+    assert.equal(state.jobId, null);
+    assert.equal(state.runId, 'run-2');
 });
 
 test('resume is an internal RUNNING self-transition that does not churn polling or indicator entry actions', () => {

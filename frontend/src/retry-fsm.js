@@ -14,6 +14,7 @@ export function createInitialRetryContext(overrides = {}) {
         intent,
         chatIdentity: clonePlain(overrides.chatIdentity) || null,
         capturedRequest: clonePlain(overrides.capturedRequest) || null,
+        captureFingerprint: clonePlain(overrides.captureFingerprint) || null,
         target: clonePlain(overrides.target) || null,
         runId: stringOrNull(overrides.runId),
         jobId: stringOrNull(overrides.jobId),
@@ -82,6 +83,7 @@ export function createRetryFsm({
             intent: nextIntent,
             chatIdentity: clonePlain(payload.chatIdentity) || context.chatIdentity || null,
             capturedRequest: null,
+            captureFingerprint: null,
             target: nextTarget,
             runId: createRunId(),
             jobId: null,
@@ -115,6 +117,7 @@ export function createRetryFsm({
             state: RetryState.CAPTURING,
             chatIdentity: clonePlain(payload.chatIdentity) || context.chatIdentity || null,
             capturedRequest,
+            captureFingerprint: clonePlain(payload.fingerprint ?? payload.captureFingerprint) || null,
             target: clonePlain(payload.target) || context.target || null,
             error: null,
         });
@@ -145,6 +148,7 @@ export function createRetryFsm({
             state: RetryState.RUNNING,
             chatIdentity: clonePlain(payload.chatIdentity) || context.chatIdentity || null,
             capturedRequest: null,
+            captureFingerprint: null,
             target: clonePlain(payload.target) || context.target || null,
             runId: stringOrNull(payload.runId) || context.runId || createRunId(),
             jobId,
@@ -183,6 +187,7 @@ export function createRetryFsm({
             intent: nextIntent,
             chatIdentity: clonePlain(payload.chatIdentity) || previous.chatIdentity || null,
             capturedRequest: null,
+            captureFingerprint: null,
             target: nextTarget,
             runId: nextState === RetryState.ARMED ? createRunId() : null,
             jobId: null,
@@ -231,6 +236,7 @@ export function createRetryFsm({
             intent: nextIntent,
             chatIdentity: clonePlain(payload.chatIdentity) || previous.chatIdentity || null,
             capturedRequest: null,
+            captureFingerprint: null,
             target: nextTarget,
             runId: nextState === RetryState.ARMED ? createRunId() : null,
             jobId: null,
@@ -320,6 +326,7 @@ export function createRetryFsm({
             state: RetryState.IDLE,
             intent: nextIntent,
             capturedRequest: null,
+            captureFingerprint: null,
             target: null,
             runId: null,
             jobId: null,
@@ -347,19 +354,32 @@ export function createRetryFsm({
     }
 
     function enterCapturing(nextContext) {
-        backendPort.startJob?.({
+        const nativeGraceSeconds = numberOrNull(nextContext.intent?.settings?.nativeGraceSeconds);
+        const startPayload = {
             runId: nextContext.runId,
             chatIdentity: clonePlain(nextContext.chatIdentity),
             capturedRequest: clonePlain(nextContext.capturedRequest),
             target: clonePlain(nextContext.target),
             intent: clonePlain(nextContext.intent),
+            runConfig: clonePlain(nextContext.intent.settings),
             settings: clonePlain(nextContext.intent.settings),
-        });
-        stPort.subscribeNativeObserver?.({
+            ...(nativeGraceSeconds != null ? { nativeGraceSeconds } : {}),
+            ...(nextContext.captureFingerprint ? {
+                targetFingerprint: clonePlain(nextContext.captureFingerprint),
+            } : {}),
+        };
+        backendPort.startJob?.(startPayload);
+
+        const nativeObserverPayload = {
             runId: nextContext.runId,
             chatIdentity: clonePlain(nextContext.chatIdentity),
             target: clonePlain(nextContext.target),
-        });
+            ...(nativeGraceSeconds != null ? { nativeGraceSeconds } : {}),
+            ...(nextContext.captureFingerprint ? {
+                fingerprint: clonePlain(nextContext.captureFingerprint),
+            } : {}),
+        };
+        stPort.subscribeNativeObserver?.(nativeObserverPayload);
     }
 
     function leaveCapturing(previous) {
@@ -371,11 +391,11 @@ export function createRetryFsm({
     }
 
     function enterRunning(nextContext) {
-        const pollingToken = backendPort.startPolling?.(nextContext.jobId, {
-            runId: nextContext.runId,
-            chatIdentity: clonePlain(nextContext.chatIdentity),
-            target: clonePlain(nextContext.target),
-        }) || null;
+        const pollingToken = backendPort.startPolling?.(
+            nextContext.jobId,
+            (status) => handlePollingStatus(status),
+            (error) => handlePollingError(error),
+        ) || null;
 
         backendPort.reportFrontendPresence?.(nextContext.jobId, {
             reason: 'running_entry',
@@ -477,6 +497,49 @@ export function createRetryFsm({
             reason: 'capture_aborted_before_job_started',
         });
     }
+
+    function handlePollingStatus(status) {
+        if (!isState(context, RetryState.RUNNING)) {
+            return;
+        }
+
+        const statusState = stringOrNull(status?.state);
+        if (!statusState) {
+            return;
+        }
+
+        if (statusState === 'completed') {
+            jobCompleted({ status });
+            return;
+        }
+
+        if (statusState === 'failed' || statusState === 'cancelled') {
+            const fallbackMessage = statusState === 'cancelled'
+                ? 'Retry Mobile backend job was cancelled.'
+                : 'Retry Mobile backend job failed.';
+            jobFailed({
+                status,
+                error: normalizeStructuredError(
+                    status?.structuredError || status?.error,
+                    statusState === 'cancelled' ? 'retry_job_cancelled' : 'retry_job_failed',
+                    fallbackMessage,
+                ),
+            });
+        }
+    }
+
+    function handlePollingError(error) {
+        logDeveloperError(logger, {
+            transition: 'pollingError',
+            state: context.state,
+            jobId: context.jobId,
+            error: normalizeStructuredError(
+                error,
+                'handoff_request_failed',
+                'Retry Mobile backend polling failed.',
+            ),
+        });
+    }
 }
 
 function normalizeContextForState(nextContext) {
@@ -485,6 +548,7 @@ function normalizeContextForState(nextContext) {
         intent: normalizeIntent(nextContext.intent),
         chatIdentity: clonePlain(nextContext.chatIdentity) || null,
         capturedRequest: clonePlain(nextContext.capturedRequest) || null,
+        captureFingerprint: clonePlain(nextContext.captureFingerprint) || null,
         target: clonePlain(nextContext.target) || null,
         runId: stringOrNull(nextContext.runId),
         jobId: stringOrNull(nextContext.jobId),
@@ -499,6 +563,7 @@ function normalizeContextForState(nextContext) {
             return {
                 ...normalized,
                 capturedRequest: null,
+                captureFingerprint: null,
                 target: null,
                 runId: null,
                 jobId: null,
@@ -509,6 +574,7 @@ function normalizeContextForState(nextContext) {
             return {
                 ...normalized,
                 capturedRequest: null,
+                captureFingerprint: null,
                 jobId: null,
                 pollingToken: null,
                 pendingVisibleRender: null,
@@ -525,6 +591,7 @@ function normalizeContextForState(nextContext) {
             return {
                 ...normalized,
                 capturedRequest: null,
+                captureFingerprint: null,
             };
     }
 }
