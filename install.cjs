@@ -3,7 +3,7 @@ const path = require('node:path');
 const process = require('node:process');
 const readline = require('node:readline/promises');
 
-const { resolveInstallSource, writeInstallSource } = require('./server/install-source');
+const { readInstallSourceFromRoot, resolveInstallSource, writeInstallSource } = require('./server/install-source');
 const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./server/plugin-meta');
 
 const LEGACY_PLUGIN_ID = 'auto-reroll';
@@ -528,12 +528,22 @@ function installBackend(layout) {
     replaceDirectory(BACKEND_SOURCE, layout.backendTarget);
     fs.copyFileSync(path.join(SOURCE_ROOT, RELEASE_MANIFEST_FILE), path.join(layout.backendTarget, RELEASE_MANIFEST_FILE));
     writeInstallSource(layout.backendTarget, buildInstalledMetadata(layout.installSource));
+    verifyInstalledTarget(layout.backendTarget, {
+        kind: 'backend',
+        branch: layout.installSource?.branch || DEFAULT_BRANCH,
+        requiredFiles: ['index.js', RELEASE_MANIFEST_FILE],
+    });
 }
 
 function installGlobalFrontend(layout) {
     ensureWritable(layout.globalExtensionsDir, true);
     replaceDirectory(FRONTEND_SOURCE, layout.globalFrontendTarget);
     writeInstallSource(layout.globalFrontendTarget, buildInstalledMetadata(layout.installSource));
+    verifyInstalledTarget(layout.globalFrontendTarget, {
+        kind: 'frontend',
+        branch: layout.installSource?.branch || DEFAULT_BRANCH,
+        requiredFiles: ['src/app.js', 'manifest.json'],
+    });
 }
 
 function installFrontendForProfiles(layout, profiles) {
@@ -541,6 +551,11 @@ function installFrontendForProfiles(layout, profiles) {
         ensureWritable(profile.extensionsDir, true);
         replaceDirectory(FRONTEND_SOURCE, profile.frontendTarget);
         writeInstallSource(profile.frontendTarget, buildInstalledMetadata(layout.installSource));
+        verifyInstalledTarget(profile.frontendTarget, {
+            kind: `frontend profile ${profile.handle}`,
+            branch: layout.installSource?.branch || DEFAULT_BRANCH,
+            requiredFiles: ['src/app.js', 'manifest.json'],
+        });
     }
 }
 
@@ -609,6 +624,29 @@ function ensureWritable(targetPath, allowCreate = false) {
         fs.accessSync(existingPath, fs.constants.W_OK);
     } catch {
         throw new Error(`Write access is required for ${existingPath}. Close SillyTavern and rerun this installer with sufficient permissions.`);
+    }
+}
+
+function verifyInstalledTarget(targetRoot, { kind, branch, requiredFiles = [] }) {
+    for (const relativePath of requiredFiles) {
+        const absolutePath = path.join(targetRoot, relativePath);
+        if (!fs.existsSync(absolutePath)) {
+            throw new Error(`Installed ${kind} verification failed: missing ${absolutePath}`);
+        }
+    }
+
+    const installSource = readInstallSourceFromRoot(targetRoot, {
+        defaultBranch: branch || DEFAULT_BRANCH,
+        repositoryUrl: REPOSITORY_URL,
+    });
+    if (!installSource?.branch) {
+        throw new Error(`Installed ${kind} verification failed: install-source metadata was not written at ${targetRoot}`);
+    }
+
+    if ((branch || DEFAULT_BRANCH) !== installSource.branch) {
+        throw new Error(
+            `Installed ${kind} verification failed: expected branch ${(branch || DEFAULT_BRANCH)} but found ${installSource.branch} at ${targetRoot}`
+        );
     }
 }
 

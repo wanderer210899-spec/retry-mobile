@@ -189,7 +189,11 @@ function readJsonFile(filePath) {
         return null;
     }
 
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    try {
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    } catch {
+        return null;
+    }
 }
 
 function normalizeString(value) {
