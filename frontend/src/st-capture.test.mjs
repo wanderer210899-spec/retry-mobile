@@ -292,3 +292,108 @@ test('createArmCaptureSession ignores incomplete GENERATE_AFTER_DATA fallback pa
         global.window = originalWindow;
     }
 });
+
+test('createArmCaptureSession keeps the capture armed when a fresh character chat gains its saved chat id on first send', async () => {
+    const originalWindow = global.window;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        off(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((entry) => entry !== handler));
+        },
+        emit(eventName, payload) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of bucket) {
+                handler(payload);
+            }
+        },
+    };
+
+    let currentChatId = '';
+    const context = {
+        chat: [
+            {
+                is_user: true,
+                mes: 'first live send',
+            },
+        ],
+        eventTypes: {
+            GENERATE_AFTER_DATA: 'generate_after_data',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+        getCurrentChatId() {
+            return currentChatId;
+        },
+        characters: [
+            {
+                name: '凯琳1',
+                avatar: 'kailin.png',
+            },
+        ],
+        characterId: 0,
+        groupId: null,
+        name2: '凯琳1',
+    };
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+
+    const captures = [];
+    const events = [];
+    const cancellations = [];
+    const session = createArmCaptureSession({
+        chatIdentity: {
+            kind: 'character',
+            chatId: '',
+            fileName: '',
+            groupId: null,
+            avatarUrl: 'kailin.png',
+            assistantName: '凯琳1',
+        },
+        onCapture(result) {
+            captures.push(result);
+        },
+        onCancel(error) {
+            cancellations.push(error);
+        },
+        onEvent(eventName, summary) {
+            events.push([eventName, summary]);
+        },
+    });
+
+    try {
+        currentChatId = '凯琳1 - 2026-04-22 @10h 00m 00s';
+        eventSource.emit('chat_changed');
+        eventSource.emit('generate_after_data', {
+            type: 'normal',
+            chat_completion_source: 'custom',
+            messages: [{ role: 'user', content: 'hello' }],
+        });
+
+        await Promise.resolve();
+
+        assert.equal(cancellations.length, 0);
+        assert.equal(captures.length, 1);
+        assert.equal(captures[0].ok, true);
+        assert.equal(captures[0].fingerprint.chatIdentity.chatId, currentChatId);
+        assert.deepEqual(events, [
+            ['CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED while the armed chat was stabilizing its saved identity.'],
+        ]);
+    } finally {
+        session.stop();
+        global.window = originalWindow;
+    }
+});

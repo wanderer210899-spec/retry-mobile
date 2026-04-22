@@ -14,6 +14,7 @@ export function createArmCaptureSession({
     const context = getContext();
     const eventTypes = getEventTypes(context);
     const stopListening = [];
+    let activeChatIdentity = cloneChatIdentity(chatIdentity);
     let messageIdHint = null;
     let capturePending = false;
     let closed = false;
@@ -50,8 +51,16 @@ export function createArmCaptureSession({
             }
 
             const liveIdentity = getChatIdentity(getContext());
-            if (isSameChat(chatIdentity, liveIdentity) && wasInternalChatReloadRecentlyTriggered(liveIdentity)) {
+            const alignedIdentity = resolveCaptureChatIdentity(activeChatIdentity, liveIdentity);
+            if (alignedIdentity && wasInternalChatReloadRecentlyTriggered(alignedIdentity)) {
+                activeChatIdentity = alignedIdentity;
                 onEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED triggered by Retry Mobile refreshing the current chat.');
+                return;
+            }
+
+            if (alignedIdentity) {
+                activeChatIdentity = alignedIdentity;
+                onEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED while the armed chat was stabilizing its saved identity.');
                 return;
             }
 
@@ -84,9 +93,11 @@ export function createArmCaptureSession({
         }
 
         const liveIdentity = getChatIdentity(getContext());
-        if (!isSameChat(chatIdentity, liveIdentity)) {
+        const alignedIdentity = resolveCaptureChatIdentity(activeChatIdentity, liveIdentity);
+        if (!alignedIdentity) {
             return;
         }
+        activeChatIdentity = alignedIdentity;
 
         // SillyTavern emits CHAT_COMPLETION_SETTINGS_READY for dry-run prompt probes too.
         // Those probes are diagnostics/capability checks, not real user sends, so they
@@ -124,7 +135,7 @@ export function createArmCaptureSession({
             }
 
             const captureResult = await resolveCaptureFingerprint({
-                chatIdentity,
+                chatIdentity: activeChatIdentity,
                 requestType,
                 messageIdHint,
                 onEvent,
@@ -169,6 +180,67 @@ export function createArmCaptureSession({
             } catch {}
         });
     }
+}
+
+function resolveCaptureChatIdentity(expectedIdentity, liveIdentity) {
+    if (!expectedIdentity || !liveIdentity) {
+        return null;
+    }
+
+    if (isSameChat(expectedIdentity, liveIdentity)) {
+        return cloneChatIdentity(liveIdentity);
+    }
+
+    const sameKind = String(expectedIdentity.kind || '') === String(liveIdentity.kind || '');
+    const sameGroup = String(expectedIdentity.groupId || '') === String(liveIdentity.groupId || '');
+    if (!sameKind || !sameGroup) {
+        return null;
+    }
+
+    const expectedChatId = String(expectedIdentity.chatId || '').trim();
+    const liveChatId = String(liveIdentity.chatId || '').trim();
+    if (expectedChatId && liveChatId && expectedChatId !== liveChatId) {
+        return null;
+    }
+
+    if (!isProvisionalCaptureIdentity(expectedIdentity, liveIdentity)) {
+        return null;
+    }
+
+    return cloneChatIdentity(liveIdentity);
+}
+
+function isProvisionalCaptureIdentity(expectedIdentity, liveIdentity) {
+    const expectedChatId = String(expectedIdentity?.chatId || '').trim();
+    const liveChatId = String(liveIdentity?.chatId || '').trim();
+    if (expectedChatId && liveChatId) {
+        return false;
+    }
+
+    const expectedAvatar = String(expectedIdentity?.avatarUrl || '').trim();
+    const liveAvatar = String(liveIdentity?.avatarUrl || '').trim();
+    if (expectedAvatar && liveAvatar) {
+        return expectedAvatar === liveAvatar;
+    }
+
+    const expectedAssistant = String(expectedIdentity?.assistantName || '').trim();
+    const liveAssistant = String(liveIdentity?.assistantName || '').trim();
+    return Boolean(expectedAssistant) && expectedAssistant === liveAssistant;
+}
+
+function cloneChatIdentity(chatIdentity) {
+    if (!chatIdentity) {
+        return null;
+    }
+
+    return {
+        kind: String(chatIdentity.kind || ''),
+        chatId: String(chatIdentity.chatId || ''),
+        fileName: String(chatIdentity.fileName || chatIdentity.chatId || ''),
+        groupId: chatIdentity.groupId == null ? null : String(chatIdentity.groupId),
+        avatarUrl: String(chatIdentity.avatarUrl || ''),
+        assistantName: String(chatIdentity.assistantName || ''),
+    };
 }
 
 async function resolveCaptureFingerprint({
