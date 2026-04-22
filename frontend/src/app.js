@@ -20,6 +20,7 @@ import { createIntentPort } from './intent.js';
 import { createRetryFsm, RetryState } from './retry-fsm.js';
 import { createStPort } from './st-adapter.js';
 import { createBackendPort } from './backend-client.js';
+import { chooseOperationalChatIdentity, resolveExpectedPreviousGeneration } from './start-payload.js';
 import {
     buildBootArmPayload,
     buildRestoreTarget,
@@ -454,10 +455,17 @@ export function bootRetryMobile() {
 
     async function buildStartPayload(payload) {
         const context = getContext();
-        const chatState = await fetchChatState(payload.chatIdentity);
+        const chatIdentity = chooseOperationalChatIdentity(
+            payload.chatIdentity,
+            payload.target?.chatIdentity,
+            payload.targetFingerprint?.chatIdentity,
+            getChatIdentity(context),
+        );
+        const chatState = await resolveExpectedPreviousGeneration(fetchChatState, chatIdentity);
 
         return {
             ...payload,
+            chatIdentity,
             clientProtocolVersion: PROTOCOL_VERSION,
             sessionId: runtime.sessionId || '',
             expectedPreviousGeneration: Number(chatState?.currentGeneration) || 0,
@@ -465,6 +473,10 @@ export function bootRetryMobile() {
             capturedChatIntegrity: String(context?.chatMetadata?.integrity || ''),
             capturedChatLength: Array.isArray(context?.chat) ? context.chat.length : 0,
             tokenizerDescriptor: buildTokenizerDescriptor(context),
+            captureMeta: {
+                ...(payload.captureMeta && typeof payload.captureMeta === 'object' ? payload.captureMeta : {}),
+                frontendStateLookup: chatState.meta,
+            },
         };
     }
 

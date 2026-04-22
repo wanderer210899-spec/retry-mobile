@@ -16,11 +16,12 @@ import {
     PROTOCOL_VERSION,
 } from '../constants.js';
 import { createArmCaptureSession } from '../st-capture.js';
-import { getContext, showToast } from '../st-context.js';
+import { getChatIdentity, getContext, showToast } from '../st-context.js';
 import { waitForNativeCompletion } from '../st-lifecycle.js';
 import { clearRetryLog, sendFrontendLogEvent, syncRetryLogForStatus } from '../logs/retry-log.js';
 import { createStructuredError, normalizeStructuredError } from '../retry-error.js';
 import { reloadSessionUi, applyAcceptedOutput, finishTerminalUi } from '../render/st-operations.js';
+import { chooseOperationalChatIdentity, resolveExpectedPreviousGeneration } from '../start-payload.js';
 import { isTerminalStatus } from './job-reducer.js';
 import { recoverBoundStatus } from './run-binding.js';
 
@@ -525,12 +526,18 @@ export function createJobEffects({ runtime, machine, render }) {
 
     async function buildReservePayload(payload) {
         const context = getContext();
-        const chatState = await fetchChatState(payload.chatIdentity);
+        const chatIdentity = chooseOperationalChatIdentity(
+            payload.chatIdentity,
+            payload.target?.chatIdentity,
+            payload.targetFingerprint?.chatIdentity,
+            getChatIdentity(context),
+        );
+        const chatState = await resolveExpectedPreviousGeneration(fetchChatState, chatIdentity);
         return {
             clientProtocolVersion: PROTOCOL_VERSION,
             runId: payload.runId,
             sessionId: runtime.sessionId || '',
-            chatIdentity: payload.chatIdentity,
+            chatIdentity,
             runConfig: payload.runConfig,
             expectedPreviousGeneration: Number(chatState?.currentGeneration) || 0,
             nativeGraceSeconds: payload.nativeGraceSeconds,
@@ -540,7 +547,10 @@ export function createJobEffects({ runtime, machine, render }) {
             tokenizerDescriptor: buildTokenizerDescriptor(context),
             capturedRequest: payload.capturedRequest,
             targetFingerprint: payload.targetFingerprint,
-            captureMeta: payload.captureMeta,
+            captureMeta: {
+                ...(payload.captureMeta && typeof payload.captureMeta === 'object' ? payload.captureMeta : {}),
+                frontendStateLookup: chatState.meta,
+            },
         };
     }
 

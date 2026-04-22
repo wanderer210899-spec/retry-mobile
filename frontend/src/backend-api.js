@@ -181,10 +181,12 @@ export async function postJobLogEvent(jobId, payload) {
 
 async function requestJson(url, options) {
     const requestHeaders = await buildRequestHeaders(options?.headers);
+    const requestOptions = { ...(options || {}) };
+    delete requestOptions.headers;
     const response = await fetch(url, {
         credentials: 'same-origin',
+        ...requestOptions,
         headers: requestHeaders.headers,
-        ...options,
     });
 
     const text = await response.text();
