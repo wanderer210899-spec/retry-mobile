@@ -180,10 +180,10 @@ export async function postJobLogEvent(jobId, payload) {
 }
 
 async function requestJson(url, options) {
-    const headers = await buildRequestHeaders(options?.headers);
+    const requestHeaders = await buildRequestHeaders(options?.headers);
     const response = await fetch(url, {
         credentials: 'same-origin',
-        headers,
+        headers: requestHeaders.headers,
         ...options,
     });
 
@@ -201,7 +201,20 @@ async function requestJson(url, options) {
         error.status = response.status;
         error.payload = data;
         error.code = data?.structuredError?.code || 'handoff_request_failed';
-        error.detail = data?.structuredError?.detail || '';
+        error.detail = data?.structuredError?.detail || buildRequestFailureDetail({
+            url,
+            method: options?.method,
+            status: response.status,
+            requestHeaders,
+            payload: data,
+        });
+        logRequestFailure({
+            url,
+            method: options?.method,
+            status: response.status,
+            requestHeaders,
+            payload: data,
+        });
         throw error;
     }
 
@@ -209,31 +222,58 @@ async function requestJson(url, options) {
 }
 
 async function buildRequestHeaders(extraHeaders) {
-    const helper = await resolveRequestHeadersHelper();
-    const baseHeaders = typeof helper === 'function'
-        ? safeGetRequestHeaders(helper)
-        : {
-            'Content-Type': 'application/json',
-        };
+    const baseHeaders = await resolveRequestHeaders();
 
     return {
         ...baseHeaders,
-        ...(extraHeaders || {}),
+        headers: {
+            ...(baseHeaders.headers || {}),
+            ...(extraHeaders || {}),
+        },
     };
 }
 
-async function resolveRequestHeadersHelper() {
-    if (typeof globalThis.getRequestHeaders === 'function') {
-        return globalThis.getRequestHeaders;
+async function resolveRequestHeaders() {
+    const helpers = await collectRequestHeaderHelpers();
+    for (const candidate of helpers) {
+        const resolved = safeGetRequestHeaders(candidate.helper, candidate.source);
+        if (resolved.ok) {
+            return resolved;
+        }
     }
 
-    const contextHelper = globalThis.window?.SillyTavern?.getContext?.()?.getRequestHeaders;
-    if (typeof contextHelper === 'function') {
-        return contextHelper;
-    }
+    return {
+        ok: true,
+        source: 'fallback_json',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        hasCsrfToken: false,
+    };
+}
+
+async function collectRequestHeaderHelpers() {
+    const candidates = [];
+    pushRequestHeaderHelper(candidates, 'global_this', globalThis.getRequestHeaders);
+    pushRequestHeaderHelper(candidates, 'window_global', globalThis.window?.getRequestHeaders);
+    pushRequestHeaderHelper(candidates, 'st_context', globalThis.window?.SillyTavern?.getContext?.()?.getRequestHeaders);
 
     requestHeadersHelperPromise ??= loadStRequestHeadersHelper();
-    return requestHeadersHelperPromise;
+    pushRequestHeaderHelper(candidates, 'script_import', await requestHeadersHelperPromise);
+
+    return candidates;
+}
+
+function pushRequestHeaderHelper(candidates, source, helper) {
+    if (typeof helper !== 'function') {
+        return;
+    }
+
+    if (candidates.some((entry) => entry.helper === helper)) {
+        return;
+    }
+
+    candidates.push({ source, helper });
 }
 
 async function loadStRequestHeadersHelper() {
@@ -248,19 +288,76 @@ async function loadStRequestHeadersHelper() {
     }
 }
 
-function safeGetRequestHeaders(helper) {
+function safeGetRequestHeaders(helper, source) {
     try {
         const headers = helper();
         if (headers && typeof headers === 'object') {
-            return headers;
+            const plainHeaders = headers instanceof Headers
+                ? Object.fromEntries(headers.entries())
+                : { ...headers };
+            if (Object.keys(plainHeaders).length > 0) {
+                return {
+                    ok: true,
+                    source,
+                    headers: plainHeaders,
+                    hasCsrfToken: typeof plainHeaders['X-CSRF-Token'] === 'string' && plainHeaders['X-CSRF-Token'].trim().length > 0,
+                };
+            }
         }
-    } catch {
-        // Fall back to JSON headers if SillyTavern's helper is unavailable.
+    } catch (error) {
+        return {
+            ok: false,
+            source,
+            headers: null,
+            hasCsrfToken: false,
+            error: error instanceof Error ? error.message : String(error),
+        };
     }
 
     return {
-        'Content-Type': 'application/json',
+        ok: false,
+        source,
+        headers: null,
+        hasCsrfToken: false,
+        error: 'Request headers helper returned an empty or invalid result.',
     };
+}
+
+function buildRequestFailureDetail({ url, method, status, requestHeaders, payload }) {
+    const structuredDetail = typeof payload?.structuredError?.detail === 'string'
+        ? payload.structuredError.detail.trim()
+        : '';
+    const raw = typeof payload?.raw === 'string'
+        ? payload.raw.trim()
+        : '';
+    const summary = [
+        `request=${String(method || 'GET').toUpperCase()} ${url}`,
+        `status=${status}`,
+        `header_source=${requestHeaders?.source || 'unknown'}`,
+        `csrf=${requestHeaders?.hasCsrfToken ? 'present' : 'missing'}`,
+    ];
+
+    if (structuredDetail) {
+        summary.push(`server_detail=${structuredDetail}`);
+    } else if (raw) {
+        summary.push(`raw=${raw}`);
+    }
+
+    return summary.join(' | ');
+}
+
+function logRequestFailure({ url, method, status, requestHeaders, payload }) {
+    if (status < 400) {
+        return;
+    }
+
+    console.warn('[retry-mobile:frontend-request]', {
+        request: `${String(method || 'GET').toUpperCase()} ${url}`,
+        status,
+        headerSource: requestHeaders?.source || 'unknown',
+        hasCsrfToken: Boolean(requestHeaders?.hasCsrfToken),
+        payload,
+    });
 }
 
 export function getStructuredErrorFromApi(error, fallbackMessage) {
