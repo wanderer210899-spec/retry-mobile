@@ -65,7 +65,10 @@ SillyTavern\public\scripts\extensions\third-party\retry-mobile
 cd ~/SillyTavern
 ```
 
-2. Run this command:
+2. Keep the SillyTavern server running in its own Termux session.
+Open a different Termux session for the installer or updater. Do not run the bootstrap flow in the same session that is currently running `bash start.sh`, or you can end up thinking the update finished while the live frontend/backend files are still stale.
+
+3. Run this command from that separate Termux session:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/main/bootstrap.sh | bash
@@ -83,7 +86,18 @@ or set `RETRY_MOBILE_BRANCH` on the `bash` side:
 curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/main/bootstrap.sh | RETRY_MOBILE_BRANCH=backend-refracter bash
 ```
 
-3. Finished. The installer will:
+4. Choose:
+
+```text
+2
+1
+```
+
+That means:
+- `2` = `Install / Update now`
+- `1` = install the frontend into `default-user`
+
+5. Finished. The installer will:
 - detect your local SillyTavern install automatically
 - offer `Enable server plugins`, `Install / Update now`, or `Uninstall`
 - install the backend to `~/SillyTavern/plugins/retry-mobile`
@@ -121,8 +135,11 @@ curl -fsSL https://raw.githubusercontent.com/wanderer210899-spec/retry-mobile/ma
 Then choose:
 
 ```text
-Install / Update now
+2
+1
 ```
+
+Run that bootstrap flow from a different Termux session than the one currently hosting `bash start.sh`.
 
 The Retry Mobile frontend panel shows:
 - current installed backend/frontend versions
