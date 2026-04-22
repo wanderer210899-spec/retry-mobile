@@ -69,6 +69,7 @@ async function headlessInstall(layout, platform) {
     console.log('\n[Headless] Non-interactive install (RETRY_MOBILE_HEADLESS=1)');
     layout.installSource = resolveLayoutInstallSource(layout);
     await refreshInstallerReleaseStatus(layout);
+    const requestedProfileHandle = String(process.env.RETRY_MOBILE_PROFILE || '').trim();
 
     if (!layout.config.enableServerPlugins) {
         throw new Error(
@@ -81,6 +82,31 @@ async function headlessInstall(layout, platform) {
     ensureWritable(layout.pluginsDir, true);
     installBackend(layout);
     console.log('[Headless] Backend installed.');
+
+    if (requestedProfileHandle) {
+        const selectedProfile = layout.profiles.find((profile) => profile.handle === requestedProfileHandle);
+        if (!selectedProfile) {
+            const detectedProfiles = layout.profiles.map((profile) => profile.handle).join(', ') || '(none)';
+            throw new Error(
+                `Headless install could not find profile "${requestedProfileHandle}".\n` +
+                `Detected profiles: ${detectedProfiles}`
+            );
+        }
+
+        if (layout.globalFrontendInstalled) {
+            removeDirectory(layout.globalFrontendTarget);
+            console.log('[Headless] Removed existing global frontend install before profile-local install.');
+        }
+
+        installFrontendForProfiles(layout, [selectedProfile]);
+        refreshProfiles(layout);
+        console.log(`[Headless] Frontend installed for profile ${selectedProfile.handle}.`);
+        logProcessComplete('[Headless] Install complete.', [
+            `Backend updated and frontend installed for profile ${selectedProfile.handle}.`,
+            'Restart SillyTavern for changes to take effect.',
+        ], platform);
+        return;
+    }
 
     const profilesWithFrontend = layout.profiles.filter((p) => p.hasFrontend);
     if (profilesWithFrontend.length > 0) {

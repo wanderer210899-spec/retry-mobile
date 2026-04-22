@@ -6,6 +6,7 @@ REPO_URL="https://github.com/wanderer210899-spec/retry-mobile.git"
 BOOTSTRAP_BRANCH="main"
 HEADLESS_INSTALL=0
 ST_ROOT_OVERRIDE="${RETRY_MOBILE_ST_ROOT:-}"
+PROFILE_OVERRIDE="${RETRY_MOBILE_PROFILE:-}"
 
 print_usage() {
   cat <<'EOF'
@@ -15,6 +16,7 @@ Usage:
   curl -fsSL <bootstrap-url> | bash -s -- --branch <branch>
   curl -fsSL <bootstrap-url> | bash -s -- --branch <branch> --headless
   curl -fsSL <bootstrap-url> | bash -s -- --branch <branch> --headless --st-root "$HOME/SillyTavern"
+  curl -fsSL <bootstrap-url> | bash -s -- --branch <branch> --headless --profile default-user
 
 Override precedence:
   1. CLI branch argument
@@ -25,6 +27,7 @@ Options:
   --headless          Non-interactive install/update. Installs backend plus global frontend.
   --st-root <path>    Explicit SillyTavern root. Defaults to current directory, ./SillyTavern,
                       or ~/SillyTavern on Termux when available.
+  --profile <handle>  Profile-local frontend install target (for example: default-user).
 EOF
 }
 
@@ -55,6 +58,14 @@ parse_args() {
           exit 1
         fi
         ST_ROOT_OVERRIDE="$2"
+        shift 2
+        ;;
+      --profile)
+        if [ "$#" -lt 2 ] || [ -z "${2:-}" ]; then
+          echo "Retry Mobile bootstrap expected a profile handle after $1." >&2
+          exit 1
+        fi
+        PROFILE_OVERRIDE="$2"
         shift 2
         ;;
       --)
@@ -130,7 +141,7 @@ git clone --depth 1 --branch "$REPO_BRANCH" "$REPO_URL" "$REPO_DIR"
 cd "$LAUNCH_DIRECTORY"
 
 if [ "$HEADLESS_INSTALL" -eq 1 ]; then
-  RETRY_MOBILE_HEADLESS=1 RETRY_MOBILE_BRANCH="$REPO_BRANCH" node "$REPO_DIR/install.cjs"
+  RETRY_MOBILE_HEADLESS=1 RETRY_MOBILE_BRANCH="$REPO_BRANCH" RETRY_MOBILE_PROFILE="$PROFILE_OVERRIDE" node "$REPO_DIR/install.cjs"
 elif [ -r /dev/tty ]; then
   RETRY_MOBILE_BRANCH="$REPO_BRANCH" node "$REPO_DIR/install.cjs" < /dev/tty
 else
