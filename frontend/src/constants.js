@@ -65,14 +65,15 @@ export const REQUIRED_EVENT_NAMES = Object.freeze([
     'CHAT_CHANGED',
     'CHAT_DELETED',
     'CHAT_COMPLETION_SETTINGS_READY',
+    'TEXT_COMPLETION_SETTINGS_READY',
     'GENERATION_ENDED',
     'GENERATION_STOPPED',
     'CHARACTER_MESSAGE_RENDERED',
 ]);
 
 export const REQUIRED_PAYLOAD_KEYS = Object.freeze([
-    'chat_completion_source',
-    'messages',
+    'chat_completion_source + messages[]',
+    'or prompt + api_type + api_server',
 ]);
 
 export const PROTOCOL_VERSION = 5; // Must match PROTOCOL_VERSION in server/plugin-meta.js

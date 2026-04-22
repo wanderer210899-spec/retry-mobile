@@ -36,6 +36,14 @@ export function createArmCaptureSession({
         );
     }
 
+    if (eventTypes.TEXT_COMPLETION_SETTINGS_READY) {
+        stopListening.push(
+            subscribeEvent(eventTypes.TEXT_COMPLETION_SETTINGS_READY, (payload) => {
+                void handleCapturePayload(payload, 'TEXT_COMPLETION_SETTINGS_READY');
+            }, context),
+        );
+    }
+
     if (eventTypes.GENERATE_AFTER_DATA) {
         stopListening.push(
             subscribeEvent(eventTypes.GENERATE_AFTER_DATA, (payload) => {

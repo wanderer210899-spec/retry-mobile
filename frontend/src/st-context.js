@@ -119,7 +119,18 @@ export function payloadHasRequiredKeys(payload) {
         return false;
     }
 
-    return REQUIRED_PAYLOAD_KEYS.every((key) => key in payload);
+    const hasChatCompletionShape = 'chat_completion_source' in payload && Array.isArray(payload.messages);
+    if (hasChatCompletionShape) {
+        return true;
+    }
+
+    const hasTextCompletionShape = typeof payload.prompt === 'string'
+        && payload.prompt.length > 0
+        && typeof payload.api_type === 'string'
+        && payload.api_type.length > 0
+        && typeof payload.api_server === 'string'
+        && payload.api_server.length > 0;
+    return hasTextCompletionShape;
 }
 
 export function clonePayload(payload) {

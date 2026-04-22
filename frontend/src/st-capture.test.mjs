@@ -196,6 +196,89 @@ test('createArmCaptureSession captures from GENERATE_AFTER_DATA when CHAT_COMPLE
     }
 });
 
+test('createArmCaptureSession captures from TEXT_COMPLETION_SETTINGS_READY for text-generation providers', async () => {
+    const originalWindow = global.window;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        off(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((entry) => entry !== handler));
+        },
+        emit(eventName, payload) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of bucket) {
+                handler(payload);
+            }
+        },
+    };
+
+    const context = {
+        chat: [
+            {
+                is_user: true,
+                mes: 'fresh textgen send',
+            },
+        ],
+        eventTypes: {
+            TEXT_COMPLETION_SETTINGS_READY: 'text_completion_settings_ready',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+        getCurrentChatId() {
+            return 'chat-1';
+        },
+        characters: [],
+        characterId: null,
+        groupId: null,
+        name2: 'Kate',
+    };
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+
+    const captures = [];
+    const session = createArmCaptureSession({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+        onCapture(result) {
+            captures.push(result);
+        },
+    });
+
+    try {
+        eventSource.emit('text_completion_settings_ready', {
+            type: 'normal',
+            prompt: 'Hello from text completion.',
+            api_type: 'generic',
+            api_server: 'http://127.0.0.1:5000',
+        });
+
+        await Promise.resolve();
+        assert.equal(captures.length, 1);
+        assert.equal(captures[0].ok, true);
+        assert.equal(captures[0].requestType, 'normal');
+        assert.equal(captures[0].fingerprint.userMessageText, 'fresh textgen send');
+    } finally {
+        session.stop();
+        global.window = originalWindow;
+    }
+});
+
 test('createArmCaptureSession ignores incomplete GENERATE_AFTER_DATA fallback payloads until the main capture event arrives', async () => {
     const originalWindow = global.window;
 
