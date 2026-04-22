@@ -385,6 +385,7 @@ async function init(router) {
 
             void runJob(job, {
                 baseUrl: getRequestBaseUrl(request),
+                requestAuth: extractReplayAuthContext(request),
             });
 
             return response.send({
@@ -709,6 +710,24 @@ function getRequestBaseUrl(request) {
     return `${protocol}://${host}`;
 }
 
+function extractReplayAuthContext(request) {
+    const cookieHeader = typeof request?.get === 'function'
+        ? normalizeHeaderValue(request.get('cookie'))
+        : normalizeHeaderValue(request?.headers?.cookie);
+    const csrfToken = typeof request?.get === 'function'
+        ? normalizeHeaderValue(request.get('x-csrf-token'))
+        : normalizeHeaderValue(request?.headers?.['x-csrf-token']);
+
+    if (!cookieHeader && !csrfToken) {
+        return null;
+    }
+
+    return {
+        cookieHeader,
+        csrfToken,
+    };
+}
+
 function getUserContext(request) {
     const handle = request?.user?.profile?.handle;
     const directories = request?.user?.directories || (handle ? getUserDirectories(handle) : null);
@@ -832,6 +851,16 @@ function normalizeNativeGraceSeconds(value) {
     return Math.min(300, Math.max(10, Math.round(parsed)));
 }
 
+function normalizeHeaderValue(value) {
+    if (Array.isArray(value)) {
+        value = value.find((item) => typeof item === 'string' && item.trim().length > 0) || '';
+    }
+
+    return typeof value === 'string' && value.trim()
+        ? value.trim()
+        : '';
+}
+
 function getRunIdMismatchError(job, runId, message) {
     if (!runId || runId === job.runId) {
         return null;
@@ -879,4 +908,7 @@ module.exports = {
         description: 'Backend coordination for Retry Mobile.',
     },
     init,
+    _test: {
+        extractReplayAuthContext,
+    },
 };

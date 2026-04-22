@@ -758,13 +758,11 @@ async function replayCapturedRequest(job, environment) {
 
     try {
         let response = null;
+        const replayHeaders = buildReplayRequestHeaders(environment?.requestAuth);
         try {
             response = await fetch(`${environment.baseUrl}${endpoint}`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    Accept: 'application/json',
-                },
+                headers: replayHeaders,
                 body: JSON.stringify(body),
                 signal: timeoutController.signal,
             });
@@ -806,6 +804,12 @@ async function replayCapturedRequest(job, environment) {
             throw createStructuredError(
                 'handoff_request_failed',
                 payload?.error || `Generation request failed with status ${response.status}`,
+                buildReplayFailureDetail({
+                    endpoint,
+                    status: response.status,
+                    responseText: text,
+                    requestAuth: environment?.requestAuth,
+                }),
             );
         }
 
@@ -822,6 +826,48 @@ function resolveGenerationEndpoint(body) {
     }
 
     return '/api/backends/text-completions/generate';
+}
+
+function buildReplayRequestHeaders(requestAuth) {
+    const headers = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+    };
+
+    const cookieHeader = typeof requestAuth?.cookieHeader === 'string' && requestAuth.cookieHeader.trim()
+        ? requestAuth.cookieHeader.trim()
+        : '';
+    const csrfToken = typeof requestAuth?.csrfToken === 'string' && requestAuth.csrfToken.trim()
+        ? requestAuth.csrfToken.trim()
+        : '';
+
+    if (cookieHeader) {
+        headers.Cookie = cookieHeader;
+    }
+
+    if (csrfToken) {
+        headers['X-CSRF-Token'] = csrfToken;
+    }
+
+    return headers;
+}
+
+function buildReplayFailureDetail({ endpoint, status, responseText, requestAuth }) {
+    const responsePreview = typeof responseText === 'string' && responseText.trim()
+        ? responseText.trim().slice(0, 240)
+        : '';
+    const parts = [
+        `request=POST ${endpoint}`,
+        `status=${status}`,
+        `cookie=${requestAuth?.cookieHeader ? 'present' : 'missing'}`,
+        `csrf=${requestAuth?.csrfToken ? 'present' : 'missing'}`,
+    ];
+
+    if (responsePreview) {
+        parts.push(`response=${responsePreview}`);
+    }
+
+    return parts.join('; ');
 }
 
 function extractResponseText(payload) {
@@ -950,6 +996,7 @@ function sleep(ms) {
 
 module.exports = {
     confirmNativeAssistant,
+    replayCapturedRequest,
     resolvePendingNativeState,
     runJob,
     waitForNativeResolutionIdle,
