@@ -44,6 +44,9 @@ async function runJob(job, environment) {
 
     try {
         await awaitNativeOutcome(job);
+        if (job.state && job.state !== 'running') {
+            return;
+        }
         if (job.cancelRequested) {
             finalizeCancelled(job);
             return;
@@ -238,6 +241,9 @@ async function runJob(job, environment) {
                         tokenCount: validation.metrics.tokenCount,
                     });
                     await awaitNativeOutcome(job);
+                    if (job.state && job.state !== 'running') {
+                        return;
+                    }
                     writeResult = await writeAcceptedResult(job, validation.metrics);
                 } else if (structuredError.code === 'native_persist_unresolved') {
                     appendAttemptLog(job, {
@@ -251,6 +257,9 @@ async function runJob(job, environment) {
                         tokenCount: validation.metrics.tokenCount,
                     });
                     await recoverConfirmedAssistantGap(job);
+                    if (job.state && job.state !== 'running') {
+                        return;
+                    }
                     writeResult = await writeAcceptedResult(job, validation.metrics);
                 }
 
@@ -595,12 +604,13 @@ async function confirmNativeAssistant(job, assistantMessageIndex) {
 }
 
 function applyInspectionResolution(job, inspection, cause) {
+    const resolutionCause = cause || job.nativeResolutionCause || '';
     if (inspection.kind === 'filled') {
         touchJob(job, {
             nativeState: 'confirmed',
             phase: 'native_confirmed',
             recoveryMode: 'top_up_existing',
-            nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            nativeResolutionCause: resolutionCause,
             nativeGraceDeadline: '',
             assistantMessageIndex: inspection.assistantMessageIndex,
             targetMessageIndex: inspection.assistantMessageIndex,
@@ -617,7 +627,7 @@ function applyInspectionResolution(job, inspection, cause) {
             nativeState: 'abandoned',
             phase: 'native_abandoned',
             recoveryMode: 'reuse_empty_placeholder',
-            nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            nativeResolutionCause: resolutionCause,
             nativeGraceDeadline: '',
             assistantMessageIndex: inspection.assistantMessageIndex,
             targetMessageIndex: inspection.assistantMessageIndex,
@@ -630,11 +640,28 @@ function applyInspectionResolution(job, inspection, cause) {
     }
 
     if (inspection.kind === 'missing_assistant' || inspection.kind === 'missing_user_anchor') {
+        if (resolutionCause === 'frontend_confirmed' || job.phase === 'native_confirming_persisted') {
+            const structuredError = inspection.kind === 'missing_user_anchor'
+                ? createStructuredError(
+                    'capture_chat_changed',
+                    'Retry Mobile stopped because the captured user turn disappeared before the confirmed native handoff could be persisted.',
+                    `nativeResolutionCause=${resolutionCause || 'unknown'}`,
+                )
+                : createStructuredError(
+                    'native_turn_missing',
+                    'Retry Mobile stopped because the confirmed native assistant turn disappeared before Retry Mobile could continue safely.',
+                    `nativeResolutionCause=${resolutionCause || 'unknown'}`,
+                );
+            finalizeFailed(job, structuredError);
+            appendLifecycleLog(job, 'native_confirmation_failed', structuredError.message);
+            return;
+        }
+
         touchJob(job, {
             nativeState: 'abandoned',
             phase: 'native_abandoned',
             recoveryMode: 'create_missing_turn',
-            nativeResolutionCause: cause || job.nativeResolutionCause || '',
+            nativeResolutionCause: resolutionCause,
             nativeGraceDeadline: '',
             assistantMessageIndex: null,
             targetMessageIndex: null,
@@ -1183,6 +1210,29 @@ function finalizeCancelled(job) {
         source: 'backend',
         event: 'job_cancelled',
         summary: 'Retry Mobile cancelled this backend job.',
+    });
+    pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+}
+
+function finalizeFailed(job, structuredError) {
+    const normalized = toStructuredError(structuredError, 'backend_write_failed', 'Retry Mobile backend job failed.');
+    touchJob(job, {
+        state: 'failed',
+        phase: 'failed',
+        nativeState: 'failed',
+        recoveryMode: '',
+        nativeGraceDeadline: '',
+        lastError: normalized.message,
+        structuredError: {
+            ...normalized,
+            detail: normalized.detail || buildAttemptSummary(job),
+        },
+    });
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'job_failed',
+        summary: normalized.message,
+        detail: normalized.detail || buildAttemptSummary(job),
     });
     pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
 }

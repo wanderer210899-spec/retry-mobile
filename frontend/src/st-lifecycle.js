@@ -210,6 +210,17 @@ export function waitForNativeCompletion({
                 failure = enrichConfirmationError(confirmation.error, candidate);
             }
 
+            if (wasObservedAssistantDeleted()) {
+                return {
+                    kind: 'fail',
+                    error: createStructuredError(
+                        'native_turn_missing',
+                        'Retry Mobile saw the native assistant turn disappear before it could be confirmed.',
+                        describeObservedEvents(),
+                    ),
+                };
+            }
+
             if (shouldWait || candidates.length === 0) {
                 return { kind: 'wait' };
             }
@@ -222,6 +233,34 @@ export function waitForNativeCompletion({
                     describeObservedEvents(),
                 ),
             };
+        }
+
+        function wasObservedAssistantDeleted() {
+            if (lastRenderedMessageId == null || lastEndedMessageId == null) {
+                return false;
+            }
+
+            const chat = getCurrentChatArray(getContext());
+            const observedAssistant = Array.isArray(chat) && lastRenderedMessageId >= 0
+                ? chat[lastRenderedMessageId]
+                : null;
+            if (observedAssistant && observedAssistant.is_user !== true) {
+                return false;
+            }
+
+            const capturedUserIndex = Number.isInteger(fingerprint?.userIndexAtCapture)
+                ? fingerprint.userIndexAtCapture
+                : null;
+            if (!Number.isInteger(capturedUserIndex) || capturedUserIndex < 0) {
+                return true;
+            }
+
+            const capturedUser = Array.isArray(chat)
+                ? chat[capturedUserIndex]
+                : null;
+            return Boolean(capturedUser)
+                && capturedUser.is_user === true
+                && String(capturedUser.mes ?? '') === String(fingerprint?.userMessageText ?? '');
         }
 
         function getObservedCandidates() {
