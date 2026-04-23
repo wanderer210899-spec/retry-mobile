@@ -327,8 +327,26 @@ export function createRetryFsm({
         context = nextContext;
 
         if (context.pendingVisibleRender && payload.isVisible === true) {
-            const pendingVersion = numberOrNull(context.pendingVisibleRender?.status?.targetMessageVersion) || 0;
-            stPort.flushPendingVisibleRender?.(clonePlain(context.pendingVisibleRender));
+            const pendingRender = clonePlain(context.pendingVisibleRender);
+            const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
+            Promise.resolve(stPort.flushPendingVisibleRender?.(pendingRender))
+                .then((result) => {
+                    if (!isState(context, RetryState.RUNNING)) {
+                        return;
+                    }
+                    if (result?.ok === false) {
+                        return;
+                    }
+                    context = normalizeContextForState({
+                        ...context,
+                        lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
+                        pendingVisibleRender: null,
+                    });
+                    if (pendingRender?.terminalOutcome === 'completed') {
+                        jobCompleted({ status: pendingRender.status });
+                    }
+                })
+                .catch(() => {});
             context = normalizeContextForState({
                 ...context,
                 lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
@@ -556,7 +574,7 @@ export function createRetryFsm({
         });
     }
 
-    function handlePollingStatus(status) {
+    async function handlePollingStatus(status) {
         if (!isState(context, RetryState.RUNNING)) {
             return;
         }
@@ -567,7 +585,7 @@ export function createRetryFsm({
         }
 
         if (statusState === 'completed') {
-            jobCompleted({ status });
+            await completeAfterFinalAcceptedOutput(status);
             return;
         }
 
@@ -624,6 +642,59 @@ export function createRetryFsm({
                 });
             })
             .catch(() => {});
+    }
+
+    async function completeAfterFinalAcceptedOutput(status) {
+        const nextVersion = numberOrNull(status?.targetMessageVersion) || 0;
+        if (nextVersion <= Number(context.lastAppliedVersion || 0)) {
+            jobCompleted({ status });
+            return;
+        }
+
+        const renderPayload = {
+            kind: 'accepted_output',
+            terminalOutcome: 'completed',
+            chatIdentity: clonePlain(context.chatIdentity),
+            status: clonePlain(status),
+        };
+
+        if (stPort.isVisible?.() === false) {
+            const queued = stPort.queueVisibleRender?.(renderPayload) || renderPayload;
+            context = normalizeContextForState({
+                ...context,
+                pendingVisibleRender: clonePlain(queued),
+            });
+            return;
+        }
+
+        try {
+            const result = await stPort.applyAcceptedOutput?.(renderPayload);
+            if (!isState(context, RetryState.RUNNING)) {
+                return;
+            }
+            if (result?.ok === false) {
+                await completeAfterBestEffortReload(status);
+                return;
+            }
+            context = normalizeContextForState({
+                ...context,
+                lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
+                pendingVisibleRender: null,
+            });
+            jobCompleted({ status });
+        } catch {
+            await completeAfterBestEffortReload(status);
+        }
+    }
+
+    async function completeAfterBestEffortReload(status) {
+        try {
+            await stPort.guardedReload?.();
+        } finally {
+            if (isState(context, RetryState.RUNNING)) {
+                jobCompleted({ status });
+            }
+        }
     }
 
     function handlePollingError(error) {

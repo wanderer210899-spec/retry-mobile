@@ -117,6 +117,10 @@ function createHarness({
             calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
             return Promise.resolve(applyAcceptedOutputResult);
         },
+        guardedReload() {
+            calls.push({ port: 'st', method: 'guardedReload', args: [] });
+            return Promise.resolve(true);
+        },
     };
 
     const backendPort = {
@@ -455,11 +459,43 @@ test('terminal poll status re-enters the FSM through the polling callbacks', asy
         jobId: 'job-1',
         state: 'completed',
     });
+    await Promise.resolve();
 
     const state = fsm.getContext();
     assert.equal(state.state, RetryState.ARMED);
     assert.equal(state.jobId, null);
     assert.equal(state.runId, 'run-2');
+});
+
+test('terminal completed status applies final accepted output before re-arming', async () => {
+    const { fsm, calls, emitPolledStatus } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    await emitPolledStatus({
+        jobId: 'job-1',
+        state: 'completed',
+        targetMessageVersion: 1,
+        targetMessage: {
+            mes: 'Native reply',
+            swipes: ['Native reply', 'Accepted retry'],
+        },
+    });
+    await Promise.resolve();
+
+    const applyCall = calls.find((entry) => entry.method === 'applyAcceptedOutput');
+    assert.ok(applyCall, 'expected terminal completion to patch the accepted output');
+    assert.equal(applyCall.args[0].terminalOutcome, 'completed');
+    assert.equal(applyCall.args[0].status.targetMessageVersion, 1);
+    assert.equal(fsm.getContext().state, RetryState.ARMED);
 });
 
 test('running poll status applies accepted output once per version when visible', async () => {
