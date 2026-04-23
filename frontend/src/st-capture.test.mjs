@@ -480,3 +480,208 @@ test('createArmCaptureSession keeps the capture armed when a fresh character cha
         global.window = originalWindow;
     }
 });
+
+test('createArmCaptureSession follows a same-character empty chat created from the welcome screen', async () => {
+    const originalWindow = global.window;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        off(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((entry) => entry !== handler));
+        },
+        emit(eventName, payload) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of bucket) {
+                handler(payload);
+            }
+        },
+    };
+
+    let currentChatId = 'kailin-old-chat';
+    const context = {
+        chat: [
+            { is_user: true, mes: 'older message' },
+            { is_user: false, mes: 'older reply' },
+        ],
+        eventTypes: {
+            GENERATE_AFTER_DATA: 'generate_after_data',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+        getCurrentChatId() {
+            return currentChatId;
+        },
+        characters: [
+            {
+                name: 'Kailin',
+                avatar: 'kailin.png',
+            },
+        ],
+        characterId: 0,
+        groupId: null,
+        name2: 'Kailin',
+    };
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+
+    const captures = [];
+    const events = [];
+    const cancellations = [];
+    const session = createArmCaptureSession({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'kailin-old-chat',
+            fileName: 'kailin-old-chat',
+            groupId: null,
+            avatarUrl: 'kailin.png',
+            assistantName: 'Kailin',
+        },
+        onCapture(result) {
+            captures.push(result);
+        },
+        onCancel(error) {
+            cancellations.push(error);
+        },
+        onEvent(eventName, summary) {
+            events.push([eventName, summary]);
+        },
+    });
+
+    try {
+        currentChatId = 'kailin-new-chat';
+        context.chat = [];
+        eventSource.emit('chat_changed');
+
+        context.chat = [
+            {
+                is_user: true,
+                mes: 'first welcome-screen send',
+            },
+        ];
+        eventSource.emit('generate_after_data', {
+            type: 'normal',
+            chat_completion_source: 'custom',
+            messages: [{ role: 'user', content: 'hello' }],
+        });
+
+        await Promise.resolve();
+
+        assert.equal(cancellations.length, 0);
+        assert.equal(captures.length, 1);
+        assert.equal(captures[0].ok, true);
+        assert.equal(captures[0].fingerprint.chatIdentity.chatId, 'kailin-new-chat');
+        assert.equal(captures[0].fingerprint.userMessageText, 'first welcome-screen send');
+        assert.deepEqual(events, [
+            ['CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED while the armed chat was stabilizing its saved identity.'],
+        ]);
+    } finally {
+        session.stop();
+        global.window = originalWindow;
+    }
+});
+
+test('createArmCaptureSession still cancels when switching to a populated different chat before capture', async () => {
+    const originalWindow = global.window;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        off(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((entry) => entry !== handler));
+        },
+        emit(eventName, payload) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of bucket) {
+                handler(payload);
+            }
+        },
+    };
+
+    let currentChatId = 'kailin-old-chat';
+    const context = {
+        chat: [
+            { is_user: true, mes: 'older message' },
+        ],
+        eventTypes: {
+            GENERATE_AFTER_DATA: 'generate_after_data',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+        getCurrentChatId() {
+            return currentChatId;
+        },
+        characters: [
+            {
+                name: 'Kailin',
+                avatar: 'kailin.png',
+            },
+        ],
+        characterId: 0,
+        groupId: null,
+        name2: 'Kailin',
+    };
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+
+    const captures = [];
+    const cancellations = [];
+    const session = createArmCaptureSession({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'kailin-old-chat',
+            fileName: 'kailin-old-chat',
+            groupId: null,
+            avatarUrl: 'kailin.png',
+            assistantName: 'Kailin',
+        },
+        onCapture(result) {
+            captures.push(result);
+        },
+        onCancel(error) {
+            cancellations.push(error);
+        },
+    });
+
+    try {
+        currentChatId = 'kailin-existing-chat';
+        context.chat = [
+            { is_user: true, mes: 'existing chat user' },
+            { is_user: false, mes: 'existing chat reply' },
+        ];
+        eventSource.emit('chat_changed');
+
+        await Promise.resolve();
+
+        assert.equal(captures.length, 0);
+        assert.equal(cancellations.length, 1);
+        assert.equal(cancellations[0].code, 'capture_chat_changed');
+    } finally {
+        session.stop();
+        global.window = originalWindow;
+    }
+});

@@ -59,7 +59,9 @@ export function createArmCaptureSession({
             }
 
             const liveIdentity = getChatIdentity(getContext());
-            const alignedIdentity = resolveCaptureChatIdentity(activeChatIdentity, liveIdentity);
+            const alignedIdentity = resolveCaptureChatIdentity(activeChatIdentity, liveIdentity, {
+                liveChat: getCurrentChatArray(getContext()),
+            });
             if (alignedIdentity && wasInternalChatReloadRecentlyTriggered(alignedIdentity)) {
                 activeChatIdentity = alignedIdentity;
                 onEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED triggered by Retry Mobile refreshing the current chat.');
@@ -101,7 +103,9 @@ export function createArmCaptureSession({
         }
 
         const liveIdentity = getChatIdentity(getContext());
-        const alignedIdentity = resolveCaptureChatIdentity(activeChatIdentity, liveIdentity);
+        const alignedIdentity = resolveCaptureChatIdentity(activeChatIdentity, liveIdentity, {
+            liveChat: getCurrentChatArray(getContext()),
+        });
         if (!alignedIdentity) {
             return;
         }
@@ -190,7 +194,7 @@ export function createArmCaptureSession({
     }
 }
 
-function resolveCaptureChatIdentity(expectedIdentity, liveIdentity) {
+function resolveCaptureChatIdentity(expectedIdentity, liveIdentity, options = {}) {
     if (!expectedIdentity || !liveIdentity) {
         return null;
     }
@@ -208,7 +212,10 @@ function resolveCaptureChatIdentity(expectedIdentity, liveIdentity) {
     const expectedChatId = String(expectedIdentity.chatId || '').trim();
     const liveChatId = String(liveIdentity.chatId || '').trim();
     if (expectedChatId && liveChatId && expectedChatId !== liveChatId) {
-        return null;
+        return isFreshSameCharacterChat(liveIdentity, options.liveChat)
+            && hasSameCharacterIdentity(expectedIdentity, liveIdentity)
+            ? cloneChatIdentity(liveIdentity)
+            : null;
     }
 
     if (!isProvisionalCaptureIdentity(expectedIdentity, liveIdentity)) {
@@ -229,6 +236,31 @@ function isProvisionalCaptureIdentity(expectedIdentity, liveIdentity) {
     const liveAvatar = String(liveIdentity?.avatarUrl || '').trim();
     if (expectedAvatar && liveAvatar) {
         return expectedAvatar === liveAvatar;
+    }
+
+    const expectedAssistant = String(expectedIdentity?.assistantName || '').trim();
+    const liveAssistant = String(liveIdentity?.assistantName || '').trim();
+    return Boolean(expectedAssistant) && expectedAssistant === liveAssistant;
+}
+
+function isFreshSameCharacterChat(liveIdentity, liveChat) {
+    if (String(liveIdentity?.kind || '') !== 'character') {
+        return false;
+    }
+
+    if (!Array.isArray(liveChat)) {
+        return false;
+    }
+
+    return liveChat.length === 0
+        || (liveChat.length === 1 && liveChat[0]?.is_user === true);
+}
+
+function hasSameCharacterIdentity(expectedIdentity, liveIdentity) {
+    const expectedAvatar = String(expectedIdentity?.avatarUrl || '').trim();
+    const liveAvatar = String(liveIdentity?.avatarUrl || '').trim();
+    if (expectedAvatar && liveAvatar && expectedAvatar === liveAvatar) {
+        return true;
     }
 
     const expectedAssistant = String(expectedIdentity?.assistantName || '').trim();
