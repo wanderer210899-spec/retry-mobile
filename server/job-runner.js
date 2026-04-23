@@ -109,6 +109,35 @@ async function runJob(job, environment) {
                     continue;
                 }
 
+                if (structuredError.code === 'attempt_upstream_retryable') {
+                    job.lastError = structuredError.message;
+                    job.structuredError = null;
+                    job.lastValidation = null;
+                    job.transportFailureCount += 1;
+                    appendAttemptLog(job, {
+                        ...attemptRecord,
+                        finishedAt: new Date().toISOString(),
+                        outcome: 'retryable_request_failure',
+                        reason: structuredError.code,
+                        message: structuredError.message,
+                        phase: 'attempt_request_retryable',
+                    });
+                    touchJob(job, {
+                        phase: 'attempt_request_retryable',
+                    });
+                    appendJobLog(job, {
+                        source: 'backend',
+                        event: 'attempt_request_retryable',
+                        summary: structuredError.message,
+                        detail: {
+                            attemptNumber: job.attemptCount,
+                            code: structuredError.code,
+                        },
+                    });
+                    await waitBeforeNextAttempt(job, 'transport');
+                    continue;
+                }
+
                 appendAttemptLog(job, {
                     ...attemptRecord,
                     finishedAt: new Date().toISOString(),
@@ -349,11 +378,10 @@ async function runJob(job, environment) {
             return;
         }
 
-        const structuredError = toStructuredError(createStructuredError(
+        const structuredError = toStructuredError(buildMaxAttemptsStructuredError(job), 
             'backend_write_failed',
             'Maximum attempts reached before the accepted target was met.',
-            buildAttemptSummary(job),
-        ));
+        );
         touchJob(job, {
             state: 'failed',
             phase: 'failed',
@@ -800,17 +828,29 @@ async function replayCapturedRequest(job, environment) {
         }
 
         const payload = tryParseJson(text);
+        const replayFailureContext = {
+            endpoint,
+            status: response.status,
+            responseText: text,
+            requestAuth: environment?.requestAuth,
+        };
+
         if (!response.ok) {
+            const payloadError = buildReplayPayloadStructuredError(payload, replayFailureContext);
+            if (payloadError) {
+                throw payloadError;
+            }
+
             throw createStructuredError(
                 'handoff_request_failed',
-                payload?.error || `Generation request failed with status ${response.status}`,
-                buildReplayFailureDetail({
-                    endpoint,
-                    status: response.status,
-                    responseText: text,
-                    requestAuth: environment?.requestAuth,
-                }),
+                `Generation request failed with status ${response.status}`,
+                buildReplayFailureDetail(replayFailureContext),
             );
+        }
+
+        const payloadError = buildReplayPayloadStructuredError(payload, replayFailureContext);
+        if (payloadError) {
+            throw payloadError;
         }
 
         return payload;
@@ -857,11 +897,17 @@ function buildReplayFailureDetail({ endpoint, status, responseText, requestAuth 
         ? responseText.trim().slice(0, 240)
         : '';
     const parts = [
-        `request=POST ${endpoint}`,
-        `status=${status}`,
         `cookie=${requestAuth?.cookieHeader ? 'present' : 'missing'}`,
         `csrf=${requestAuth?.csrfToken ? 'present' : 'missing'}`,
     ];
+
+    if (typeof endpoint === 'string' && endpoint.trim()) {
+        parts.unshift(`request=POST ${endpoint.trim()}`);
+    }
+
+    if (Number.isFinite(Number(status))) {
+        parts.push(`status=${Number(status)}`);
+    }
 
     if (responsePreview) {
         parts.push(`response=${responsePreview}`);
@@ -871,40 +917,53 @@ function buildReplayFailureDetail({ endpoint, status, responseText, requestAuth 
 }
 
 function extractResponseText(payload) {
-    if (typeof payload === 'string') {
-        return payload;
+    const extracted = tryExtractResponseText(payload);
+    if (extracted !== null) {
+        return extracted;
     }
 
-    const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
-    const messageContent = choice?.message?.content;
-    if (typeof messageContent === 'string') {
-        return messageContent;
-    }
-
-    if (Array.isArray(messageContent)) {
-        return messageContent.map(flattenMessagePart).join('').trim();
-    }
-
-    if (typeof choice?.text === 'string') {
-        return choice.text;
-    }
-
-    if (typeof payload?.content === 'string') {
-        return payload.content;
-    }
-
-    if (Array.isArray(payload?.content)) {
-        return payload.content.map(flattenMessagePart).join('').trim();
-    }
-
-    if (typeof payload?.responseContent === 'string') {
-        return payload.responseContent;
+    const payloadError = buildReplayPayloadStructuredError(payload);
+    if (payloadError) {
+        throw payloadError;
     }
 
     throw createStructuredError(
         'handoff_request_failed',
         'Retry Mobile could not extract text from the generation response.',
     );
+}
+
+function tryExtractResponseText(payload) {
+    if (typeof payload === 'string') {
+        return payload;
+    }
+
+    const choice = Array.isArray(payload?.choices) ? payload.choices[0] : null;
+    const messageContent = extractTextContent(choice?.message?.content);
+    if (messageContent !== null) {
+        return messageContent;
+    }
+
+    if (typeof choice?.text === 'string') {
+        return choice.text;
+    }
+
+    const topLevelMessageContent = extractTextContent(payload?.message?.content);
+    if (topLevelMessageContent !== null) {
+        return topLevelMessageContent;
+    }
+
+    const topLevelContent = extractTextContent(payload?.content);
+    if (topLevelContent !== null) {
+        return topLevelContent;
+    }
+
+    const responseContent = extractTextContent(payload?.responseContent);
+    if (responseContent !== null) {
+        return responseContent;
+    }
+
+    return null;
 }
 
 function flattenMessagePart(part) {
@@ -914,6 +973,133 @@ function flattenMessagePart(part) {
 
     if (part && typeof part === 'object' && typeof part.text === 'string') {
         return part.text;
+    }
+
+    return '';
+}
+
+function extractTextContent(value) {
+    if (typeof value === 'string') {
+        return value;
+    }
+
+    if (Array.isArray(value)) {
+        return value.map(flattenMessagePart).join('').trim();
+    }
+
+    if (value && typeof value === 'object' && Array.isArray(value.parts)) {
+        return value.parts.map(flattenMessagePart).join('').trim();
+    }
+
+    return null;
+}
+
+function buildReplayPayloadStructuredError(payload, context = {}) {
+    const descriptor = readReplayPayloadErrorDescriptor(payload);
+    if (!descriptor) {
+        return null;
+    }
+
+    const code = isRetryableReplayPayloadError(descriptor, context)
+        ? 'attempt_upstream_retryable'
+        : 'handoff_request_failed';
+    const detail = buildReplayPayloadErrorDetail(descriptor, context);
+    return createStructuredError(code, descriptor.message, detail);
+}
+
+function readReplayPayloadErrorDescriptor(payload) {
+    const errorBlock = payload?.error;
+    if (typeof errorBlock === 'string' && errorBlock.trim()) {
+        return {
+            message: errorBlock.trim(),
+            code: firstNonEmptyString(payload?.code),
+            type: firstNonEmptyString(payload?.type),
+            detail: firstNonEmptyString(payload?.detail),
+        };
+    }
+
+    if (errorBlock && typeof errorBlock === 'object') {
+        const message = firstNonEmptyString(
+            errorBlock.message,
+            errorBlock.detail,
+            errorBlock.error,
+            payload?.message,
+            payload?.detail,
+        );
+        if (message) {
+            return {
+                message,
+                code: firstNonEmptyString(errorBlock.code, payload?.code),
+                type: firstNonEmptyString(errorBlock.type, payload?.type),
+                detail: firstNonEmptyString(payload?.detail, errorBlock.detail),
+            };
+        }
+    }
+
+    const hasRecognizedResponse = tryExtractResponseText(payload) !== null;
+    const topLevelMessage = firstNonEmptyString(payload?.message);
+    const topLevelDetail = firstNonEmptyString(payload?.detail);
+    const topLevelCode = firstNonEmptyString(payload?.code);
+    const topLevelType = firstNonEmptyString(payload?.type);
+    const topLevelStatus = Number.isFinite(Number(payload?.status)) ? Number(payload.status) : null;
+
+    if (!hasRecognizedResponse && topLevelMessage && (topLevelDetail || topLevelCode || topLevelType || (topLevelStatus && topLevelStatus >= 400))) {
+        return {
+            message: topLevelMessage,
+            code: topLevelCode,
+            type: topLevelType,
+            detail: topLevelDetail,
+            status: topLevelStatus,
+        };
+    }
+
+    return null;
+}
+
+function isRetryableReplayPayloadError(descriptor, context = {}) {
+    const status = Number.isFinite(Number(context?.status)) ? Number(context.status) : descriptor?.status;
+    if (status === 429 || (status >= 500 && status < 600)) {
+        return true;
+    }
+
+    const haystack = [
+        descriptor?.message,
+        descriptor?.detail,
+        descriptor?.code,
+        descriptor?.type,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    return /too many requests|rate limit|rate-limit|try again later|temporarily unavailable|server busy|overloaded|timeout|timed out|请求数限制|频率限制|稍后再试/u.test(haystack);
+}
+
+function buildReplayPayloadErrorDetail(descriptor, context = {}) {
+    const parts = [];
+    const baseDetail = buildReplayFailureDetail(context);
+    if (baseDetail) {
+        parts.push(baseDetail);
+    }
+
+    if (descriptor?.code) {
+        parts.push(`providerCode=${descriptor.code}`);
+    }
+
+    if (descriptor?.type) {
+        parts.push(`providerType=${descriptor.type}`);
+    }
+
+    const providerDetail = typeof descriptor?.detail === 'string' ? descriptor.detail.trim() : '';
+    if (providerDetail && providerDetail !== descriptor?.message) {
+        parts.push(`providerDetail=${providerDetail.slice(0, 240)}`);
+    }
+
+    return parts.join('; ');
+}
+
+function firstNonEmptyString(...values) {
+    for (const value of values) {
+        if (typeof value === 'string' && value.trim()) {
+            return value.trim();
+        }
     }
 
     return '';
@@ -929,6 +1115,21 @@ function tryParseJson(text) {
 
 function buildAttemptSummary(job) {
     return `Attempts: ${job.attemptCount}/${job.maxAttempts}; accepted: ${job.acceptedCount}/${job.targetAcceptedCount}.`;
+}
+
+function buildMaxAttemptsStructuredError(job) {
+    const detailParts = [buildAttemptSummary(job)];
+    if (job?.lastValidation) {
+        detailParts.push(`lastValidation=${formatValidationRejection(job.lastValidation)}`);
+    } else if (typeof job?.lastError === 'string' && job.lastError.trim()) {
+        detailParts.push(`lastFailure=${job.lastError.trim()}`);
+    }
+
+    return createStructuredError(
+        'max_attempts_reached',
+        'Maximum attempts reached before the accepted target was met.',
+        detailParts.join('; '),
+    );
 }
 
 function formatValidationRejection(validation) {
@@ -996,6 +1197,7 @@ function sleep(ms) {
 
 module.exports = {
     confirmNativeAssistant,
+    extractResponseText,
     replayCapturedRequest,
     resolvePendingNativeState,
     runJob,

@@ -132,7 +132,9 @@ export function createRetryFsm({
 
     function jobStarted(payload = {}) {
         if (!isState(context, RetryState.CAPTURING)) {
-            cleanupAbortedCaptureStart(payload);
+            if (cleanupAbortedCaptureStart(payload)) {
+                return getContext();
+            }
             return illegalTransition('jobStarted', [RetryState.CAPTURING], payload);
         }
 
@@ -556,12 +558,12 @@ export function createRetryFsm({
     function cleanupAbortedCaptureStart(payload) {
         const jobId = stringOrNull(payload.jobId);
         if (!jobId) {
-            return;
+            return false;
         }
 
         const abortedRunId = stringOrNull(payload.runId);
         if (!abortedRunId || !abortedCaptureRuns.has(abortedRunId)) {
-            return;
+            return false;
         }
 
         const aborted = abortedCaptureRuns.get(abortedRunId);
@@ -572,6 +574,7 @@ export function createRetryFsm({
             target: clonePlain(aborted.target),
             reason: 'capture_aborted_before_job_started',
         });
+        return true;
     }
 
     async function handlePollingStatus(status) {

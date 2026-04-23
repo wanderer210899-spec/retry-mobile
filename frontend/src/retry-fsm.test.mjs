@@ -822,7 +822,7 @@ test('jobFailed from CAPTURING keeps durable intent armed instead of silently dr
     assert.equal(failed.lastTerminalResult.outcome, 'failed');
 });
 
-test('late jobStarted after stop during CAPTURING cancels the orphaned backend job', () => {
+test('late jobStarted after stop during CAPTURING cancels the orphaned backend job without logging an illegal transition', () => {
     const { fsm, calls, logger } = createHarness();
     const chatIdentity = {
         kind: 'character',
@@ -865,7 +865,7 @@ test('late jobStarted after stop during CAPTURING cancels the orphaned backend j
             reason: 'capture_aborted_before_job_started',
         },
     ]);
-    assert.equal(logger.errors.at(-1)?.transition, 'jobStarted');
+    assert.equal(logger.errors.length, 0);
 });
 
 test('restoreRunning resumes an active backend job directly into RUNNING on boot', () => {
