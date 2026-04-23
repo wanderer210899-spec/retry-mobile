@@ -137,6 +137,7 @@ test('reserve success enters waiting_native and allocates poll session', () => {
     assert.deepEqual(result.commands.map((entry) => entry.type), [
         'backend.start_poll',
         'native.await_readiness',
+        'backend.report_frontend_presence',
     ]);
 });
 

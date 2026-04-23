@@ -19,6 +19,7 @@ export function createInitialRetryContext(overrides = {}) {
         runId: stringOrNull(overrides.runId),
         jobId: stringOrNull(overrides.jobId),
         pollingToken: stringOrNull(overrides.pollingToken),
+        lastAppliedVersion: numberOrNull(overrides.lastAppliedVersion) || 0,
         pendingVisibleRender: clonePlain(overrides.pendingVisibleRender) || null,
         lastTerminalResult: clonePlain(overrides.lastTerminalResult) || null,
         error: clonePlain(overrides.error) || null,
@@ -89,6 +90,7 @@ export function createRetryFsm({
             runId: createRunId(),
             jobId: null,
             pollingToken: null,
+            lastAppliedVersion: 0,
             pendingVisibleRender: null,
             error: null,
         });
@@ -144,19 +146,20 @@ export function createRetryFsm({
 
         leaveCapturing(context);
 
-        const runningContext = normalizeContextForState({
+        const runningContext = {
             ...context,
             state: RetryState.RUNNING,
             chatIdentity: clonePlain(payload.chatIdentity) || context.chatIdentity || null,
             capturedRequest: null,
-            captureFingerprint: null,
+            captureFingerprint: clonePlain(context.captureFingerprint) || null,
             target: clonePlain(payload.target) || context.target || null,
             runId: stringOrNull(payload.runId) || context.runId || createRunId(),
             jobId,
             pollingToken: null,
+            lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
             error: null,
-        });
+        };
 
         const entryPatch = enterRunning(runningContext);
         context = normalizeContextForState({
@@ -193,6 +196,7 @@ export function createRetryFsm({
             runId: nextState === RetryState.ARMED ? createRunId() : null,
             jobId: null,
             pollingToken: null,
+            lastAppliedVersion: 0,
             pendingVisibleRender: null,
             lastTerminalResult: createTerminalResult('completed', payload, previous, null, now),
             error: null,
@@ -242,6 +246,7 @@ export function createRetryFsm({
             runId: nextState === RetryState.ARMED ? createRunId() : null,
             jobId: null,
             pollingToken: null,
+            lastAppliedVersion: 0,
             pendingVisibleRender: null,
             lastTerminalResult: createTerminalResult('failed', payload, previous, normalizedError, now),
             error: normalizedError,
@@ -276,7 +281,7 @@ export function createRetryFsm({
             });
         }
 
-        const runningContext = normalizeContextForState({
+        const runningContext = {
             ...previous,
             state: RetryState.RUNNING,
             intent: readIntentSnapshot(intentPort, previous.intent),
@@ -290,10 +295,11 @@ export function createRetryFsm({
             runId: stringOrNull(payload.runId) || stringOrNull(status?.runId) || previous.runId || createRunId(),
             jobId,
             pollingToken: null,
+            lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
             lastTerminalResult: null,
             error: null,
-        });
+        };
 
         const entryPatch = enterRunning(runningContext);
         context = normalizeContextForState({
@@ -321,9 +327,11 @@ export function createRetryFsm({
         context = nextContext;
 
         if (context.pendingVisibleRender && payload.isVisible === true) {
+            const pendingVersion = numberOrNull(context.pendingVisibleRender?.status?.targetMessageVersion) || 0;
             stPort.flushPendingVisibleRender?.(clonePlain(context.pendingVisibleRender));
             context = normalizeContextForState({
                 ...context,
+                lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
                 pendingVisibleRender: null,
             });
         }
@@ -380,6 +388,7 @@ export function createRetryFsm({
             runId: null,
             jobId: null,
             pollingToken: null,
+            lastAppliedVersion: 0,
             pendingVisibleRender: null,
             lastTerminalResult: createTerminalResult('cancelled', payload, previous, null, now),
             error: null,
@@ -419,27 +428,22 @@ export function createRetryFsm({
         };
         backendPort.startJob?.(startPayload);
 
-        const nativeObserverPayload = {
-            runId: nextContext.runId,
-            chatIdentity: clonePlain(nextContext.chatIdentity),
-            target: clonePlain(nextContext.target),
-            ...(nativeGraceSeconds != null ? { nativeGraceSeconds } : {}),
-            ...(nextContext.captureFingerprint ? {
-                fingerprint: clonePlain(nextContext.captureFingerprint),
-            } : {}),
-        };
-        stPort.subscribeNativeObserver?.(nativeObserverPayload);
     }
 
-    function leaveCapturing(previous) {
-        stPort.unsubscribeNativeObserver?.({
-            runId: previous.runId,
-            chatIdentity: clonePlain(previous.chatIdentity),
-            target: clonePlain(previous.target),
-        });
-    }
+    function leaveCapturing() {}
 
     function enterRunning(nextContext) {
+        const nativeGraceSeconds = numberOrNull(nextContext.intent?.settings?.nativeGraceSeconds);
+        if (nextContext.captureFingerprint) {
+            stPort.subscribeNativeObserver?.({
+                runId: nextContext.runId,
+                chatIdentity: clonePlain(nextContext.chatIdentity),
+                target: clonePlain(nextContext.target),
+                ...(nativeGraceSeconds != null ? { nativeGraceSeconds } : {}),
+                fingerprint: clonePlain(nextContext.captureFingerprint),
+            });
+        }
+
         const pollingToken = backendPort.startPolling?.(
             nextContext.jobId,
             (status) => handlePollingStatus(status),
@@ -462,6 +466,11 @@ export function createRetryFsm({
         if (previous.pollingToken) {
             backendPort.stopPolling?.(previous.pollingToken);
         }
+        stPort.unsubscribeNativeObserver?.({
+            runId: previous.runId,
+            chatIdentity: clonePlain(previous.chatIdentity),
+            target: clonePlain(previous.target),
+        });
         stPort.clearGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(previous)));
     }
 
@@ -574,20 +583,64 @@ export function createRetryFsm({
                     fallbackMessage,
                 ),
             });
+            return;
         }
+
+        if (statusState !== 'running') {
+            return;
+        }
+
+        const nextVersion = numberOrNull(status?.targetMessageVersion) || 0;
+        if (nextVersion <= Number(context.lastAppliedVersion || 0)) {
+            return;
+        }
+
+        const renderPayload = {
+            kind: 'accepted_output',
+            chatIdentity: clonePlain(context.chatIdentity),
+            status: clonePlain(status),
+        };
+        if (stPort.isVisible?.() === false) {
+            const queued = stPort.queueVisibleRender?.(renderPayload) || renderPayload;
+            context = normalizeContextForState({
+                ...context,
+                pendingVisibleRender: clonePlain(queued),
+            });
+            return;
+        }
+
+        Promise.resolve(stPort.applyAcceptedOutput?.(renderPayload))
+            .then((result) => {
+                if (!isState(context, RetryState.RUNNING)) {
+                    return;
+                }
+                if (result?.ok === false) {
+                    return;
+                }
+                context = normalizeContextForState({
+                    ...context,
+                    lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
+                    pendingVisibleRender: null,
+                });
+            })
+            .catch(() => {});
     }
 
     function handlePollingError(error) {
+        const normalizedError = normalizeStructuredError(
+            error,
+            'handoff_request_failed',
+            'Retry Mobile backend polling failed.',
+        );
         logDeveloperError(logger, {
             transition: 'pollingError',
             state: context.state,
             jobId: context.jobId,
-            error: normalizeStructuredError(
-                error,
-                'handoff_request_failed',
-                'Retry Mobile backend polling failed.',
-            ),
+            error: normalizedError,
         });
+        if (isState(context, RetryState.RUNNING)) {
+            jobFailed({ error: normalizedError });
+        }
     }
 }
 
@@ -602,6 +655,7 @@ function normalizeContextForState(nextContext) {
         runId: stringOrNull(nextContext.runId),
         jobId: stringOrNull(nextContext.jobId),
         pollingToken: stringOrNull(nextContext.pollingToken),
+        lastAppliedVersion: numberOrNull(nextContext.lastAppliedVersion) || 0,
         pendingVisibleRender: clonePlain(nextContext.pendingVisibleRender) || null,
         lastTerminalResult: clonePlain(nextContext.lastTerminalResult) || null,
         error: clonePlain(nextContext.error) || null,
@@ -617,6 +671,7 @@ function normalizeContextForState(nextContext) {
                 runId: null,
                 jobId: null,
                 pollingToken: null,
+                lastAppliedVersion: 0,
                 pendingVisibleRender: null,
             };
         case RetryState.ARMED:
@@ -626,6 +681,7 @@ function normalizeContextForState(nextContext) {
                 captureFingerprint: null,
                 jobId: null,
                 pollingToken: null,
+                lastAppliedVersion: 0,
                 pendingVisibleRender: null,
             };
         case RetryState.CAPTURING:
@@ -633,6 +689,7 @@ function normalizeContextForState(nextContext) {
                 ...normalized,
                 jobId: null,
                 pollingToken: null,
+                lastAppliedVersion: 0,
                 pendingVisibleRender: null,
             };
         case RetryState.RUNNING:

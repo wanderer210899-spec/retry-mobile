@@ -202,6 +202,14 @@ export function bootRetryMobile() {
                     current,
                     getChatIdentity(getContext()),
                 );
+                if (!chatIdentity) {
+                    runtime.controlError = error || createStructuredError(
+                        'capture_missing_payload',
+                        'Retry Mobile could not re-arm capture because the chat identity is missing.',
+                    );
+                    render();
+                    return;
+                }
                 stPort.subscribeCapture({
                     runId: current.runId,
                     chatIdentity,
@@ -256,6 +264,12 @@ export function bootRetryMobile() {
         retryFsm.arm({
             chatIdentity: getChatIdentity(getContext()),
         });
+        if (retryFsm.getState() !== RetryState.ARMED) {
+            runtime.controlError = retryFsm.getContext().error || createStructuredError(
+                'retry_arm_failed',
+                'Retry Mobile could not arm the retry loop due to an invalid intent mode.',
+            );
+        }
         syncRuntimeFromFsm(retryFsm);
         render();
     };
@@ -429,10 +443,12 @@ export function bootRetryMobile() {
 
         if (type === 'page.visible' || type === 'window.focused' || type === 'network.online') {
             if (state === RetryState.RUNNING) {
+                const context = retryFsm.getContext();
                 retryFsm.resume({
                     reason: type,
                     isVisible: Boolean(stPort.isVisible?.()),
-                    chatIdentity: resolveCaptureSubscriptionChatIdentity(retryFsm.getContext()),
+                    chatIdentity: resolveCaptureSubscriptionChatIdentity(context),
+                    pendingVisibleRender: context.pendingVisibleRender,
                 });
                 syncRuntimeFromFsm(retryFsm);
                 render();
@@ -580,6 +596,12 @@ export function bootRetryMobile() {
             const armPayload = buildBootArmPayload(intent, currentChatIdentity);
             if (armPayload && retryFsm.getState() === RetryState.IDLE) {
                 retryFsm.arm(armPayload);
+                if (retryFsm.getState() !== RetryState.ARMED) {
+                    runtime.controlError = retryFsm.getContext().error || createStructuredError(
+                        'retry_arm_failed',
+                        'Retry Mobile could not restore armed mode from saved settings.',
+                    );
+                }
                 syncRuntimeFromFsm(retryFsm);
                 render();
             }

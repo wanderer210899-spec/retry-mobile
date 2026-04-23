@@ -30,6 +30,8 @@ function createHarness({
     let runCounter = 0;
     let pollStatusHandler = null;
     let pollErrorHandler = null;
+    let visible = true;
+    let applyAcceptedOutputResult = { ok: true };
     let intentState = {
         mode: initialIntent.mode || 'off',
         engaged: Boolean(initialIntent.engaged),
@@ -103,6 +105,18 @@ function createHarness({
         flushPendingVisibleRender(payload) {
             calls.push({ port: 'st', method: 'flushPendingVisibleRender', args: [payload] });
         },
+        isVisible() {
+            calls.push({ port: 'st', method: 'isVisible', args: [] });
+            return visible;
+        },
+        queueVisibleRender(payload) {
+            calls.push({ port: 'st', method: 'queueVisibleRender', args: [payload] });
+            return payload;
+        },
+        applyAcceptedOutput(payload) {
+            calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
+            return Promise.resolve(applyAcceptedOutputResult);
+        },
     };
 
     const backendPort = {
@@ -160,6 +174,12 @@ function createHarness({
         async emitPollError(error) {
             await pollErrorHandler?.(error);
         },
+        setVisible(nextVisible) {
+            visible = Boolean(nextVisible);
+        },
+        setApplyAcceptedOutputResult(nextResult) {
+            applyAcceptedOutputResult = nextResult;
+        },
     };
 }
 
@@ -185,6 +205,7 @@ test('createInitialRetryContext exposes the explicit FSM context shape', () => {
         runId: null,
         jobId: null,
         pollingToken: null,
+        lastAppliedVersion: 0,
         pendingVisibleRender: null,
         lastTerminalResult: null,
         error: null,
@@ -318,13 +339,7 @@ test('capture leaves ARMED, enters CAPTURING, and starts backend handoff through
         nativeGraceSeconds: 30,
         targetFingerprint: fingerprint,
     });
-    assert.deepEqual(lastCall(calls, 'subscribeNativeObserver')?.args[0], {
-        runId: 'run-1',
-        chatIdentity,
-        target,
-        nativeGraceSeconds: 30,
-        fingerprint,
-    });
+    assert.equal(lastCall(calls, 'subscribeNativeObserver'), null);
 });
 
 test('illegal transitions no-op and log a structured developer error', () => {
@@ -367,6 +382,10 @@ test('jobStarted enters RUNNING, starts callback-driven polling, and applies the
         request: {
             messages: ['hello'],
         },
+        fingerprint: {
+            chatIdentity,
+            userMessageText: 'hello',
+        },
         target,
     });
 
@@ -378,10 +397,15 @@ test('jobStarted enters RUNNING, starts callback-driven polling, and applies the
     assert.equal(running.state, RetryState.RUNNING);
     assert.equal(running.jobId, 'job-1');
     assert.equal(running.pollingToken, 'poll:job-1');
-    assert.deepEqual(lastCall(calls, 'unsubscribeNativeObserver')?.args[0], {
+    assert.deepEqual(lastCall(calls, 'subscribeNativeObserver')?.args[0], {
         runId: 'run-1',
         chatIdentity,
         target,
+        nativeGraceSeconds: 30,
+        fingerprint: {
+            chatIdentity,
+            userMessageText: 'hello',
+        },
     });
     assert.deepEqual(lastCall(calls, 'startPolling')?.args, [
         'job-1',
@@ -436,6 +460,49 @@ test('terminal poll status re-enters the FSM through the polling callbacks', asy
     assert.equal(state.state, RetryState.ARMED);
     assert.equal(state.jobId, null);
     assert.equal(state.runId, 'run-2');
+});
+
+test('running poll status applies accepted output once per version when visible', async () => {
+    const { fsm, calls, emitPolledStatus } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 1 });
+    await Promise.resolve();
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 1 });
+
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+    assert.equal(fsm.getContext().lastAppliedVersion, 1);
+});
+
+test('running poll status does not advance applied version when applyAcceptedOutput fails', async () => {
+    const { fsm, calls, emitPolledStatus, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setApplyAcceptedOutputResult({ ok: false });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 2);
+    assert.equal(fsm.getContext().lastAppliedVersion, 0);
 });
 
 test('resume is an internal RUNNING self-transition that does not churn polling or indicator entry actions', () => {
@@ -842,11 +909,7 @@ test('restoreRunning from CAPTURING adopts an attached running job without cance
 
     assert.equal(running.state, RetryState.RUNNING);
     assert.equal(running.jobId, 'job-attach');
-    assert.deepEqual(lastCall(calls, 'unsubscribeNativeObserver')?.args[0], {
-        runId: 'run-1',
-        chatIdentity,
-        target,
-    });
+    assert.equal(lastCall(calls, 'unsubscribeNativeObserver'), null);
     assert.equal(lastCall(calls, 'cancelJob'), null);
 });
 
