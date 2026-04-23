@@ -236,3 +236,125 @@ test('resolvePendingNativeState fails closed when a frontend-confirmed native as
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
+
+test('resolvePendingNativeState waits briefly for a frontend-confirmed native assistant to reach disk before failing', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-persist-'));
+    const chatsRoot = path.join(tempRoot, 'chats');
+    const cardDir = path.join(chatsRoot, 'Kate');
+    const jobsDir = path.join(tempRoot, 'retry-mobile', 'jobs');
+    fs.mkdirSync(cardDir, { recursive: true });
+    fs.mkdirSync(jobsDir, { recursive: true });
+
+    const integrity = 'integrity-native-persist';
+    const userAnchorId = 'user-anchor-native-persist';
+    const assistantAnchorId = 'assistant-anchor-native-persist';
+    const chatId = 'kate-native-persist';
+    const chatPath = path.join(cardDir, `${chatId}.jsonl`);
+    fs.writeFileSync(chatPath, [
+        JSON.stringify({
+            chat_metadata: {
+                integrity,
+            },
+        }),
+        JSON.stringify({
+            name: 'User',
+            is_user: true,
+            is_system: false,
+            mes: 'I wait under the streetlight after class.',
+            extra: {
+                retryMobileUserAnchorId: userAnchorId,
+            },
+        }),
+    ].join('\n'));
+
+    const now = new Date().toISOString();
+    const job = {
+        jobId: 'job-native-persist',
+        runId: 'run-native-persist',
+        state: 'running',
+        phase: 'native_confirming_persisted',
+        createdAt: now,
+        updatedAt: now,
+        nativeState: 'pending',
+        nativeResolutionCause: 'frontend_confirmed',
+        recoveryMode: '',
+        acceptedCount: 0,
+        targetAcceptedCount: 2,
+        attemptCount: 0,
+        maxAttempts: 2,
+        targetMessageVersion: 0,
+        targetUserAnchorId: userAnchorId,
+        targetAssistantAnchorId: assistantAnchorId,
+        capturedChatIntegrity: integrity,
+        capturedChatLength: 1,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: 'I wait under the streetlight after class.',
+        },
+        chatIdentity: {
+            kind: 'character',
+            avatarUrl: 'Kate.png',
+            chatId,
+            fileName: chatId,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: {
+                root: tempRoot,
+                chats: chatsRoot,
+                groupChats: path.join(tempRoot, 'group chats'),
+            },
+        },
+        attemptLog: [],
+    };
+
+    let delayedWrite = null;
+    try {
+        delayedWrite = setTimeout(() => {
+            fs.writeFileSync(chatPath, [
+                JSON.stringify({
+                    chat_metadata: {
+                        integrity,
+                    },
+                }),
+                JSON.stringify({
+                    name: 'User',
+                    is_user: true,
+                    is_system: false,
+                    mes: 'I wait under the streetlight after class.',
+                    extra: {
+                        retryMobileUserAnchorId: userAnchorId,
+                    },
+                }),
+                JSON.stringify({
+                    name: 'Kate',
+                    is_user: false,
+                    is_system: false,
+                    mes: 'I slow down beside you and listen.',
+                    extra: {
+                        retryMobileAssistantAnchorId: assistantAnchorId,
+                    },
+                }),
+            ].join('\n'));
+        }, 150);
+
+        const result = await resolvePendingNativeState(job, 'frontend_confirmed');
+
+        assert.equal(result.outcome, 'confirmed');
+        assert.equal(job.state, 'running');
+        assert.equal(job.phase, 'native_confirmed');
+        assert.equal(job.nativeState, 'confirmed');
+        assert.equal(job.recoveryMode, 'top_up_existing');
+        assert.equal(job.structuredError, null);
+
+        const logPath = path.join(jobsDir, 'job-native-persist.log.jsonl');
+        const logText = fs.readFileSync(logPath, 'utf8');
+        assert.match(logText, /native_confirmed/);
+        assert.doesNotMatch(logText, /native_confirmation_failed/);
+    } finally {
+        if (delayedWrite) {
+            clearTimeout(delayedWrite);
+        }
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});

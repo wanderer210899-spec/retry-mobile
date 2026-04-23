@@ -1,0 +1,41 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e14]:
+    - generic [ref=e15]:
+      - generic "AI Response Configuration" [ref=e2192] [cursor=pointer]: 
+      - text:                                        + No items                         ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰ ☑ ☰                                  + No items      ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰  ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰ ☰                  +     No items 
+    - generic [ref=e915]:
+      - generic "API Connections" [ref=e2194] [cursor=pointer]: 
+      - text:                                                                
+    - generic [ref=e967]:
+      - generic "AI Response Formatting" [ref=e2196] [cursor=pointer]: 
+      - text:                                               
+    - generic [ref=e1135]:
+      - generic "World Info" [ref=e2198] [cursor=pointer]: 
+      - text:                +     
+    - generic [ref=e1204]:
+      - generic "User Settings" [ref=e2200] [cursor=pointer]: 
+      - text:                                   
+    - generic [ref=e1505]:
+      - generic "Change Background Image" [ref=e2201]:
+        - generic [ref=e2202] [cursor=pointer]: 
+      - text:       +    
+    - generic [ref=e1531]:
+      - generic "Extensions" [ref=e2204] [cursor=pointer]: 
+      - text:  
+    - generic [ref=e1552]:
+      - generic "Persona Management" [ref=e2206] [cursor=pointer]: 
+      - text:                
+    - generic [ref=e1611]:
+      - generic "Character Management" [ref=e2208] [cursor=pointer]: 
+      - text:                                            Group is empty.  No characters available         
+  - generic:                      +                                                                                +    + +                  
+  - generic:                  
+  - generic [ref=e2177]:
+    - text: 
+    - generic [ref=e2182]:
+      - text:  
+      - generic [ref=e2186]:
+        - generic [ref=e2211] [cursor=pointer]: 
+        - textbox "Not connected to API!" [ref=e2187]
+        - generic [ref=e2212]:       
+  - text:               

@@ -240,17 +240,10 @@ export function createSystemController({
     }
 
     async function syncVisibleRetryLog() {
-        if (runtime.activeJobStatus?.jobId) {
-            await syncRetryLogForStatus(runtime, runtime.activeJobStatus, {
-                force: true,
-                clearWhenMissing: false,
-            });
-            return;
-        }
-
         const latest = await fetchLatestJob(getChatIdentity(getContext()));
-        if (latest?.jobId) {
-            await syncRetryLogForStatus(runtime, latest, {
+        const visibleStatus = chooseVisibleRetryLogStatus(runtime.activeJobStatus, latest);
+        if (visibleStatus?.jobId) {
+            await syncRetryLogForStatus(runtime, visibleStatus, {
                 force: true,
                 clearWhenMissing: false,
             });
@@ -259,4 +252,28 @@ export function createSystemController({
 
         clearRetryLog(runtime);
     }
+}
+
+export function chooseVisibleRetryLogStatus(activeStatus, latestStatus) {
+    if (!activeStatus?.jobId) {
+        return latestStatus?.jobId ? latestStatus : null;
+    }
+
+    if (!latestStatus?.jobId) {
+        return activeStatus;
+    }
+
+    const activeUpdatedAt = getVisibleStatusUpdatedAt(activeStatus);
+    const latestUpdatedAt = getVisibleStatusUpdatedAt(latestStatus);
+    if (latestUpdatedAt > activeUpdatedAt) {
+        return latestStatus;
+    }
+
+    return activeStatus;
+}
+
+function getVisibleStatusUpdatedAt(status) {
+    const updatedAt = status?.logUpdatedAt || status?.updatedAt || '';
+    const timestamp = Date.parse(String(updatedAt || ''));
+    return Number.isFinite(timestamp) ? timestamp : 0;
 }

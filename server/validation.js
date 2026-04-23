@@ -174,6 +174,19 @@ async function resolveTokenMetrics(text, runConfig = {}, validation = {}, option
 function validateRunConfig(runConfig = {}) {
     const validation = getValidationThreshold(runConfig);
     const attemptTimeoutSeconds = getAttemptTimeoutSeconds(runConfig);
+    const targetAcceptedCount = Math.max(1, Number(runConfig.targetAcceptedCount) || 1);
+    const maxAttempts = Math.max(1, Number(runConfig.maxAttempts) || 1);
+
+    if (maxAttempts < targetAcceptedCount) {
+        return {
+            ok: false,
+            ...validation,
+            attemptTimeoutSeconds,
+            code: 'validation_config_invalid',
+            message: 'Maximum attempts must be at least as large as the accepted outputs goal.',
+        };
+    }
+
     if (attemptTimeoutSeconds <= 0) {
         return {
             ok: false,

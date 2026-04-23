@@ -5,6 +5,7 @@ const {
     TOKEN_COUNT_SOURCE,
     VALIDATION_MODE,
     validateAcceptedText,
+    validateRunConfig,
 } = require('./validation');
 
 test('token validation prefers the tokenizer-backed counter when one is available', async () => {
@@ -83,4 +84,18 @@ test('character validation keeps token metrics explicitly non-blocking', async (
     assert.equal(validation.metrics.characterCount, 5);
     assert.equal(validation.metrics.tokenCount, 1);
     assert.equal(validation.metrics.tokenCountSource, TOKEN_COUNT_SOURCE.HEURISTIC_NONBLOCKING);
+});
+
+test('run config fails closed when maximum attempts is lower than the accepted outputs goal', () => {
+    const validation = validateRunConfig({
+        targetAcceptedCount: 3,
+        maxAttempts: 1,
+        attemptTimeoutSeconds: 30,
+        validationMode: VALIDATION_MODE.CHARACTERS,
+        minCharacters: 1,
+    });
+
+    assert.equal(validation.ok, false);
+    assert.equal(validation.code, 'validation_config_invalid');
+    assert.equal(validation.message, 'Maximum attempts must be at least as large as the accepted outputs goal.');
 });

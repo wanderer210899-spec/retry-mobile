@@ -13,6 +13,7 @@ const {
 
 const NATIVE_PENDING_POLL_MS = 1000;
 const FORCED_NATIVE_INSPECTION_DELAYS_MS = [0, 1000, 2000, 4000, 8000];
+const FRONTEND_CONFIRMED_PERSIST_DELAYS_MS = [0, 250, 500, 1000, 1500];
 const BASE_RETRY_DELAY_MS = 750;
 const MAX_RETRY_DELAY_MS = 10000;
 const MAX_TARGET_PENDING_INSPECTIONS = 5;
@@ -468,6 +469,9 @@ async function awaitNativeOutcome(job) {
 
         const inspection = inspectNativeAssistantState(job);
         if (inspection.kind === 'filled') {
+            if (job.state !== 'running' || job.cancelRequested) {
+                return;
+            }
             applyInspectionResolution(job, inspection, '');
             return;
         }
@@ -499,7 +503,7 @@ async function resolvePendingNativeState(job, cause) {
                 return { outcome: job.nativeState };
             }
 
-            const inspection = await inspectPendingNativeState(job);
+            const inspection = await inspectPendingNativeState(job, cause);
             if (!inspection || job.state !== 'running' || job.cancelRequested) {
                 return { outcome: 'cancelled' };
             }
@@ -681,9 +685,13 @@ function applyInspectionResolution(job, inspection, cause) {
     );
 }
 
-async function inspectPendingNativeState(job) {
+async function inspectPendingNativeState(job, cause) {
     let latestInspection = null;
-    for (const delayMs of FORCED_NATIVE_INSPECTION_DELAYS_MS) {
+    const resolutionCause = cause || job?.nativeResolutionCause || '';
+    const delays = resolutionCause === 'frontend_confirmed'
+        ? FRONTEND_CONFIRMED_PERSIST_DELAYS_MS
+        : FORCED_NATIVE_INSPECTION_DELAYS_MS;
+    for (const delayMs of delays) {
         if (delayMs > 0) {
             await sleep(delayMs);
         }
@@ -693,9 +701,18 @@ async function inspectPendingNativeState(job) {
         }
 
         latestInspection = inspectNativeAssistantState(job);
-        if (latestInspection.kind !== 'target_pending') {
-            return latestInspection;
+        if (latestInspection.kind === 'target_pending') {
+            continue;
         }
+
+        if (
+            resolutionCause === 'frontend_confirmed'
+            && (latestInspection.kind === 'missing_assistant' || latestInspection.kind === 'missing_user_anchor')
+        ) {
+            continue;
+        }
+
+        return latestInspection;
     }
 
     return latestInspection;
