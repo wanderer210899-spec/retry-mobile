@@ -96,10 +96,10 @@ export function createStPort({
 
     async function observeNative(payload, signal) {
         if (!payload?.fingerprint) {
-            onNativeFailed?.(createStructuredError(
-                'native_wait_timeout',
-                'Retry Mobile could not observe the native turn because the capture fingerprint is missing.',
-            ));
+            onNativeEvent?.(
+                'native_observer_skipped_missing_fingerprint',
+                'Retry Mobile skipped native observation because no capture fingerprint was provided.',
+            );
             return;
         }
 
