@@ -82,9 +82,26 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
     };
 
     try {
+        // Preserve the user's current scroll position when patching a message.
+        // ST's message rerender can alter layout; we must not yank the user to the updated turn.
+        const chatContainer = document.getElementById('chat') || document.querySelector('#chat');
+        const prevScrollTop = chatContainer ? chatContainer.scrollTop : null;
+        const prevScrollHeight = chatContainer ? chatContainer.scrollHeight : null;
+        const prevClientHeight = chatContainer ? chatContainer.clientHeight : null;
+        const wasNearBottom = chatContainer
+            && prevScrollTop != null
+            && prevScrollHeight != null
+            && prevClientHeight != null
+            ? (prevScrollTop + prevClientHeight >= prevScrollHeight - 12)
+            : false;
+
         context.updateMessageBlock?.(targetMessageIndex, liveChat[targetMessageIndex]);
         context.swipe?.refresh?.(true);
         await waitForStableText(element, { signal });
+
+        if (chatContainer && prevScrollTop != null && !wasNearBottom) {
+            chatContainer.scrollTop = prevScrollTop;
+        }
         return {
             ok: true,
             jobId: String(status?.jobId || ''),

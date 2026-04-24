@@ -49,6 +49,7 @@ export function createRuntime() {
             lastAttemptCount: null,
             lastAcceptedCount: null,
             lastTerminalState: '',
+            lastNativePendingToast: false,
         },
         log: {
             text: '',

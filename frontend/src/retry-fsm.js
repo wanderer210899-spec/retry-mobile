@@ -375,7 +375,17 @@ export function createRetryFsm({
                         pendingVisibleRender: null,
                     });
                     if (pendingRender?.terminalOutcome === 'completed') {
-                        jobCompleted({ status: pendingRender.status });
+                        // Never trust a queued "completed" snapshot blindly after a hidden-tab window.
+                        // Re-check backend truth; otherwise a cached/stale terminal snapshot could
+                        // incorrectly transition the frontend to done while the backend keeps running.
+                        try {
+                            const fresh = await backendPort.pollStatus?.(context.jobId);
+                            if (fresh?.state === 'completed') {
+                                jobCompleted({ status: fresh });
+                            }
+                        } catch {
+                            // If we cannot re-check right now, stay running and let polling resolve.
+                        }
                     }
                 })
                 .catch(async () => {
@@ -386,7 +396,14 @@ export function createRetryFsm({
                         await stPort.guardedReload?.();
                     } catch {}
                     if (pendingRender?.terminalOutcome === 'completed' && isState(context, RetryState.RUNNING)) {
-                        jobCompleted({ status: pendingRender.status });
+                        try {
+                            const fresh = await backendPort.pollStatus?.(context.jobId);
+                            if (fresh?.state === 'completed') {
+                                jobCompleted({ status: fresh });
+                            }
+                        } catch {
+                            // Defer to the ongoing polling loop.
+                        }
                     }
                 });
         }

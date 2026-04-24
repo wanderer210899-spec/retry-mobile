@@ -359,6 +359,9 @@ export function bootRetryMobile() {
         }
 
         if (type === 'page.visible' || type === 'window.focused' || type === 'network.online') {
+            // Coming back from a hidden/suspended browser can detach the panel host.
+            // Remount immediately rather than waiting for the periodic host observer tick.
+            ensurePanelMounted();
             if (state === RetryState.RUNNING) {
                 const context = retryFsm.getContext();
                 retryFsm.resume({
@@ -397,6 +400,7 @@ export function bootRetryMobile() {
 
         const jobId = String(status.jobId || runtime.activeJobId || '');
         const state = String(status.state || '').trim();
+        const nativeState = String(status.nativeState || '').trim();
         const attemptCount = Number.isFinite(Number(status.attemptCount)) ? Number(status.attemptCount) : null;
         const maxAttempts = Number.isFinite(Number(status.maxAttempts)) ? Number(status.maxAttempts) : null;
         const acceptedCount = Number.isFinite(Number(status.acceptedCount)) ? Number(status.acceptedCount) : null;
@@ -406,12 +410,27 @@ export function bootRetryMobile() {
             runtime.toast.lastAttemptCount = null;
             runtime.toast.lastAcceptedCount = null;
             runtime.toast.lastTerminalState = '';
+            runtime.toast.lastNativePendingToast = false;
         }
         runtime.toast.lastJobId = jobId || runtime.toast.lastJobId || '';
 
         if (state === 'running') {
-            if (attemptCount != null
+            // While native is still pending, do not claim attempt progress. This avoids the misleading "0/N" toast.
+            if (nativeState === 'pending') {
+                if (!runtime.toast.lastNativePendingToast) {
+                    runtime.toast.lastNativePendingToast = true;
+                    showToast('info', 'Retry Mobile', 'Generating native reply…');
+                }
+            } else if (runtime.toast.lastNativePendingToast) {
+                runtime.toast.lastNativePendingToast = false;
+            }
+
+            // Only toast attempt progress after the native phase has completed (confirmed/abandoned)
+            // and the backend has started real retry attempts.
+            if (nativeState !== 'pending'
+                && attemptCount != null
                 && maxAttempts != null
+                && attemptCount > 0
                 && runtime.toast.lastAttemptCount !== attemptCount) {
                 runtime.toast.lastAttemptCount = attemptCount;
                 showToast('info', 'Retry Mobile', `Retry attempt ${attemptCount}/${maxAttempts}.`);
