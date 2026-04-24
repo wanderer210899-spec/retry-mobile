@@ -2,7 +2,7 @@ import { fetchCapabilities, fetchChatState, getStructuredErrorFromApi } from './
 import { sendFrontendLogEvent } from './logs/retry-log.js';
 import { createStructuredError } from './retry-error.js';
 import { writeSettings, readSettings } from './settings.js';
-import { getChatIdentity, getContext } from './st-context.js';
+import { getChatIdentity, getContext, showToast } from './st-context.js';
 import { PROTOCOL_VERSION } from './constants.js';
 import { createRuntime } from './core/runtime.js';
 import { isRunningLikeState } from './core/run-state.js';
@@ -30,6 +30,10 @@ export function bootRetryMobile() {
     runtime.sessionId = getFrontendSessionId();
     runtime.controlError = null;
     runtime.pendingNativeOutcome = null;
+    runtime.toast.lastJobId = '';
+    runtime.toast.lastAttemptCount = null;
+    runtime.toast.lastAcceptedCount = null;
+    runtime.toast.lastTerminalState = '';
 
     const render = createRenderer({ runtime });
     const intentPort = createIntentPort({ getContext });
@@ -78,6 +82,7 @@ export function bootRetryMobile() {
             }
 
             runtime.controlError = null;
+            showToast('info', 'Retry Mobile', 'Captured request. Starting backend retry job…');
             const current = retryFsm.getContext();
             const chatIdentity = getChatIdentity(getContext());
             const captureTarget = resolveCaptureTarget(
@@ -319,8 +324,9 @@ export function bootRetryMobile() {
                 detail: error?.detail || error?.message || '',
             });
         } catch (requestError) {
-            runtime.controlError = toStructuredError(requestError, 'Retry Mobile could not report the native wait outcome.');
-            render();
+            // Non-fatal: the backend can still recover native state from persisted chat.
+            console.warn('[retry-mobile:native-failed] Backend rejected native failure hint:', requestError);
+            showToast('warning', 'Retry Mobile', 'Could not report native wait outcome to backend (non-fatal).');
         }
     }
 
@@ -374,6 +380,7 @@ export function bootRetryMobile() {
             runtime.activeJobStatus = status;
             runtime.activeJobId = status.jobId || fallbackJobId || runtime.activeJobId || null;
             runtime.activeJobStatusObservedAt = status.updatedAt || new Date().toISOString();
+            maybeToastJobProgress(runtime, status);
             return statusChanged;
         }
 
@@ -381,6 +388,75 @@ export function bootRetryMobile() {
             runtime.activeJobId = fallbackJobId;
         }
         return false;
+    }
+
+    function maybeToastJobProgress(runtime, status) {
+        if (!status || typeof status !== 'object') {
+            return;
+        }
+
+        const jobId = String(status.jobId || runtime.activeJobId || '');
+        const state = String(status.state || '').trim();
+        const attemptCount = Number.isFinite(Number(status.attemptCount)) ? Number(status.attemptCount) : null;
+        const maxAttempts = Number.isFinite(Number(status.maxAttempts)) ? Number(status.maxAttempts) : null;
+        const acceptedCount = Number.isFinite(Number(status.acceptedCount)) ? Number(status.acceptedCount) : null;
+        const targetAcceptedCount = Number.isFinite(Number(status.targetAcceptedCount)) ? Number(status.targetAcceptedCount) : null;
+
+        if (jobId && runtime.toast.lastJobId && runtime.toast.lastJobId !== jobId) {
+            runtime.toast.lastAttemptCount = null;
+            runtime.toast.lastAcceptedCount = null;
+            runtime.toast.lastTerminalState = '';
+        }
+        runtime.toast.lastJobId = jobId || runtime.toast.lastJobId || '';
+
+        if (state === 'running') {
+            if (attemptCount != null
+                && maxAttempts != null
+                && runtime.toast.lastAttemptCount !== attemptCount) {
+                runtime.toast.lastAttemptCount = attemptCount;
+                showToast('info', 'Retry Mobile', `Retry attempt ${attemptCount}/${maxAttempts}.`);
+            }
+
+            if (acceptedCount != null
+                && targetAcceptedCount != null
+                && runtime.toast.lastAcceptedCount !== acceptedCount
+                && acceptedCount > 0) {
+                runtime.toast.lastAcceptedCount = acceptedCount;
+                showToast('success', 'Retry Mobile', `Accepted ${acceptedCount}/${targetAcceptedCount}.`);
+            }
+
+            return;
+        }
+
+        if (state === 'completed' || state === 'failed' || state === 'cancelled') {
+            if (runtime.toast.lastTerminalState === state) {
+                return;
+            }
+            runtime.toast.lastTerminalState = state;
+
+            const summaryParts = [];
+            if (acceptedCount != null && targetAcceptedCount != null) {
+                summaryParts.push(`${acceptedCount}/${targetAcceptedCount} accepted`);
+            }
+            if (attemptCount != null && maxAttempts != null) {
+                summaryParts.push(`${attemptCount}/${maxAttempts} attempts`);
+            }
+            const summary = summaryParts.length ? ` (${summaryParts.join(', ')})` : '';
+
+            if (state === 'completed') {
+                showToast('success', 'Retry Mobile', `Job complete${summary}.`);
+                return;
+            }
+            if (state === 'cancelled') {
+                showToast('warning', 'Retry Mobile', `Job cancelled${summary}.`);
+                return;
+            }
+
+            const message = status?.structuredError?.message
+                || status?.lastError
+                || 'Retry Mobile failed.';
+            showToast('error', 'Retry Mobile', `${message}${summary}`);
+        }
     }
 
     async function buildStartPayload(payload) {

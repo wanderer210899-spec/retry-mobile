@@ -80,7 +80,7 @@ function getControlSnapshot(runtime) {
     return {
         phase,
         activeStatus,
-        error: runtime.controlError || context?.error || null,
+        error: (phase === 'running' ? (context?.error || null) : (runtime.controlError || context?.error || null)),
         transport: 'healthy',
     };
 }

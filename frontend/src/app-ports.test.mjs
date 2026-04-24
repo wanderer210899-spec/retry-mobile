@@ -27,14 +27,12 @@ test('handlePollingPortStatus renders once after the status and FSM sync complet
         },
     });
 
-    assert.equal(calls.length, 6);
+    assert.equal(calls.length, 4);
     assert.deepEqual(calls[0], ['updateActiveJob', status, 'job-1']);
     assert.deepEqual(calls[1], ['onStatus', status]);
     assert.deepEqual(calls[2], ['syncRuntimeFromFsm', retryFsm]);
     assert.deepEqual(calls[3], ['render']);
-    assert.deepEqual(calls[4], ['syncRuntimeFromFsm', retryFsm]);
-    assert.deepEqual(calls[5], ['render']);
-    assert.equal(calls.filter(([method]) => method === 'render').length, 2);
+    assert.equal(calls.filter(([method]) => method === 'render').length, 1);
 });
 
 test('handleJobPortResponse renders once when a backend response materially changes active job status', () => {

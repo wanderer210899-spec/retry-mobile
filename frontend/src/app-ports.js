@@ -171,9 +171,6 @@ export async function handlePollingPortStatus({
     await onStatus?.(status);
     syncRuntimeFromFsm(retryFsm);
     render();
-    await Promise.resolve();
-    syncRuntimeFromFsm(retryFsm);
-    render();
 }
 
 export function handleJobPortResponse({
