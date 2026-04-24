@@ -13,11 +13,13 @@ const BACKEND_SOURCE = path.join(SOURCE_ROOT, 'server');
 const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https://raw.githubusercontent.com/');
 const RELEASE_MANIFEST_FILE = 'release.json';
 
-main().catch((error) => {
-    console.error(`\n${PLUGIN_NAME} installer failed.`);
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-});
+if (require.main === module) {
+    main().catch((error) => {
+        console.error(`\n${PLUGIN_NAME} installer failed.`);
+        console.error(error instanceof Error ? error.message : String(error));
+        process.exitCode = 1;
+    });
+}
 
 async function main() {
     const platform = detectPlatform();
@@ -551,8 +553,12 @@ async function uninstallFlow(rl, layout) {
 }
 
 function installBackend(layout) {
-    replaceDirectory(BACKEND_SOURCE, layout.backendTarget);
-    fs.copyFileSync(path.join(SOURCE_ROOT, RELEASE_MANIFEST_FILE), path.join(layout.backendTarget, RELEASE_MANIFEST_FILE));
+    replaceDirectory(BACKEND_SOURCE, layout.backendTarget, {
+        afterCopy: (stagedTarget) => {
+            fs.copyFileSync(path.join(SOURCE_ROOT, RELEASE_MANIFEST_FILE), path.join(stagedTarget, RELEASE_MANIFEST_FILE));
+            syncRuntimeVersionFiles(stagedTarget);
+        },
+    });
     writeInstallSource(layout.backendTarget, buildInstalledMetadata(layout.installSource));
     verifyInstalledTarget(layout.backendTarget, {
         kind: 'backend',
@@ -563,7 +569,11 @@ function installBackend(layout) {
 
 function installGlobalFrontend(layout) {
     ensureWritable(layout.globalExtensionsDir, true);
-    replaceDirectory(FRONTEND_SOURCE, layout.globalFrontendTarget);
+    replaceDirectory(FRONTEND_SOURCE, layout.globalFrontendTarget, {
+        afterCopy: (stagedTarget) => {
+            syncRuntimeVersionFiles(stagedTarget);
+        },
+    });
     writeInstallSource(layout.globalFrontendTarget, buildInstalledMetadata(layout.installSource));
     verifyInstalledTarget(layout.globalFrontendTarget, {
         kind: 'frontend',
@@ -575,7 +585,11 @@ function installGlobalFrontend(layout) {
 function installFrontendForProfiles(layout, profiles) {
     for (const profile of profiles) {
         ensureWritable(profile.extensionsDir, true);
-        replaceDirectory(FRONTEND_SOURCE, profile.frontendTarget);
+        replaceDirectory(FRONTEND_SOURCE, profile.frontendTarget, {
+            afterCopy: (stagedTarget) => {
+                syncRuntimeVersionFiles(stagedTarget);
+            },
+        });
         writeInstallSource(profile.frontendTarget, buildInstalledMetadata(layout.installSource));
         verifyInstalledTarget(profile.frontendTarget, {
             kind: `frontend profile ${profile.handle}`,
@@ -621,15 +635,46 @@ async function promptForProfiles(rl, profiles, allowMultiple) {
     }
 }
 
-function replaceDirectory(source, destination) {
+function replaceDirectory(source, destination, options = {}) {
     if (!fs.existsSync(source)) {
         throw new Error(`Source directory is missing: ${source}`);
     }
 
     ensureWritable(path.dirname(destination), true);
-    removeDirectory(destination);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
-    fs.cpSync(source, destination, { recursive: true, force: true });
+    const swapToken = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const stagedPath = `${destination}.tmp-${swapToken}`;
+    const backupPath = `${destination}.backup-${swapToken}`;
+    let backupCreated = false;
+
+    try {
+        fs.cpSync(source, stagedPath, { recursive: true, force: true });
+        if (typeof options.afterCopy === 'function') {
+            options.afterCopy(stagedPath);
+        }
+
+        if (fs.existsSync(destination)) {
+            fs.renameSync(destination, backupPath);
+            backupCreated = true;
+        }
+
+        fs.renameSync(stagedPath, destination);
+        if (backupCreated) {
+            removeDirectory(backupPath);
+        }
+    } catch (error) {
+        if (fs.existsSync(stagedPath)) {
+            removeDirectory(stagedPath);
+        }
+        if (!fs.existsSync(destination) && backupCreated && fs.existsSync(backupPath)) {
+            try {
+                fs.renameSync(backupPath, destination);
+            } catch {
+                // Best-effort rollback. Original error is surfaced below.
+            }
+        }
+        throw error;
+    }
 }
 
 function removeDirectory(target) {
@@ -768,25 +813,40 @@ function readJsonFile(filePath) {
 
 function warnIfVersionsMismatch() {
     try {
-        const backendVersion = String(readJsonFile(path.join(SOURCE_ROOT, 'server', 'package.json'))?.version || '').trim();
-        const frontendVersion = String(readJsonFile(path.join(SOURCE_ROOT, 'frontend', 'manifest.json'))?.version || '').trim();
         const releaseVersion = String(readJsonFile(path.join(SOURCE_ROOT, 'release.json'))?.version || '').trim();
-        const versions = [
-            { file: 'server/package.json', version: backendVersion },
-            { file: 'frontend/manifest.json', version: frontendVersion },
-            { file: 'release.json', version: releaseVersion },
-        ];
-        const unique = new Set(versions.map((v) => v.version).filter(Boolean));
-        if (unique.size > 1) {
-            console.warn(`\n${PLUGIN_NAME} WARNING: version mismatch detected across release files.`);
-            for (const { file, version } of versions) {
-                console.warn(`  ${file}: ${version || '(missing)'}`);
-            }
-            console.warn('  Update all three files to the same version before releasing.\n');
+        if (!releaseVersion) {
+            console.warn(`\n${PLUGIN_NAME} WARNING: release.json is missing a version string.`);
+            console.warn('  Set release.json.version before running release installs.\n');
         }
     } catch {
         // Non-fatal; version files may be absent in partial checkouts.
     }
+}
+
+function syncRuntimeVersionFiles(targetRoot) {
+    const releaseVersion = String(readJsonFile(path.join(SOURCE_ROOT, RELEASE_MANIFEST_FILE))?.version || '').trim();
+    if (!releaseVersion) {
+        return;
+    }
+
+    const frontendManifestPath = path.join(targetRoot, 'manifest.json');
+    const backendPackagePath = path.join(targetRoot, 'package.json');
+    updateJsonVersion(frontendManifestPath, releaseVersion);
+    updateJsonVersion(backendPackagePath, releaseVersion);
+}
+
+function updateJsonVersion(filePath, version) {
+    if (!filePath || !fs.existsSync(filePath)) {
+        return;
+    }
+
+    const payload = readJsonFile(filePath);
+    if (!payload || typeof payload !== 'object') {
+        return;
+    }
+
+    payload.version = version;
+    fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 4)}\n`, 'utf8');
 }
 
 function compareVersions(left, right) {
