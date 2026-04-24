@@ -7,6 +7,24 @@ export const RetryState = Object.freeze({
     RUNNING: 'running',
 });
 
+export function resolvePollingCadence(context, isVisible) {
+    if (String(context?.state || '') !== RetryState.RUNNING) {
+        return 'fast';
+    }
+
+    const lastKnownTargetMessageVersion = numberOrNull(context?.lastKnownTargetMessageVersion) || 0;
+    const lastAppliedVersion = numberOrNull(context?.lastAppliedVersion) || 0;
+    if (lastKnownTargetMessageVersion === 0 || lastAppliedVersion < lastKnownTargetMessageVersion) {
+        return 'fast';
+    }
+
+    if (isVisible === false && !context?.pendingVisibleRender) {
+        return 'slow';
+    }
+
+    return 'steady';
+}
+
 export function createInitialRetryContext(overrides = {}) {
     const intent = normalizeIntent(overrides.intent);
     return normalizeContextForState({
@@ -19,6 +37,7 @@ export function createInitialRetryContext(overrides = {}) {
         runId: stringOrNull(overrides.runId),
         jobId: stringOrNull(overrides.jobId),
         pollingToken: stringOrNull(overrides.pollingToken),
+        lastKnownTargetMessageVersion: numberOrNull(overrides.lastKnownTargetMessageVersion) || 0,
         lastAppliedVersion: numberOrNull(overrides.lastAppliedVersion) || 0,
         pendingVisibleRender: clonePlain(overrides.pendingVisibleRender) || null,
         lastTerminalResult: clonePlain(overrides.lastTerminalResult) || null,
@@ -158,6 +177,7 @@ export function createRetryFsm({
             runId: stringOrNull(payload.runId) || context.runId || createRunId(),
             jobId,
             pollingToken: null,
+            lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
             error: null,
@@ -198,6 +218,7 @@ export function createRetryFsm({
             runId: nextState === RetryState.ARMED ? createRunId() : null,
             jobId: null,
             pollingToken: null,
+            lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
             lastTerminalResult: createTerminalResult('completed', payload, previous, null, now),
@@ -248,6 +269,7 @@ export function createRetryFsm({
             runId: nextState === RetryState.ARMED ? createRunId() : null,
             jobId: null,
             pollingToken: null,
+            lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
             lastTerminalResult: createTerminalResult('failed', payload, previous, normalizedError, now),
@@ -297,6 +319,7 @@ export function createRetryFsm({
             runId: stringOrNull(payload.runId) || stringOrNull(status?.runId) || previous.runId || createRunId(),
             jobId,
             pollingToken: null,
+            lastKnownTargetMessageVersion: numberOrNull(payload.lastKnownTargetMessageVersion) || numberOrNull(status?.targetMessageVersion) || 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
             lastTerminalResult: null,
@@ -348,12 +371,14 @@ export function createRetryFsm({
                         jobCompleted({ status: pendingRender.status });
                     }
                 })
-                .catch(() => {});
-            context = normalizeContextForState({
-                ...context,
-                lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
-                pendingVisibleRender: null,
-            });
+                .catch(async () => {
+                    if (!isState(context, RetryState.RUNNING)) {
+                        return;
+                    }
+                    try {
+                        await stPort.guardedReload?.();
+                    } catch {}
+                });
         }
 
         if (context.jobId) {
@@ -412,6 +437,7 @@ export function createRetryFsm({
             runId: null,
             jobId: null,
             pollingToken: null,
+            lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
             lastTerminalResult: createTerminalResult('cancelled', payload, previous, null, now),
@@ -472,6 +498,7 @@ export function createRetryFsm({
             nextContext.jobId,
             (status) => handlePollingStatus(status),
             (error) => handlePollingError(error),
+            () => resolvePollingCadence(context, stPort.isVisible?.()),
         ) || null;
 
         backendPort.reportFrontendPresence?.(nextContext.jobId, {
@@ -616,6 +643,10 @@ export function createRetryFsm({
         }
 
         const nextVersion = numberOrNull(status?.targetMessageVersion) || 0;
+        context = normalizeContextForState({
+            ...context,
+            lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
+        });
         if (nextVersion <= Number(context.lastAppliedVersion || 0)) {
             return;
         }
@@ -640,15 +671,20 @@ export function createRetryFsm({
                     return;
                 }
                 if (result?.ok === false) {
+                    handleVisibleApplyFailure(result?.error);
                     return;
                 }
                 context = normalizeContextForState({
                     ...context,
+                    lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
                     lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
                     pendingVisibleRender: null,
+                    error: null,
                 });
             })
-            .catch(() => {});
+            .catch((error) => {
+                handleVisibleApplyFailure(error);
+            });
     }
 
     async function completeAfterFinalAcceptedOutput(status) {
@@ -720,6 +756,38 @@ export function createRetryFsm({
             jobFailed({ error: normalizedError });
         }
     }
+
+    function handleVisibleApplyFailure(error) {
+        if (!isState(context, RetryState.RUNNING)) {
+            return;
+        }
+
+        context = normalizeContextForState({
+            ...context,
+            error: toRenderApplyError(error),
+        });
+        stPort.clearGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(context)));
+    }
+}
+
+function toRenderApplyError(error) {
+    const fallbackMessage = 'Retry Mobile could not apply the accepted output to the visible chat.';
+    const normalized = normalizeStructuredError(error, 'render_apply_failed', fallbackMessage);
+    const detail = [
+        normalized.code && normalized.code !== 'render_apply_failed'
+            ? `[${normalized.code}]`
+            : '',
+        normalized.message && normalized.message !== fallbackMessage
+            ? normalized.message
+            : '',
+        normalized.detail || '',
+    ].filter(Boolean).join(' | ');
+
+    return createStructuredError(
+        'render_apply_failed',
+        fallbackMessage,
+        detail,
+    );
 }
 
 function normalizeContextForState(nextContext) {
@@ -734,6 +802,7 @@ function normalizeContextForState(nextContext) {
         jobId: stringOrNull(nextContext.jobId),
         pollingToken: stringOrNull(nextContext.pollingToken),
         lastAppliedVersion: numberOrNull(nextContext.lastAppliedVersion) || 0,
+        lastKnownTargetMessageVersion: numberOrNull(nextContext.lastKnownTargetMessageVersion) || 0,
         pendingVisibleRender: clonePlain(nextContext.pendingVisibleRender) || null,
         lastTerminalResult: clonePlain(nextContext.lastTerminalResult) || null,
         error: clonePlain(nextContext.error) || null,
@@ -749,6 +818,7 @@ function normalizeContextForState(nextContext) {
                 runId: null,
                 jobId: null,
                 pollingToken: null,
+                lastKnownTargetMessageVersion: 0,
                 lastAppliedVersion: 0,
                 pendingVisibleRender: null,
             };
@@ -759,6 +829,7 @@ function normalizeContextForState(nextContext) {
                 captureFingerprint: null,
                 jobId: null,
                 pollingToken: null,
+                lastKnownTargetMessageVersion: 0,
                 lastAppliedVersion: 0,
                 pendingVisibleRender: null,
             };
@@ -767,6 +838,7 @@ function normalizeContextForState(nextContext) {
                 ...normalized,
                 jobId: null,
                 pollingToken: null,
+                lastKnownTargetMessageVersion: 0,
                 lastAppliedVersion: 0,
                 pendingVisibleRender: null,
             };

@@ -3,7 +3,6 @@ import {
     EXTENSION_NAME,
     REPOSITORY_URL,
     RUN_MODE,
-    RUN_STATE,
     VALIDATION_MODE,
 } from '../constants.js';
 
@@ -20,7 +19,7 @@ export function buildPanelTemplate() {
                         <button class="menu_button rm-tab" data-action="show-tab" data-tab="main" type="button">Main</button>
                         <button class="menu_button rm-tab" data-action="show-tab" data-tab="system" type="button">System</button>
                     </nav>
-                    <div class="rm-status-pill" data-role="state-pill" data-state="${RUN_STATE.IDLE}">Idle</div>
+                    <div class="rm-status-pill" data-role="state-pill" data-state="idle">Idle</div>
                 </div>
 
                 <div class="rm-stats-strip" data-role="stats"></div>

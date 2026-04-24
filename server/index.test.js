@@ -31,3 +31,9 @@ test('extractReplayAuthContext returns null when the start request had no replay
 
     assert.equal(plugin._test.extractReplayAuthContext(request), null);
 });
+
+test('native_turn_mismatch is treated as an allowed native failure hint', () => {
+    assert.equal(plugin._test.isAllowedNativeFailureReason('native_turn_mismatch'), true);
+    assert.equal(plugin._test.isAllowedNativeFailureReason('native_wait_timeout'), true);
+    assert.equal(plugin._test.isAllowedNativeFailureReason('totally_unknown_reason'), false);
+});

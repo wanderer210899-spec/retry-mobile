@@ -48,7 +48,7 @@ export function createBackendPort() {
         return fetchJobStatus(jobId);
     }
 
-    function startPolling(jobId, onStatus, onError) {
+    function startPolling(jobId, onStatus, onError, selectCadence = null) {
         if (!jobId) {
             return null;
         }
@@ -58,8 +58,8 @@ export function createBackendPort() {
         pollControllers.set(token, controller);
 
         void (async () => {
-            const intervalMs = cadenceToMs('fast');
             while (!controller.signal.aborted) {
+                const intervalMs = cadenceToMs(resolveCadence(selectCadence));
                 if (intervalMs > 0) {
                     await delay(intervalMs, controller.signal);
                 }
@@ -123,6 +123,14 @@ function cadenceToMs(cadence) {
             return POLL_INTERVAL_STEADY_MS;
         default:
             return POLL_INTERVAL_FAST_MS;
+    }
+}
+
+function resolveCadence(selectCadence) {
+    try {
+        return String(selectCadence?.() || 'fast');
+    } catch {
+        return 'fast';
     }
 }
 

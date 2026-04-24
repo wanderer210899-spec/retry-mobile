@@ -1,4 +1,20 @@
-import { JOB_PHASE, RUN_STATE } from '../constants.js';
+const STATE_LABELS = Object.freeze({
+    armed: 'Armed for next qualifying request',
+    capturing: 'Capturing request and starting backend handoff',
+    reserving: 'Reserving backend job',
+    waiting_native: 'Waiting for native first reply',
+    running: 'Retry loop active',
+    backend_running: 'Retry loop active',
+    stopping: 'Stopping',
+    completing: 'Finishing UI',
+    recovering: 'Recovering',
+    completed: 'Completed',
+    failed: 'Failed',
+    cancelled: 'Cancelled',
+    captured_pending_native: 'Waiting for native first reply',
+    native_confirmed: 'Native first reply confirmed',
+    native_abandoned: 'Native abandoned, backend recovered the turn',
+});
 
 export function resolveRunStateFromStatus(status) {
     if (!status || status.state !== 'running') {
@@ -6,69 +22,26 @@ export function resolveRunStateFromStatus(status) {
     }
 
     if (status.nativeState === 'pending') {
-        return RUN_STATE.CAPTURED_PENDING_NATIVE;
+        return 'captured_pending_native';
     }
 
     if (status.nativeState === 'confirmed') {
         return Number(status.attemptCount) > 0 || Number(status.acceptedCount) > 0
-            ? RUN_STATE.BACKEND_RUNNING
-            : RUN_STATE.NATIVE_CONFIRMED;
+            ? 'backend_running'
+            : 'native_confirmed';
     }
 
     if (status.nativeState === 'abandoned') {
         return Number(status.attemptCount) > 0 || Number(status.acceptedCount) > 0
-            ? RUN_STATE.BACKEND_RUNNING
-            : RUN_STATE.NATIVE_ABANDONED;
+            ? 'backend_running'
+            : 'native_abandoned';
     }
 
-    return RUN_STATE.BACKEND_RUNNING;
+    return 'backend_running';
 }
 
 export function formatStateLabel(state) {
-    switch (state) {
-        case JOB_PHASE.ARMED:
-        case 'armed':
-            return 'Armed for next qualifying request';
-        case 'capturing':
-            return 'Capturing request and starting backend handoff';
-        case JOB_PHASE.RESERVING:
-            return 'Reserving backend job';
-        case JOB_PHASE.WAITING_NATIVE:
-            return 'Waiting for native first reply';
-        case JOB_PHASE.BACKEND_RUNNING:
-        case 'running':
-            return 'Retry loop active';
-        case JOB_PHASE.STOPPING:
-            return 'Stopping';
-        case JOB_PHASE.COMPLETING:
-            return 'Finishing UI';
-        case JOB_PHASE.RECOVERING:
-            return 'Recovering';
-        case JOB_PHASE.COMPLETED:
-            return 'Completed';
-        case JOB_PHASE.FAILED:
-            return 'Failed';
-        case JOB_PHASE.CANCELLED:
-            return 'Cancelled';
-        case RUN_STATE.ARMED:
-            return 'Armed for next qualifying request';
-        case RUN_STATE.CAPTURED_PENDING_NATIVE:
-            return 'Waiting for native first reply';
-        case RUN_STATE.NATIVE_CONFIRMED:
-            return 'Native first reply confirmed';
-        case RUN_STATE.NATIVE_ABANDONED:
-            return 'Native abandoned, backend recovered the turn';
-        case RUN_STATE.BACKEND_RUNNING:
-            return 'Retry loop active';
-        case RUN_STATE.COMPLETED:
-            return 'Completed';
-        case RUN_STATE.FAILED:
-            return 'Failed';
-        case RUN_STATE.CANCELLED:
-            return 'Cancelled';
-        default:
-            return 'Idle';
-    }
+    return STATE_LABELS[String(state || '').trim()] || 'Idle';
 }
 
 export function formatVisibleStateLabel(state, status, transport = 'healthy') {
@@ -76,12 +49,12 @@ export function formatVisibleStateLabel(state, status, transport = 'healthy') {
         return formatStateLabel(state);
     }
 
-    if ((state === JOB_PHASE.RECOVERING || state === JOB_PHASE.BACKEND_RUNNING)
+    if ((state === 'recovering' || state === 'running' || state === 'backend_running')
         && transport !== 'healthy') {
         return 'Reconnecting to backend';
     }
 
-    if (state === JOB_PHASE.RECOVERING && !status) {
+    if (state === 'recovering' && !status) {
         return 'Reattaching to backend run';
     }
 
@@ -90,29 +63,20 @@ export function formatVisibleStateLabel(state, status, transport = 'healthy') {
     }
 
     switch (state) {
-        case JOB_PHASE.RESERVING:
-        case JOB_PHASE.WAITING_NATIVE:
-        case JOB_PHASE.BACKEND_RUNNING:
-        case JOB_PHASE.STOPPING:
-        case JOB_PHASE.RECOVERING:
-        case RUN_STATE.CAPTURED_PENDING_NATIVE:
-        case RUN_STATE.NATIVE_CONFIRMED:
-        case RUN_STATE.NATIVE_ABANDONED:
-        case RUN_STATE.BACKEND_RUNNING:
+        case 'reserving':
+        case 'waiting_native':
+        case 'running':
+        case 'backend_running':
+        case 'stopping':
+        case 'recovering':
+        case 'captured_pending_native':
+        case 'native_confirmed':
+        case 'native_abandoned':
             return status.phaseText || formatStateLabel(state);
-        case JOB_PHASE.COMPLETED:
-        case RUN_STATE.COMPLETED:
-            return status.state === 'completed'
-                ? (status.phaseText || formatStateLabel(state))
-                : formatStateLabel(state);
-        case JOB_PHASE.FAILED:
-        case RUN_STATE.FAILED:
-            return status.state === 'failed'
-                ? (status.phaseText || formatStateLabel(state))
-                : formatStateLabel(state);
-        case JOB_PHASE.CANCELLED:
-        case RUN_STATE.CANCELLED:
-            return status.state === 'cancelled'
+        case 'completed':
+        case 'failed':
+        case 'cancelled':
+            return status.state === state
                 ? (status.phaseText || formatStateLabel(state))
                 : formatStateLabel(state);
         default:
@@ -121,19 +85,16 @@ export function formatVisibleStateLabel(state, status, transport = 'healthy') {
 }
 
 export function isRunningLikeState(state) {
-    return state === JOB_PHASE.ARMED
-        || state === 'armed'
+    return state === 'armed'
         || state === 'capturing'
         || state === 'running'
-        || state === JOB_PHASE.RESERVING
-        || state === JOB_PHASE.WAITING_NATIVE
-        || state === JOB_PHASE.BACKEND_RUNNING
-        || state === JOB_PHASE.STOPPING
-        || state === JOB_PHASE.RECOVERING
-        || state === JOB_PHASE.COMPLETING
-        || state === RUN_STATE.ARMED
-        || state === RUN_STATE.CAPTURED_PENDING_NATIVE
-        || state === RUN_STATE.NATIVE_CONFIRMED
-        || state === RUN_STATE.NATIVE_ABANDONED
-        || state === RUN_STATE.BACKEND_RUNNING;
+        || state === 'reserving'
+        || state === 'waiting_native'
+        || state === 'backend_running'
+        || state === 'stopping'
+        || state === 'recovering'
+        || state === 'completing'
+        || state === 'captured_pending_native'
+        || state === 'native_confirmed'
+        || state === 'native_abandoned';
 }

@@ -5,6 +5,7 @@ import {
     RetryState,
     createInitialRetryContext,
     createRetryFsm,
+    resolvePollingCadence,
 } from './retry-fsm.js';
 
 function createHarness({
@@ -32,6 +33,9 @@ function createHarness({
     let pollErrorHandler = null;
     let visible = true;
     let applyAcceptedOutputResult = { ok: true };
+    let applyAcceptedOutputError = null;
+    let flushPendingVisibleRenderResult = { ok: true };
+    let flushPendingVisibleRenderError = null;
     let intentState = {
         mode: initialIntent.mode || 'off',
         engaged: Boolean(initialIntent.engaged),
@@ -104,6 +108,10 @@ function createHarness({
         },
         flushPendingVisibleRender(payload) {
             calls.push({ port: 'st', method: 'flushPendingVisibleRender', args: [payload] });
+            if (flushPendingVisibleRenderError) {
+                return Promise.reject(flushPendingVisibleRenderError);
+            }
+            return Promise.resolve(flushPendingVisibleRenderResult);
         },
         isVisible() {
             calls.push({ port: 'st', method: 'isVisible', args: [] });
@@ -115,6 +123,9 @@ function createHarness({
         },
         applyAcceptedOutput(payload) {
             calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
+            if (applyAcceptedOutputError) {
+                return Promise.reject(applyAcceptedOutputError);
+            }
             return Promise.resolve(applyAcceptedOutputResult);
         },
         guardedReload() {
@@ -127,10 +138,10 @@ function createHarness({
         startJob(payload) {
             calls.push({ port: 'backend', method: 'startJob', args: [payload] });
         },
-        startPolling(jobId, onStatus, onError) {
+        startPolling(jobId, onStatus, onError, selectCadence) {
             pollStatusHandler = onStatus;
             pollErrorHandler = onError;
-            calls.push({ port: 'backend', method: 'startPolling', args: [jobId, onStatus, onError] });
+            calls.push({ port: 'backend', method: 'startPolling', args: [jobId, onStatus, onError, selectCadence] });
             return `poll:${jobId}`;
         },
         stopPolling(pollingToken) {
@@ -184,6 +195,15 @@ function createHarness({
         setApplyAcceptedOutputResult(nextResult) {
             applyAcceptedOutputResult = nextResult;
         },
+        setApplyAcceptedOutputError(nextError) {
+            applyAcceptedOutputError = nextError;
+        },
+        setFlushPendingVisibleRenderResult(nextResult) {
+            flushPendingVisibleRenderResult = nextResult;
+        },
+        setFlushPendingVisibleRenderError(nextError) {
+            flushPendingVisibleRenderError = nextError;
+        },
     };
 }
 
@@ -209,11 +229,39 @@ test('createInitialRetryContext exposes the explicit FSM context shape', () => {
         runId: null,
         jobId: null,
         pollingToken: null,
+        lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
         lastTerminalResult: null,
         error: null,
     });
+});
+
+test('resolvePollingCadence keeps the initial and lagging path fast, settles visible runs to steady, and hidden idle runs to slow', () => {
+    assert.equal(resolvePollingCadence({
+        state: RetryState.RUNNING,
+        lastKnownTargetMessageVersion: 0,
+        lastAppliedVersion: 0,
+        pendingVisibleRender: null,
+    }, true), 'fast');
+    assert.equal(resolvePollingCadence({
+        state: RetryState.RUNNING,
+        lastKnownTargetMessageVersion: 3,
+        lastAppliedVersion: 1,
+        pendingVisibleRender: null,
+    }, true), 'fast');
+    assert.equal(resolvePollingCadence({
+        state: RetryState.RUNNING,
+        lastKnownTargetMessageVersion: 3,
+        lastAppliedVersion: 3,
+        pendingVisibleRender: null,
+    }, true), 'steady');
+    assert.equal(resolvePollingCadence({
+        state: RetryState.RUNNING,
+        lastKnownTargetMessageVersion: 3,
+        lastAppliedVersion: 3,
+        pendingVisibleRender: null,
+    }, false), 'slow');
 });
 
 test('arm enters ARMED, engages intent, and subscribes capture through the ST port', () => {
@@ -415,10 +463,36 @@ test('jobStarted enters RUNNING, starts callback-driven polling, and applies the
         'job-1',
         lastCall(calls, 'startPolling')?.args[1],
         lastCall(calls, 'startPolling')?.args[2],
+        lastCall(calls, 'startPolling')?.args[3],
     ]);
     assert.equal(typeof lastCall(calls, 'startPolling')?.args[1], 'function');
     assert.equal(typeof lastCall(calls, 'startPolling')?.args[2], 'function');
+    assert.equal(typeof lastCall(calls, 'startPolling')?.args[3], 'function');
     assert.deepEqual(lastCall(calls, 'setGeneratingIndicator')?.args[0], chatIdentity);
+});
+
+test('jobStarted provides a cadence selector that tracks lagging, caught-up, and hidden steady-state running', async () => {
+    const { fsm, calls, emitPolledStatus, setVisible } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    const selectCadence = lastCall(calls, 'startPolling')?.args[3];
+    assert.equal(selectCadence(), 'fast');
+
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 1 });
+    await Promise.resolve();
+    assert.equal(selectCadence(), 'steady');
+
+    setVisible(false);
+    assert.equal(selectCadence(), 'slow');
 });
 
 test('terminal poll status re-enters the FSM through the polling callbacks', async () => {
@@ -539,9 +613,36 @@ test('running poll status does not advance applied version when applyAcceptedOut
 
     assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 2);
     assert.equal(fsm.getContext().lastAppliedVersion, 0);
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+    assert.equal(fsm.getContext().error?.code, 'render_apply_failed');
+    assert.deepEqual(lastCall(calls, 'clearGeneratingIndicator')?.args[0], chatIdentity);
 });
 
-test('resume is an internal RUNNING self-transition that does not churn polling or indicator entry actions', () => {
+test('running poll status surfaces a structured error and clears the indicator when applyAcceptedOutput rejects', async () => {
+    const { fsm, calls, emitPolledStatus, setApplyAcceptedOutputError } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setApplyAcceptedOutputError(new Error('message patch failed'));
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+    assert.equal(fsm.getContext().lastAppliedVersion, 0);
+    assert.equal(fsm.getContext().error?.code, 'render_apply_failed');
+    assert.match(fsm.getContext().error?.detail || '', /message patch failed/);
+    assert.deepEqual(lastCall(calls, 'clearGeneratingIndicator')?.args[0], chatIdentity);
+});
+
+test('resume is an internal RUNNING self-transition that does not churn polling or indicator entry actions', async () => {
     const { fsm, calls } = createHarness();
     const chatIdentity = {
         kind: 'character',
@@ -582,8 +683,10 @@ test('resume is an internal RUNNING self-transition that does not churn polling 
         },
     });
 
+    await Promise.resolve();
+
     assert.equal(resumed.state, RetryState.RUNNING);
-    assert.equal(resumed.pendingVisibleRender, null);
+    assert.equal(fsm.getContext().pendingVisibleRender, null);
     assert.equal(calls.filter((entry) => entry.method === 'startPolling').length, pollingStartsBeforeResume);
     assert.equal(calls.filter((entry) => entry.method === 'setGeneratingIndicator').length, indicatorSetsBeforeResume);
     assert.deepEqual(lastCall(calls, 'flushPendingVisibleRender')?.args[0], {
@@ -597,6 +700,47 @@ test('resume is an internal RUNNING self-transition that does not churn polling 
             target,
         },
     ]);
+});
+
+test('resume keeps the pending render queued and triggers guarded reload when the visible flush rejects', async () => {
+    const { fsm, calls, setFlushPendingVisibleRenderError } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    const pendingVisibleRender = {
+        kind: 'accepted_output',
+        chatIdentity,
+        status: {
+            jobId: 'job-1',
+            state: 'running',
+            targetMessageVersion: 4,
+        },
+    };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        target,
+    });
+    fsm.jobStarted({
+        jobId: 'job-1',
+        target,
+        pendingVisibleRender,
+    });
+
+    setFlushPendingVisibleRenderError(new Error('flush failed'));
+    const resumed = fsm.resume({
+        reason: 'window.focused',
+        isVisible: true,
+        pendingVisibleRender,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(resumed.state, RetryState.RUNNING);
+    assert.deepEqual(fsm.getContext().pendingVisibleRender, pendingVisibleRender);
+    assert.equal(fsm.getContext().lastAppliedVersion, 0);
+    assert.equal(calls.filter((entry) => entry.method === 'guardedReload').length, 1);
 });
 
 test('resume keeps pending renders queued while the tab is still hidden', () => {
@@ -903,7 +1047,9 @@ test('restoreRunning resumes an active backend job directly into RUNNING on boot
         'job-1',
         lastCall(calls, 'startPolling')?.args[1],
         lastCall(calls, 'startPolling')?.args[2],
+        lastCall(calls, 'startPolling')?.args[3],
     ]);
+    assert.equal(typeof lastCall(calls, 'startPolling')?.args[3], 'function');
     assert.deepEqual(lastCall(calls, 'setGeneratingIndicator')?.args[0], chatIdentity);
 });
 

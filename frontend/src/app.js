@@ -9,26 +9,18 @@ import { isRunningLikeState } from './core/run-state.js';
 import { createRenderer } from './ui/render.js';
 import { mountPanel } from './ui/panel-bindings.js';
 import { createSystemController } from './controllers/system-controller.js';
-import {
-    clearActiveRunBinding,
-    findLatestActiveRunBinding,
-    getFrontendSessionId,
-    recoverBoundStatus,
-    writeActiveRunBinding,
-} from './job/run-binding.js';
+import { getFrontendSessionId } from './job/run-binding.js';
 import { createIntentPort } from './intent.js';
 import { createRetryFsm, RetryState } from './retry-fsm.js';
 import { createStPort } from './st-adapter.js';
 import { createBackendPort } from './backend-client.js';
+import { createAppPorts } from './app-ports.js';
+import { syncRuntimeFromFsm } from './app-runtime-sync.js';
 import { chooseOperationalChatIdentity, resolveExpectedPreviousGeneration } from './start-payload.js';
 import {
-    buildBootArmPayload,
-    buildRestoreTarget,
-    collectBootRestoreChatIdentities,
-    getAttachedJobStatusFromStartError,
+    createRestoreController,
     resolveCaptureTarget,
     resolveCaptureSubscriptionChatIdentity,
-    shouldAttachRunningConflict,
 } from './app-recovery.js';
 
 const runtime = createRuntime();
@@ -50,105 +42,15 @@ export function bootRetryMobile() {
         writeSettings(getContext(), runtime.settings);
     };
 
-    backendPort = {
-        ...baseBackendPort,
-        startJob(payload) {
-            void buildStartPayload(payload)
-                .then((startPayload) => baseBackendPort.startJob(startPayload))
-                .then((result) => {
-                    if (!result?.jobId) {
-                        throw createStructuredError(
-                            'handoff_request_failed',
-                            'Retry Mobile backend start did not return a job id.',
-                        );
-                    }
-
-                    updateActiveJob(result.job || null, result.jobId);
-                    retryFsm.jobStarted({
-                        runId: payload.runId,
-                        jobId: result.jobId,
-                        chatIdentity: payload.chatIdentity,
-                        target: payload.target,
-                    });
-                    syncRuntimeFromFsm(retryFsm);
-                    render();
-                    void flushPendingNativeOutcome();
-                })
-                .catch((error) => {
-                    const attachedStatus = getAttachedJobStatusFromStartError(error);
-                    if (attachedStatus?.jobId) {
-                        const current = retryFsm.getContext();
-                        if (shouldAttachRunningConflict(
-                            retryFsm.getState(),
-                            current.runId,
-                            payload.runId,
-                        )) {
-                            updateActiveJob(attachedStatus, attachedStatus.jobId);
-                            retryFsm.restoreRunning({
-                                status: attachedStatus,
-                                runId: attachedStatus.runId || payload.runId,
-                                jobId: attachedStatus.jobId,
-                                chatIdentity: attachedStatus.chatIdentity || current.chatIdentity || payload.chatIdentity,
-                                target: buildRestoreTarget(attachedStatus, current.target),
-                            });
-                            syncRuntimeFromFsm(retryFsm);
-                            render();
-                            void flushPendingNativeOutcome();
-                        }
-                        return;
-                    }
-
-                    retryFsm.jobFailed({
-                        chatIdentity: payload.chatIdentity,
-                        error: toStructuredError(error, 'Retry Mobile could not start the backend retry job.'),
-                    });
-                    syncRuntimeFromFsm(retryFsm);
-                    render();
-                });
-        },
-        startPolling(jobId, onStatus, onError) {
-            return baseBackendPort.startPolling(
-                jobId,
-                async (status) => {
-                    updateActiveJob(status || null, jobId);
-                    render();
-                    await onStatus?.(status);
-                    syncRuntimeFromFsm(retryFsm);
-                    render();
-                },
-                async (error) => {
-                    await onError?.(toStructuredError(error, 'Retry Mobile backend polling failed.'));
-                    syncRuntimeFromFsm(retryFsm);
-                    render();
-                },
-            );
-        },
-        async confirmNative(jobId, payload) {
-            const result = await baseBackendPort.confirmNative(jobId, payload);
-            updateActiveJob(result?.job || null, jobId);
-            render();
-            return result;
-        },
-        async reportNativeFailure(jobId, payload) {
-            const result = await baseBackendPort.reportNativeFailure(jobId, payload);
-            updateActiveJob(result?.job || null, jobId);
-            render();
-            return result;
-        },
-        async reportFrontendPresence(jobId, payload) {
-            const result = await baseBackendPort.reportFrontendPresence(jobId, payload);
-            if (result?.job) {
-                updateActiveJob(result.job, jobId);
-                render();
-            }
-            return result;
-        },
-        async cancelJob(jobId, payload) {
-            const result = await baseBackendPort.cancelJob(jobId, payload);
-            render();
-            return result;
-        },
-    };
+    backendPort = createAppPorts({
+        baseBackendPort,
+        getRetryFsm: () => retryFsm,
+        updateActiveJob,
+        syncRuntimeFromFsm: (fsm) => syncRuntimeFromFsm(runtime, fsm),
+        render,
+        buildStartPayload,
+        flushPendingNativeOutcome,
+    });
 
     stPort = createStPort({
         onCapture(result) {
@@ -192,7 +94,7 @@ export function bootRetryMobile() {
                 fingerprint: result.fingerprint,
                 target: captureTarget,
             });
-            syncRuntimeFromFsm(retryFsm);
+            syncRuntime();
             render();
         },
         onCaptureCancelled(error) {
@@ -250,7 +152,8 @@ export function bootRetryMobile() {
         },
     });
     runtime.retryFsm = retryFsm;
-    syncRuntimeFromFsm(retryFsm);
+    const syncRuntime = () => syncRuntimeFromFsm(runtime, retryFsm);
+    syncRuntime();
 
     const armPluginFromUi = async () => {
         const validationError = getArmValidationError(runtime);
@@ -270,7 +173,7 @@ export function bootRetryMobile() {
                 'Retry Mobile could not arm the retry loop due to an invalid intent mode.',
             );
         }
-        syncRuntimeFromFsm(retryFsm);
+        syncRuntime();
         render();
     };
 
@@ -278,7 +181,7 @@ export function bootRetryMobile() {
         retryFsm.userStop({});
         runtime.controlError = null;
         runtime.pendingNativeOutcome = null;
-        syncRuntimeFromFsm(retryFsm);
+        syncRuntime();
         render();
     };
 
@@ -331,6 +234,17 @@ export function bootRetryMobile() {
         armPluginFromUi,
         stopPlugin,
     });
+    const restoreController = createRestoreController({
+        runtime,
+        retryFsm,
+        intentPort,
+        baseBackendPort,
+        updateActiveJob,
+        render,
+        syncRuntimeFromFsm: (fsm) => syncRuntimeFromFsm(runtime, fsm),
+        getCurrentChatIdentity: () => getChatIdentity(getContext()),
+        toStructuredError,
+    });
 
     window.__rmTeardown?.();
     window.__rmTeardown = () => {
@@ -344,6 +258,7 @@ export function bootRetryMobile() {
             clearInterval(runtime.hostObserver);
             runtime.hostObserver = 0;
         }
+        unbindPageObservers(runtime);
     };
     window.__rmDispatch = (type, payload) => {
         handleExternalSignal(type, payload);
@@ -352,7 +267,7 @@ export function bootRetryMobile() {
 
     ensurePanelMounted();
     bindHostObserver(ensurePanelMounted);
-    bindPageObservers();
+    bindPageObservers(runtime);
     systemController.registerCommands();
 
     void systemController.refreshDiagnostics();
@@ -368,7 +283,7 @@ export function bootRetryMobile() {
     });
     void systemController.refreshReleaseInfo();
     render();
-    void restoreControlState();
+    void restoreController.restoreControlState();
 
     async function handleNativeReady(result) {
         const context = retryFsm.getContext();
@@ -450,7 +365,7 @@ export function bootRetryMobile() {
                     chatIdentity: resolveCaptureSubscriptionChatIdentity(context),
                     pendingVisibleRender: context.pendingVisibleRender,
                 });
-                syncRuntimeFromFsm(retryFsm);
+                syncRuntime();
                 render();
             }
         }
@@ -458,15 +373,18 @@ export function bootRetryMobile() {
 
     function updateActiveJob(status, fallbackJobId = '') {
         if (status) {
+            const statusChanged = buildActiveJobStatusRenderKey(runtime.activeJobStatus)
+                !== buildActiveJobStatusRenderKey(status);
             runtime.activeJobStatus = status;
             runtime.activeJobId = status.jobId || fallbackJobId || runtime.activeJobId || null;
             runtime.activeJobStatusObservedAt = status.updatedAt || new Date().toISOString();
-            return;
+            return statusChanged;
         }
 
         if (fallbackJobId) {
             runtime.activeJobId = fallbackJobId;
         }
+        return false;
     }
 
     async function buildStartPayload(payload) {
@@ -501,164 +419,14 @@ export function bootRetryMobile() {
         return source ? { source: String(source) } : null;
     }
 
-    function syncRuntimeFromFsm(fsm) {
-        const context = fsm.getContext();
-        const terminalStatus = context.lastTerminalResult?.status || null;
-        runtime.controlError = context.error || null;
+}
 
-        if (context.jobId) {
-            runtime.activeJobId = context.jobId;
-        } else if (context.lastTerminalResult?.jobId) {
-            runtime.activeJobId = context.lastTerminalResult.jobId;
-        }
-
-        if (terminalStatus) {
-            runtime.activeJobStatus = terminalStatus;
-        }
-
-        syncActiveRunBinding(context);
-
-        if (context.state !== RetryState.RUNNING) {
-            runtime.pendingNativeOutcome = null;
-        }
+function toStructuredError(error, fallbackMessage) {
+    if (error?.code && error?.message) {
+        return error;
     }
 
-    function scheduleRestoreRetry() {
-        if (runtime.restoreRetryHandle) {
-            return;
-        }
-
-        runtime.restoreRetryHandle = window.setTimeout(() => {
-            runtime.restoreRetryHandle = 0;
-            void restoreControlState();
-        }, 250);
-    }
-
-    async function restoreControlState() {
-        if (retryFsm.getState() !== RetryState.IDLE) {
-            return;
-        }
-
-        const currentChatIdentity = getChatIdentity(getContext());
-        const intent = intentPort.readIntent?.() || null;
-        const activeRunBinding = findLatestActiveRunBinding(runtime.sessionId);
-        const restoreIdentities = collectBootRestoreChatIdentities({
-            currentChatIdentity,
-            singleTarget: intent?.singleTarget || null,
-            activeRunBinding,
-        });
-
-        try {
-            for (const chatIdentity of restoreIdentities) {
-                const recovered = await recoverBoundStatus({
-                    chatIdentity,
-                    sessionId: runtime.sessionId || '',
-                    fetchStatus: baseBackendPort.pollStatus,
-                    fetchActive: baseBackendPort.fetchActiveJob,
-                });
-                if (retryFsm.getState() !== RetryState.IDLE) {
-                    return;
-                }
-                const status = recovered?.status || null;
-                if (status?.jobId && String(status.state || '') === 'running') {
-                    updateActiveJob(status, status.jobId);
-                    retryFsm.restoreRunning({
-                        status,
-                        runId: status.runId,
-                        jobId: status.jobId,
-                        chatIdentity: status.chatIdentity || chatIdentity,
-                        target: buildRestoreTarget(status, intent?.singleTarget || null),
-                    });
-                    syncRuntimeFromFsm(retryFsm);
-                    render();
-                    return;
-                }
-            }
-
-            if (intent?.engaged
-                && intent?.mode === 'toggle'
-                && !currentChatIdentity?.chatId) {
-                scheduleRestoreRetry();
-                return;
-            }
-
-            if (intent?.engaged
-                && intent?.mode === 'single'
-                && !intent?.singleTarget?.chatIdentity) {
-                runtime.controlError = createStructuredError(
-                    'single_target_missing',
-                    'Retry Mobile could not restore single mode because the durable target identity is missing.',
-                );
-                render();
-                return;
-            }
-
-            const armPayload = buildBootArmPayload(intent, currentChatIdentity);
-            if (armPayload && retryFsm.getState() === RetryState.IDLE) {
-                retryFsm.arm(armPayload);
-                if (retryFsm.getState() !== RetryState.ARMED) {
-                    runtime.controlError = retryFsm.getContext().error || createStructuredError(
-                        'retry_arm_failed',
-                        'Retry Mobile could not restore armed mode from saved settings.',
-                    );
-                }
-                syncRuntimeFromFsm(retryFsm);
-                render();
-            }
-        } catch (error) {
-            runtime.controlError = toStructuredError(
-                error,
-                'Retry Mobile could not restore backend state during boot.',
-            );
-            render();
-        }
-    }
-
-    function syncActiveRunBinding(context) {
-        const bindingChatIdentity = resolveCaptureSubscriptionChatIdentity(context);
-        if (context.state === RetryState.RUNNING
-            && context.jobId
-            && context.runId
-            && bindingChatIdentity
-            && runtime.sessionId) {
-            runtime.activeRunBinding = writeActiveRunBinding({
-                runId: context.runId,
-                jobId: context.jobId,
-                sessionId: runtime.sessionId,
-                chatIdentity: cloneValue(bindingChatIdentity),
-                lastKnownTargetMessageVersion: Number(runtime.activeJobStatus?.targetMessageVersion || 0),
-                lastKnownState: String(runtime.activeJobStatus?.state || context.state || 'unknown'),
-                updatedAt: runtime.activeJobStatus?.updatedAt || new Date().toISOString(),
-            });
-            return;
-        }
-
-        const staleChatIdentity = runtime.activeRunBinding?.chatIdentity || bindingChatIdentity || null;
-        if (staleChatIdentity) {
-            clearActiveRunBinding(staleChatIdentity);
-        }
-        runtime.activeRunBinding = null;
-    }
-
-    function toStructuredError(error, fallbackMessage) {
-        if (error?.code && error?.message) {
-            return error;
-        }
-
-        return getStructuredErrorFromApi(error, fallbackMessage);
-    }
-
-    function cloneValue(value) {
-        if (value == null) {
-            return value ?? null;
-        }
-
-        if (typeof globalThis.structuredClone === 'function') {
-            return globalThis.structuredClone(value);
-        }
-
-        return JSON.parse(JSON.stringify(value));
-    }
+    return getStructuredErrorFromApi(error, fallbackMessage);
 }
 
 function getArmValidationError(runtime) {
@@ -723,27 +491,89 @@ function scheduleMountRetry(ensurePanelMounted) {
     }, 900);
 }
 
-function bindPageObservers() {
-    if (window.__rmPageObserversBound) {
-        return;
+export function bindPageObservers(runtime, {
+    documentRef = document,
+    windowRef = window,
+    dispatch = (type, payload) => windowRef.__rmDispatch?.(type, payload),
+    logEvent = (event, summary, detail) => windowRef.__rmLogEvent?.(event, summary, detail),
+} = {}) {
+    if (runtime.pageObserverHandles) {
+        return runtime.pageObserverHandles;
     }
-    window.__rmPageObserversBound = true;
 
-    document.addEventListener('visibilitychange', () => {
-        const hidden = document.visibilityState === 'hidden';
-        window.__rmDispatch?.(hidden ? 'page.hidden' : 'page.visible', {});
-        void window.__rmLogEvent?.('visibility_changed', `Frontend visibility changed to ${document.visibilityState}.`, {
-            visibilityState: document.visibilityState,
+    const onVisibilityChange = () => {
+        const hidden = documentRef.visibilityState === 'hidden';
+        dispatch(hidden ? 'page.hidden' : 'page.visible', {});
+        void logEvent('visibility_changed', `Frontend visibility changed to ${documentRef.visibilityState}.`, {
+            visibilityState: documentRef.visibilityState,
         });
-    });
+    };
+    const onFocus = () => {
+        dispatch('window.focused', {});
+        void logEvent('window_focus', 'Frontend window regained focus.', null);
+    };
+    const onOnline = () => {
+        dispatch('network.online', {});
+        void logEvent('browser_online', 'Frontend browser reported an online transition.', null);
+    };
 
-    window.addEventListener('focus', () => {
-        window.__rmDispatch?.('window.focused', {});
-        void window.__rmLogEvent?.('window_focus', 'Frontend window regained focus.', null);
-    });
+    documentRef.addEventListener('visibilitychange', onVisibilityChange);
+    windowRef.addEventListener('focus', onFocus);
+    windowRef.addEventListener('online', onOnline);
+    runtime.pageObserverHandles = {
+        documentRef,
+        windowRef,
+        onVisibilityChange,
+        onFocus,
+        onOnline,
+    };
+    return runtime.pageObserverHandles;
+}
 
-    window.addEventListener('online', () => {
-        window.__rmDispatch?.('network.online', {});
-        void window.__rmLogEvent?.('browser_online', 'Frontend browser reported an online transition.', null);
+export function unbindPageObservers(runtime) {
+    const handles = runtime.pageObserverHandles;
+    if (!handles) {
+        return false;
+    }
+
+    handles.documentRef.removeEventListener('visibilitychange', handles.onVisibilityChange);
+    handles.windowRef.removeEventListener('focus', handles.onFocus);
+    handles.windowRef.removeEventListener('online', handles.onOnline);
+    runtime.pageObserverHandles = null;
+    return true;
+}
+
+function buildActiveJobStatusRenderKey(status) {
+    if (!status) {
+        return '';
+    }
+
+    return JSON.stringify({
+        jobId: String(status.jobId || ''),
+        runId: String(status.runId || ''),
+        state: String(status.state || ''),
+        acceptedCount: Number(status.acceptedCount || 0),
+        attemptCount: Number(status.attemptCount || 0),
+        targetMessageVersion: Number(status.targetMessageVersion || 0),
+        targetMessageIndex: Number(status.targetMessageIndex ?? -1),
+        structuredError: status.structuredError
+            ? {
+                code: String(status.structuredError.code || ''),
+                message: String(status.structuredError.message || ''),
+                detail: String(status.structuredError.detail || ''),
+            }
+            : null,
     });
+}
+
+function cloneValue(value) {
+    if (value == null) {
+        return value ?? null;
+    }
+
+    if (typeof globalThis.structuredClone === 'function') {
+        return globalThis.structuredClone(value);
+    }
+
+    return JSON.parse(JSON.stringify(value));
 }

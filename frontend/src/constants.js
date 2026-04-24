@@ -8,32 +8,6 @@ export const QUICK_REPLY_SET_NAME = 'Retry Mobile';
 export const SLASH_COMMAND_PREFIX = 'retry-mobile';
 export const REPOSITORY_URL = 'https://github.com/wanderer210899-spec/retry-mobile';
 
-export const RUN_STATE = Object.freeze({
-    IDLE: 'idle',
-    ARMED: 'armed',
-    CAPTURED_PENDING_NATIVE: 'captured_pending_native',
-    NATIVE_CONFIRMED: 'native_confirmed',
-    NATIVE_ABANDONED: 'native_abandoned',
-    BACKEND_RUNNING: 'backend_running',
-    COMPLETED: 'completed',
-    FAILED: 'failed',
-    CANCELLED: 'cancelled',
-});
-
-export const JOB_PHASE = Object.freeze({
-    IDLE: 'idle',
-    ARMED: 'armed',
-    RESERVING: 'reserving',
-    WAITING_NATIVE: 'waiting_native',
-    BACKEND_RUNNING: 'backend_running',
-    STOPPING: 'stopping',
-    COMPLETING: 'completing',
-    RECOVERING: 'recovering',
-    COMPLETED: 'completed',
-    FAILED: 'failed',
-    CANCELLED: 'cancelled',
-});
-
 export const RUN_MODE = Object.freeze({
     SINGLE: 'single',
     TOGGLE: 'toggle',

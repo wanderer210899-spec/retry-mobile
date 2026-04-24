@@ -1,3 +1,7 @@
+import { findLatestActiveRunBinding, recoverBoundStatus } from './job/run-binding.js';
+import { createStructuredError } from './retry-error.js';
+import { RetryState } from './retry-fsm.js';
+
 export function getAttachedJobStatusFromStartError(error) {
     if (Number(error?.status) !== 409) {
         return null;
@@ -142,6 +146,115 @@ export function buildRestoreTarget(status, singleTarget = null) {
 
     return {
         chatIdentity: cloneValue(statusChat),
+    };
+}
+
+export function createRestoreController({
+    runtime,
+    retryFsm,
+    intentPort,
+    baseBackendPort,
+    updateActiveJob,
+    render,
+    syncRuntimeFromFsm,
+    getCurrentChatIdentity,
+    toStructuredError,
+    windowRef = window,
+}) {
+    async function restoreControlState() {
+        if (retryFsm.getState() !== RetryState.IDLE) {
+            return;
+        }
+
+        const currentChatIdentity = getCurrentChatIdentity();
+        const intent = intentPort.readIntent?.() || null;
+        const activeRunBinding = findLatestActiveRunBinding(runtime.sessionId);
+        const restoreIdentities = collectBootRestoreChatIdentities({
+            currentChatIdentity,
+            singleTarget: intent?.singleTarget || null,
+            activeRunBinding,
+        });
+
+        try {
+            for (const chatIdentity of restoreIdentities) {
+                const recovered = await recoverBoundStatus({
+                    chatIdentity,
+                    sessionId: runtime.sessionId || '',
+                    fetchStatus: baseBackendPort.pollStatus,
+                    fetchActive: baseBackendPort.fetchActiveJob,
+                });
+                if (retryFsm.getState() !== RetryState.IDLE) {
+                    return;
+                }
+                const status = recovered?.status || null;
+                if (status?.jobId && String(status.state || '') === 'running') {
+                    updateActiveJob(status, status.jobId);
+                    retryFsm.restoreRunning({
+                        status,
+                        runId: status.runId,
+                        jobId: status.jobId,
+                        chatIdentity: status.chatIdentity || chatIdentity,
+                        target: buildRestoreTarget(status, intent?.singleTarget || null),
+                    });
+                    syncRuntimeFromFsm(retryFsm);
+                    render();
+                    return;
+                }
+            }
+
+            if (intent?.engaged
+                && intent?.mode === 'toggle'
+                && !currentChatIdentity?.chatId) {
+                scheduleRestoreRetry();
+                return;
+            }
+
+            if (intent?.engaged
+                && intent?.mode === 'single'
+                && !intent?.singleTarget?.chatIdentity) {
+                runtime.controlError = createStructuredError(
+                    'single_target_missing',
+                    'Retry Mobile could not restore single mode because the durable target identity is missing.',
+                );
+                render();
+                return;
+            }
+
+            const armPayload = buildBootArmPayload(intent, currentChatIdentity);
+            if (armPayload && retryFsm.getState() === RetryState.IDLE) {
+                retryFsm.arm(armPayload);
+                if (retryFsm.getState() !== RetryState.ARMED) {
+                    runtime.controlError = retryFsm.getContext().error || createStructuredError(
+                        'retry_arm_failed',
+                        'Retry Mobile could not restore armed mode from saved settings.',
+                    );
+                }
+                syncRuntimeFromFsm(retryFsm);
+                render();
+            }
+        } catch (error) {
+            runtime.controlError = toStructuredError(
+                error,
+                'Retry Mobile could not restore backend state during boot.',
+            );
+            render();
+        }
+    }
+
+    function scheduleRestoreRetry() {
+        if (runtime.restoreRetryHandle) {
+            return;
+        }
+
+        runtime.restoreRetryHandle = windowRef.setTimeout(() => {
+            runtime.restoreRetryHandle = 0;
+            void restoreControlState();
+        }, 250);
+    }
+
+    return {
+        restoreControlState,
+        scheduleRestoreRetry,
     };
 }
 

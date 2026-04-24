@@ -48,6 +48,7 @@ const ALLOWED_NATIVE_FAILURE_REASONS = new Set([
     'hidden_timeout',
     'native_wait_timeout',
     'native_wait_stalled',
+    'native_turn_mismatch',
     'rendered_without_end',
     'grace_expired',
 ]);
@@ -515,7 +516,7 @@ async function init(router) {
             }
 
             const reason = String(request.body?.reason || '').trim();
-            if (!ALLOWED_NATIVE_FAILURE_REASONS.has(reason)) {
+            if (!isAllowedNativeFailureReason(reason)) {
                 const structuredError = toStructuredError(createStructuredError(
                     'handoff_request_failed',
                     'Retry Mobile received an unknown native failure reason.',
@@ -901,6 +902,10 @@ function buildMissingJobResponse() {
     };
 }
 
+function isAllowedNativeFailureReason(reason) {
+    return ALLOWED_NATIVE_FAILURE_REASONS.has(String(reason || '').trim());
+}
+
 module.exports = {
     info: {
         id: PLUGIN_ID,
@@ -910,5 +915,6 @@ module.exports = {
     init,
     _test: {
         extractReplayAuthContext,
+        isAllowedNativeFailureReason,
     },
 };

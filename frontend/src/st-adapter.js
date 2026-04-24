@@ -89,7 +89,7 @@ export function createStPort({
         },
         clearGeneratingIndicator(targetChat) {
             const context = getContext();
-            if (!context) {
+            if (!context || !isSameChat(targetChat, getChatIdentity(context))) {
                 return false;
             }
 
