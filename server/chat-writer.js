@@ -29,7 +29,7 @@ async function writeAcceptedResult(job, accepted) {
         try {
             targetIndex = ensureAssistantSlotForWrite(job, currentChat);
         } catch (secondError) {
-            if (shouldUseConfirmedWriteSafetyRecheck(job, true, secondError)) {
+            if (shouldThrowNativePersistUnresolved(job, secondError)) {
                 throw createStructuredError(
                     'native_persist_unresolved',
                     'Retry Mobile confirmed the native turn in the browser, but the saved chat still did not expose the assistant slot for writing.',
@@ -303,6 +303,11 @@ function shouldUseConfirmedWriteSafetyRecheck(job, recheckUsed, error) {
         && String(error?.code || '') === 'backend_turn_missing';
 }
 
+function shouldThrowNativePersistUnresolved(job, error) {
+    return job?.nativeState === 'confirmed'
+        && String(error?.code || '') === 'backend_turn_missing';
+}
+
 function ensureAssistantSlotForWrite(job, chat) {
     ensureTargetUserMessage(job, chat);
     const state = inspectAdjacentAssistantState(job, chat);
@@ -548,6 +553,7 @@ function buildAcceptedExtra(job, currentExtra, accepted) {
         retryMobileJobId: job.jobId,
         retryMobileAcceptedCount: job.acceptedCount + 1,
         retryMobileCharacterCount: accepted.characterCount,
+        // Backwards-compatible alias: historically this stored characters, not true words.
         retryMobileWordCount: accepted.characterCount,
         retryMobileTokenCount: accepted.tokenCount,
         model: firstString(job.capturedRequest?.model, currentExtra?.model),
@@ -763,7 +769,7 @@ function readChatJsonl(filePath) {
         raw = _fs.readFileSync(filePath, 'utf8');
     } catch (error) {
         throw createStructuredError(
-            'backend_turn_missing',
+            'backend_file_unreadable',
             'Retry Mobile could not read the chat file at the expected path.',
             error instanceof Error ? error.message : String(error),
         );
@@ -849,6 +855,7 @@ module.exports = {
     configureFs,
     inspectNativeAssistantState,
     inspectRecoverySnapshot,
+    shouldThrowNativePersistUnresolved,
     shouldUseConfirmedWriteSafetyRecheck,
     writeAcceptedResult,
 };

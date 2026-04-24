@@ -963,7 +963,7 @@ function buildReplayFailureDetail({ endpoint, status, responseText, requestAuth 
 function extractResponseText(payload) {
     const extracted = tryExtractResponseText(payload);
     if (extracted !== null) {
-        return extracted;
+        return sanitizeAcceptedResponseText(extracted);
     }
 
     const payloadError = buildReplayPayloadStructuredError(payload);
@@ -1020,6 +1020,57 @@ function flattenMessagePart(part) {
     }
 
     return '';
+}
+
+function sanitizeAcceptedResponseText(text) {
+    const normalized = String(text ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
+    if (!normalized) {
+        return '';
+    }
+
+    let sanitized = stripTaggedSections(normalized, ['thinking', 'reasoning', 'analysis']);
+    const contentBlocks = collectTaggedSections(sanitized, 'content');
+    if (contentBlocks.length > 0) {
+        sanitized = contentBlocks.join('\n\n');
+    }
+
+    sanitized = unwrapTaggedSections(sanitized, ['content', 'report']);
+    return sanitized
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
+}
+
+function stripTaggedSections(text, tags) {
+    let result = String(text ?? '');
+    for (const tag of tags) {
+        const pattern = new RegExp(`<${tag}\\b[^>]*>[\\s\\S]*?<\\/${tag}>`, 'gi');
+        result = result.replace(pattern, '');
+    }
+    return result;
+}
+
+function collectTaggedSections(text, tag) {
+    const sections = [];
+    const pattern = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'gi');
+    let match = null;
+    while ((match = pattern.exec(String(text ?? ''))) !== null) {
+        const inner = String(match[1] ?? '').trim();
+        if (inner) {
+            sections.push(inner);
+        }
+    }
+    return sections;
+}
+
+function unwrapTaggedSections(text, tags) {
+    let result = String(text ?? '');
+    for (const tag of tags) {
+        const pattern = new RegExp(`</?${tag}\\b[^>]*>`, 'gi');
+        result = result.replace(pattern, '');
+    }
+    return result;
 }
 
 function extractTextContent(value) {

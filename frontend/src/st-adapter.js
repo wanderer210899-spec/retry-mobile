@@ -5,6 +5,28 @@ import { waitForNativeCompletion } from './st-lifecycle.js';
 import { isSameChat } from './st-chat.js';
 import { applyAcceptedOutput, finishTerminalUi, reloadSessionUi } from './render/st-operations.js';
 
+export function normalizePendingVisibleRender(renderPayload) {
+    if (!renderPayload) {
+        return { type: 'none', payload: null };
+    }
+
+    const terminalOutcome = resolveTerminalOutcome(renderPayload);
+    if (terminalOutcome) {
+        return {
+            type: 'terminal',
+            payload: {
+                ...cloneValue(renderPayload),
+                outcome: terminalOutcome,
+            },
+        };
+    }
+
+    return {
+        type: 'accepted_output',
+        payload: cloneValue(renderPayload),
+    };
+}
+
 export function createStPort({
     onCapture,
     onCaptureCancelled,
@@ -79,15 +101,16 @@ export function createStPort({
             return cloneValue(renderPayload);
         },
         async flushPendingVisibleRender(renderPayload) {
-            if (!renderPayload) {
+            const normalized = normalizePendingVisibleRender(renderPayload);
+            if (normalized.type === 'none') {
                 return { ok: false };
             }
 
-            if (renderPayload.kind === 'terminal') {
-                return finishTerminalUi(renderPayload);
+            if (normalized.type === 'terminal') {
+                return finishTerminalUi(normalized.payload);
             }
 
-            return applyAcceptedOutput(renderPayload);
+            return applyAcceptedOutput(normalized.payload);
         },
         notifyToast(kind, title, message) {
             showToast(kind, title, message);
@@ -157,4 +180,17 @@ function cloneValue(value) {
     }
 
     return JSON.parse(JSON.stringify(value));
+}
+
+function resolveTerminalOutcome(renderPayload) {
+    const outcome = String(renderPayload?.outcome || renderPayload?.terminalOutcome || '').trim();
+    if (outcome === 'completed' || outcome === 'failed' || outcome === 'cancelled') {
+        return outcome;
+    }
+
+    if (renderPayload?.kind === 'terminal') {
+        return 'completed';
+    }
+
+    return '';
 }

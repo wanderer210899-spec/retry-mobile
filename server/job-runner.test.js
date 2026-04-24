@@ -147,6 +147,38 @@ test('extractResponseText supports responseContent.parts payloads', () => {
     assert.equal(text, 'The wind catches my sleeve, and she glances over at me.');
 });
 
+test('extractResponseText strips leaked thinking blocks and unwraps visible content tags', () => {
+    const text = extractResponseText({
+        choices: [
+            {
+                message: {
+                    content: `<thinking>
+The model should not persist this hidden reasoning.
+</thinking>
+
+<content>
+『时间:放学后』
+
+路灯下的风把校服衣角吹得轻轻晃了一下。
+
+<report>
+- 地点: 校门外旧街
+- 状态: 对话继续
+</report>
+</content>`,
+                },
+            },
+        ],
+    });
+
+    assert.equal(text, `『时间:放学后』
+
+路灯下的风把校服衣角吹得轻轻晃了一下。
+
+- 地点: 校门外旧街
+- 状态: 对话继续`);
+});
+
 test('resolvePendingNativeState fails closed when a frontend-confirmed native assistant disappears before persistence confirmation', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-gap-'));
     const chatsRoot = path.join(tempRoot, 'chats');

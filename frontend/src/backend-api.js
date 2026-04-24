@@ -183,6 +183,10 @@ async function requestJson(url, options) {
     const requestHeaders = await buildRequestHeaders(options?.headers);
     const requestOptions = { ...(options || {}) };
     delete requestOptions.headers;
+    const method = String(requestOptions.method || 'GET').toUpperCase();
+    if (!('cache' in requestOptions) && method === 'GET') {
+        requestOptions.cache = 'no-store';
+    }
     const response = await fetch(url, {
         credentials: 'same-origin',
         ...requestOptions,

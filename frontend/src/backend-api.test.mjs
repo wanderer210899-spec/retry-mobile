@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { startBackendJob } from './backend-api.js';
+import { fetchJobStatus, startBackendJob } from './backend-api.js';
 
 test('startBackendJob uses SillyTavern request headers when available', async (t) => {
     const originalFetch = global.fetch;
@@ -33,6 +33,7 @@ test('startBackendJob uses SillyTavern request headers when available', async (t
     assert.equal(seen.length, 1);
     assert.equal(seen[0].headers['X-CSRF-Token'], 'csrf-123');
     assert.equal(seen[0].headers['Content-Type'], 'application/json');
+    assert.equal('cache' in seen[0], false);
 });
 
 test('startBackendJob falls back to JSON headers when SillyTavern headers are unavailable', async (t) => {
@@ -188,4 +189,41 @@ test('startBackendJob includes request-header diagnostics on 403 failures', asyn
             return true;
         },
     );
+});
+
+test('fetchJobStatus disables browser caching for polling requests', async (t) => {
+    const originalFetch = global.fetch;
+    const originalGetRequestHeaders = global.getRequestHeaders;
+
+    const seen = [];
+    global.getRequestHeaders = () => ({
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': 'csrf-123',
+    });
+    global.fetch = async (_url, options = {}) => {
+        seen.push(options);
+        return new Response(JSON.stringify({
+            jobId: 'job-status',
+            state: 'running',
+        }), {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+    };
+
+    t.after(() => {
+        global.fetch = originalFetch;
+        global.getRequestHeaders = originalGetRequestHeaders;
+    });
+
+    const result = await fetchJobStatus('job-status');
+
+    assert.equal(result.jobId, 'job-status');
+    assert.equal(result.state, 'running');
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].method, 'GET');
+    assert.equal(seen[0].cache, 'no-store');
+    assert.equal(seen[0].headers['X-CSRF-Token'], 'csrf-123');
 });

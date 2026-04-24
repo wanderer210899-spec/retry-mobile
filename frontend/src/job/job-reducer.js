@@ -442,12 +442,6 @@ export function reduceJobState(state, event, env) {
                     }),
                 ]);
             }
-
-            if (type === 'backend.presence_acknowledged') {
-                return commit(current, JOB_PHASE.BACKEND_RUNNING, {
-                    activeStatus: payload.status || current.activeStatus,
-                });
-            }
             break;
 
         case JOB_PHASE.BACKEND_RUNNING:

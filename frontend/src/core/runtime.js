@@ -34,6 +34,7 @@ export function createRuntime() {
         committedReloadKeys: new Set(),
         lastAppliedVersion: 0,
         mountRetryHandle: 0,
+        restoreRetryHandle: 0,
         hostObserver: null,
         quickReplyRefreshHandle: 0,
         capture: {

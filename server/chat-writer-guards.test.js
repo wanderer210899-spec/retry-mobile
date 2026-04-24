@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const {
     assertWritePathReady,
+    shouldThrowNativePersistUnresolved,
     shouldUseConfirmedWriteSafetyRecheck,
 } = require('./chat-writer');
 
@@ -48,4 +49,18 @@ test('confirmed write safety recheck can only fire once and only for confirmed s
         phase: 'native_abandoned',
         nativeResolutionInProgress: false,
     }, false, missingAssistantError), false);
+});
+
+test('native persist unresolved should fire after confirmed recheck still missing turn', () => {
+    assert.equal(shouldThrowNativePersistUnresolved({
+        nativeState: 'confirmed',
+    }, { code: 'backend_turn_missing' }), true);
+
+    assert.equal(shouldThrowNativePersistUnresolved({
+        nativeState: 'confirmed',
+    }, { code: 'backend_write_failed' }), false);
+
+    assert.equal(shouldThrowNativePersistUnresolved({
+        nativeState: 'abandoned',
+    }, { code: 'backend_turn_missing' }), false);
 });

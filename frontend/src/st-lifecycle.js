@@ -79,10 +79,11 @@ export function waitForNativeCompletion({
                     lastVisibleProgressAt = Date.now();
                     lastVisibleProgressSignature = readMessageProgressSignature(lastRenderedMessageId);
                     clearProgressTimeout();
-                    armVisibleProgressPoll();
                     onEvent?.('CHARACTER_MESSAGE_RENDERED', lastRenderedSummary);
                     if (lastEndedMessageId != null) {
                         void confirmFromObservedEvents();
+                    } else {
+                        armVisibleProgressPoll();
                     }
                 }, context),
             );

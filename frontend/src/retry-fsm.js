@@ -384,6 +384,10 @@ export function createRetryFsm({
                     chatIdentity: clonePlain(previous.chatIdentity),
                     target: clonePlain(previous.target),
                 });
+                if (abortedCaptureRuns.size > 20) {
+                    const oldest = abortedCaptureRuns.keys().next().value;
+                    abortedCaptureRuns.delete(oldest);
+                }
             }
             leaveCapturing(previous);
         } else {

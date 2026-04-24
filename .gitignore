@@ -1,2 +1,6 @@
 /files
 /scripts
+/.cursor
+/.playwright-cli
+/.output
+
