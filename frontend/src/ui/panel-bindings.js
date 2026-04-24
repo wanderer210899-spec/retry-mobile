@@ -53,13 +53,13 @@ export function mountPanel(runtime, {
     return drawer;
 }
 
-export function syncValidationControls(drawer, settings) {
-    if (!drawer) {
+export function syncValidationControls(runtime, settings) {
+    if (!runtime?.ui?.panel) {
         return;
     }
 
-    const charactersInput = drawer.querySelector(`#${EXTENSION_ID}-characters`);
-    const tokensInput = drawer.querySelector(`#${EXTENSION_ID}-tokens`);
+    const charactersInput = runtime.ui.charactersInput;
+    const tokensInput = runtime.ui.tokensInput;
     if (charactersInput) {
         charactersInput.disabled = settings.validationMode !== VALIDATION_MODE.CHARACTERS;
     }
@@ -72,7 +72,6 @@ function cachePanelElements(runtime, drawer) {
     runtime.ui.panel = drawer;
     runtime.ui.statusText = drawer.querySelector('[data-role="state-pill"]');
     runtime.ui.stats = drawer.querySelector('[data-role="stats"]');
-    runtime.ui.diagnosticsOutput = drawer.querySelector('[data-role="diagnostics-output"]');
     runtime.ui.retryLogShell = drawer.querySelector('[data-role="retry-log-shell"]');
     runtime.ui.retryLogContainer = drawer.querySelector('[data-role="retry-log-box"]');
     runtime.ui.releaseInfoContainer = drawer.querySelector('[data-role="release-info"]');
@@ -84,6 +83,8 @@ function cachePanelElements(runtime, drawer) {
     runtime.ui.systemPane = drawer.querySelector('[data-role="system-pane"]');
     runtime.ui.tabButtons = Array.from(drawer.querySelectorAll('.rm-tab'));
     runtime.ui.toggleLogButton = drawer.querySelector('[data-action="toggle-log"]');
+    runtime.ui.charactersInput = drawer.querySelector(`#${EXTENSION_ID}-characters`);
+    runtime.ui.tokensInput = drawer.querySelector(`#${EXTENSION_ID}-tokens`);
 }
 
 function bindPanelEvents(drawer, runtime, {
@@ -109,11 +110,6 @@ function bindPanelEvents(drawer, runtime, {
 
         if (action === 'toggle-run') {
             await actions.onToggleRun?.();
-            return;
-        }
-
-        if (action === 'diagnostics') {
-            await actions.onDiagnostics?.();
             return;
         }
 
@@ -178,7 +174,7 @@ function hydrateForm(runtime) {
     drawer.querySelectorAll('[data-setting]').forEach((element) => {
         element.checked = Boolean(runtime.settings[element.dataset.setting]);
     });
-    syncValidationControls(drawer, runtime.settings);
+    syncValidationControls(runtime, runtime.settings);
 }
 
 function updateSettingsFromChange(target, settings) {

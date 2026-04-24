@@ -37,3 +37,25 @@ test('native_turn_mismatch is treated as an allowed native failure hint', () => 
     assert.equal(plugin._test.isAllowedNativeFailureReason('native_wait_timeout'), true);
     assert.equal(plugin._test.isAllowedNativeFailureReason('totally_unknown_reason'), false);
 });
+
+test('server allowlist covers every failure code the frontend can emit', () => {
+    const frontendCodes = [
+        'hidden_timeout',
+        'native_wait_timeout',
+        'native_wait_stalled',
+        'native_turn_mismatch',
+        'native_turn_missing',
+        'native_generation_stopped',
+        'capture_chat_changed',
+        'rendered_without_end',
+        'grace_expired',
+    ];
+
+    for (const code of frontendCodes) {
+        assert.equal(
+            plugin._test.isAllowedNativeFailureReason(code),
+            true,
+            `${code} should be allowlisted`,
+        );
+    }
+});

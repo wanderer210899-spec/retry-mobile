@@ -40,9 +40,6 @@ export function createRenderer({ runtime }) {
         if (runtime.ui.retryLogShell) {
             runtime.ui.retryLogShell.hidden = !runtime.log.show;
         }
-        if (runtime.ui.diagnosticsOutput) {
-            runtime.ui.diagnosticsOutput.innerHTML = renderDiagnostics(runtime.diagnostics);
-        }
         if (runtime.ui.mainPane && runtime.ui.systemPane) {
             const showSystem = runtime.ui.activeTab === 'system';
             runtime.ui.mainPane.hidden = showSystem;
@@ -53,7 +50,7 @@ export function createRenderer({ runtime }) {
             const tab = button.dataset.tab === 'system' ? 'system' : 'main';
             button.classList.toggle('rm-tab--active', runtime.ui.activeTab === tab);
         });
-        syncValidationControls(runtime.ui.panel, runtime.settings);
+        syncValidationControls(runtime, runtime.settings);
 
         if (runtime.ui.actionToggleButton) {
             const stopMode = isRunningLikeState(state);
@@ -93,7 +90,11 @@ function shouldShowError(snapshot) {
         return false;
     }
 
-    return snapshot.phase !== 'running';
+    if (snapshot.phase !== 'running') {
+        return true;
+    }
+
+    return snapshot.error?.code === 'render_apply_failed';
 }
 
 function renderStat(title, value) {
@@ -102,46 +103,6 @@ function renderStat(title, value) {
             <strong>${escapeHtml(title)}</strong>
             <span>${escapeHtml(String(value))}</span>
         </div>
-    `;
-}
-
-function renderDiagnostics(diagnostics) {
-    if (!diagnostics) {
-        return `
-            <div class="rm-diagnostics__title">Diagnostics</div>
-            <div class="rm-diagnostics__line">No diagnostics have run yet.</div>
-        `;
-    }
-
-    const capabilities = diagnostics.capabilities;
-    const eventItems = capabilities.requiredEvents.map((event) => `
-        <li class="rm-diagnostics__item" data-icon="${event.present ? '*' : 'x'}">
-            <span>${escapeHtml(event.name)}: ${event.present ? 'present' : 'missing'}</span>
-        </li>
-    `).join('');
-
-    return `
-        <div class="rm-diagnostics__title">Diagnostics</div>
-        <div class="rm-diagnostics__line">Start is ${diagnostics.startEnabled ? 'enabled' : 'blocked'} by the current capability checks.</div>
-        <ul class="rm-diagnostics__list">
-            <li class="rm-diagnostics__item" data-icon="${capabilities.hasContext ? '*' : 'x'}">
-                <span><code>SillyTavern.getContext()</code>: ${capabilities.hasContext ? 'available' : 'missing'}</span>
-            </li>
-            <li class="rm-diagnostics__item" data-icon="${capabilities.hasGenerate ? '*' : 'x'}">
-                <span><code>generate()</code>: ${capabilities.hasGenerate ? 'available' : 'missing'}</span>
-            </li>
-            <li class="rm-diagnostics__item" data-icon="${capabilities.hasStopGeneration ? '*' : 'x'}">
-                <span><code>stopGeneration()</code>: ${capabilities.hasStopGeneration ? 'available' : 'missing'}</span>
-            </li>
-            <li class="rm-diagnostics__item" data-icon="${capabilities.hasQuickReplyApi ? '*' : 'x'}">
-                <span>Quick Reply API: ${capabilities.hasQuickReplyApi ? 'available' : 'missing'}</span>
-            </li>
-            <li class="rm-diagnostics__item" data-icon="${diagnostics.dryRun.ok ? '*' : 'x'}">
-                <span>Dry-run generation probe: ${diagnostics.dryRun.ok ? 'passed' : escapeHtml(diagnostics.dryRun.reason || 'failed')}</span>
-            </li>
-        </ul>
-        <div class="rm-diagnostics__line">Required native events:</div>
-        <ul class="rm-diagnostics__list">${eventItems}</ul>
     `;
 }
 

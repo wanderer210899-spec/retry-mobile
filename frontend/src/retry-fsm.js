@@ -355,11 +355,18 @@ export function createRetryFsm({
             const pendingRender = clonePlain(context.pendingVisibleRender);
             const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
             Promise.resolve(stPort.flushPendingVisibleRender?.(pendingRender))
-                .then((result) => {
+                .then(async (result) => {
                     if (!isState(context, RetryState.RUNNING)) {
                         return;
                     }
                     if (result?.ok === false) {
+                        try {
+                            await stPort.guardedReload?.();
+                        } catch {}
+                        context = normalizeContextForState({
+                            ...context,
+                            pendingVisibleRender: null,
+                        });
                         return;
                     }
                     context = normalizeContextForState({
@@ -378,6 +385,9 @@ export function createRetryFsm({
                     try {
                         await stPort.guardedReload?.();
                     } catch {}
+                    if (pendingRender?.terminalOutcome === 'completed' && isState(context, RetryState.RUNNING)) {
+                        jobCompleted({ status: pendingRender.status });
+                    }
                 });
         }
 

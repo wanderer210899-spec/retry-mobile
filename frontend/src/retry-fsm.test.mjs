@@ -618,6 +618,39 @@ test('running poll status does not advance applied version when applyAcceptedOut
     assert.deepEqual(lastCall(calls, 'clearGeneratingIndicator')?.args[0], chatIdentity);
 });
 
+test('indicator stays cleared after render_apply_failed even if the next apply succeeds', async () => {
+    const { fsm, calls, emitPolledStatus, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    const indicatorSetsBefore = calls.filter((entry) => entry.method === 'setGeneratingIndicator').length;
+
+    setApplyAcceptedOutputResult({ ok: false });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+
+    assert.equal(calls.filter((entry) => entry.method === 'clearGeneratingIndicator').length, 1);
+
+    setApplyAcceptedOutputResult({ ok: true });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 3 });
+    await Promise.resolve();
+
+    assert.equal(
+        calls.filter((entry) => entry.method === 'setGeneratingIndicator').length,
+        indicatorSetsBefore,
+        'setGeneratingIndicator must not be re-applied after a render_apply_failed event',
+    );
+    assert.equal(fsm.getContext().lastAppliedVersion, 3);
+});
+
 test('running poll status surfaces a structured error and clears the indicator when applyAcceptedOutput rejects', async () => {
     const { fsm, calls, emitPolledStatus, setApplyAcceptedOutputError } = createHarness();
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
@@ -741,6 +774,46 @@ test('resume keeps the pending render queued and triggers guarded reload when th
     assert.deepEqual(fsm.getContext().pendingVisibleRender, pendingVisibleRender);
     assert.equal(fsm.getContext().lastAppliedVersion, 0);
     assert.equal(calls.filter((entry) => entry.method === 'guardedReload').length, 1);
+});
+
+test('resume flush with result.ok === false triggers guardedReload and clears pendingVisibleRender', async () => {
+    const { fsm, calls, setFlushPendingVisibleRenderResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    const pendingVisibleRender = {
+        kind: 'accepted_output',
+        chatIdentity,
+        status: {
+            jobId: 'job-1',
+            state: 'running',
+            targetMessageVersion: 4,
+        },
+    };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        target,
+    });
+    fsm.jobStarted({
+        jobId: 'job-1',
+        target,
+        pendingVisibleRender,
+    });
+
+    setFlushPendingVisibleRenderResult({ ok: false });
+    const resumed = fsm.resume({
+        reason: 'window.focused',
+        isVisible: true,
+        pendingVisibleRender,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(resumed.state, RetryState.RUNNING);
+    assert.equal(calls.filter((entry) => entry.method === 'guardedReload').length, 1);
+    assert.equal(fsm.getContext().pendingVisibleRender, null);
 });
 
 test('resume keeps pending renders queued while the tab is still hidden', () => {

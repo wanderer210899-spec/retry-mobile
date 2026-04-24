@@ -62,7 +62,6 @@ export function createRuntime() {
             quickReplyToggleButton: null,
             mainPane: null,
             systemPane: null,
-            diagnosticsOutput: null,
             retryLogShell: null,
             retryLogContainer: null,
             releaseInfoContainer: null,

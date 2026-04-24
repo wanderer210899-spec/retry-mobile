@@ -10,7 +10,6 @@ export function buildPanelTemplate() {
     return `
         <div class="inline-drawer-toggle inline-drawer-header">
             <b>${EXTENSION_NAME}</b>
-            <div class="inline-drawer-icon fa-solid fa-chevron-down down"></div>
         </div>
         <div class="inline-drawer-content">
             <div class="rm-panel__body">
@@ -126,16 +125,6 @@ export function buildPanelTemplate() {
                 </div>
 
                 <div class="rm-panel__pane" data-role="system-pane" hidden>
-                    <section class="rm-fieldset">
-                        <div class="rm-fieldset__title rm-section-row">
-                            <span>Diagnostics</span>
-                            <button class="menu_button rm-button--inline" data-action="diagnostics">Run</button>
-                        </div>
-                        <div class="rm-diagnostics-output" data-role="diagnostics-output">
-                            <div class="rm-diagnostics__line">No diagnostics have run yet.</div>
-                        </div>
-                    </section>
-
                     <section class="rm-fieldset">
                         <div class="rm-fieldset__title rm-section-row">
                             <span>Install &amp; Update</span>

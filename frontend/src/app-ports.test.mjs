@@ -6,16 +6,17 @@ import { handleJobPortResponse, handlePollingPortStatus } from './app-ports.js';
 test('handlePollingPortStatus renders once after the status and FSM sync complete', async () => {
     const calls = [];
     const retryFsm = { id: 'fsm-1' };
+    const status = { jobId: 'job-1', state: 'running' };
 
     await handlePollingPortStatus({
-        status: { jobId: 'job-1', state: 'running' },
+        status,
         jobId: 'job-1',
-        updateActiveJob(status, jobId) {
-            calls.push(['updateActiveJob', status, jobId]);
+        updateActiveJob(nextStatus, nextJobId) {
+            calls.push(['updateActiveJob', nextStatus, nextJobId]);
             return true;
         },
-        async onStatus(status) {
-            calls.push(['onStatus', status]);
+        async onStatus(nextStatus) {
+            calls.push(['onStatus', nextStatus]);
         },
         syncRuntimeFromFsm(fsm) {
             calls.push(['syncRuntimeFromFsm', fsm]);
@@ -26,13 +27,14 @@ test('handlePollingPortStatus renders once after the status and FSM sync complet
         },
     });
 
-    assert.deepEqual(calls, [
-        ['updateActiveJob', { jobId: 'job-1', state: 'running' }, 'job-1'],
-        ['onStatus', { jobId: 'job-1', state: 'running' }],
-        ['syncRuntimeFromFsm', retryFsm],
-        ['render'],
-    ]);
-    assert.equal(calls.filter(([method]) => method === 'render').length, 1);
+    assert.equal(calls.length, 6);
+    assert.deepEqual(calls[0], ['updateActiveJob', status, 'job-1']);
+    assert.deepEqual(calls[1], ['onStatus', status]);
+    assert.deepEqual(calls[2], ['syncRuntimeFromFsm', retryFsm]);
+    assert.deepEqual(calls[3], ['render']);
+    assert.deepEqual(calls[4], ['syncRuntimeFromFsm', retryFsm]);
+    assert.deepEqual(calls[5], ['render']);
+    assert.equal(calls.filter(([method]) => method === 'render').length, 2);
 });
 
 test('handleJobPortResponse renders once when a backend response materially changes active job status', () => {

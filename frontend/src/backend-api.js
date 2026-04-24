@@ -5,10 +5,23 @@ const BASE_URL = `/api/plugins/${BACKEND_PLUGIN_ID}`;
 let requestHeadersHelperPromise = null;
 
 export async function startBackendJob(payload) {
-    return requestJson(`${BASE_URL}/start`, {
-        method: 'POST',
-        body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    const timeoutHandle = globalThis.setTimeout(() => {
+        controller.abort(createStructuredError(
+            'handoff_request_failed',
+            'Retry Mobile backend start timed out after 45 seconds.',
+        ));
+    }, 45_000);
+
+    try {
+        return await requestJson(`${BASE_URL}/start`, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+        });
+    } finally {
+        globalThis.clearTimeout(timeoutHandle);
+    }
 }
 
 export async function confirmNativeJob(jobId, payload) {

@@ -198,10 +198,6 @@ export function bootRetryMobile() {
                 }
                 await armPluginFromUi();
             },
-            onDiagnostics: async () => {
-                await systemController.refreshDiagnostics(true);
-                systemController.showTab('system');
-            },
             onToggleQuickReplies: async () => {
                 await systemController.toggleQuickRepliesFromUi();
             },
@@ -431,9 +427,14 @@ function toStructuredError(error, fallbackMessage) {
 
 function getArmValidationError(runtime) {
     if (!runtime.diagnostics?.startEnabled) {
+        const diagnosticsDetail = formatDiagnosticsBlock(runtime.diagnostics);
         return createStructuredError(
             'capture_missing_payload',
-            'Retry Mobile is blocked by missing SillyTavern capabilities. Run diagnostics first.',
+            [
+                'Retry Mobile is blocked by missing SillyTavern capabilities.',
+                diagnosticsDetail ? `\n${diagnosticsDetail}` : '',
+                '\nIf you are reporting a bug, include this full error text in your report.',
+            ].join(''),
         );
     }
 
@@ -466,6 +467,41 @@ function getArmValidationError(runtime) {
             ? 'Minimum tokens must be greater than 0 when token-count blocking is active.'
             : 'Minimum characters must be greater than 0 when character-count blocking is active.',
     );
+}
+
+function formatDiagnosticsBlock(diagnostics) {
+    if (!diagnostics) {
+        return 'Diagnostics have not completed yet. Try again in a moment.';
+    }
+
+    const caps = diagnostics.capabilities;
+    if (!caps) {
+        return 'Diagnostics did not return a capability report.';
+    }
+
+    const missing = [];
+    if (!caps.hasContext) missing.push('SillyTavern.getContext() missing');
+    if (!caps.hasEventSource) missing.push('eventSource missing');
+    if (!caps.hasGenerate) missing.push('generate() missing');
+
+    const missingEvents = Array.isArray(caps.requiredEvents)
+        ? caps.requiredEvents.filter((event) => !event?.present).map((event) => String(event?.name || '').trim()).filter(Boolean)
+        : [];
+    if (missingEvents.length > 0) {
+        missing.push(`requiredEvents missing: ${missingEvents.join(', ')}`);
+    }
+
+    const dryRun = diagnostics.dryRun;
+    const dryRunLine = dryRun?.ok
+        ? 'dryRun: passed'
+        : `dryRun: failed (${String(dryRun?.reason || 'unknown reason')})`;
+
+    return [
+        'Diagnostics summary:',
+        `- startEnabled: ${diagnostics.startEnabled ? 'true' : 'false'}`,
+        `- ${dryRunLine}`,
+        missing.length > 0 ? `- missing: ${missing.join(' | ')}` : '- missing: (none reported)',
+    ].join('\n');
 }
 
 function bindHostObserver(ensurePanelMounted) {

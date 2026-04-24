@@ -49,6 +49,9 @@ const ALLOWED_NATIVE_FAILURE_REASONS = new Set([
     'native_wait_timeout',
     'native_wait_stalled',
     'native_turn_mismatch',
+    'native_generation_stopped',
+    'capture_chat_changed',
+    'native_turn_missing',
     'rendered_without_end',
     'grace_expired',
 ]);
@@ -79,6 +82,7 @@ async function init(router) {
 
     router.get('/state', async (request, response) => {
         try {
+            response.set('Cache-Control', 'no-store');
             const identity = getChatIdentityFromRequest(request);
             if (!identity?.chatId) {
                 return response.status(400).send({
@@ -104,6 +108,7 @@ async function init(router) {
     });
 
     router.get('/active', (request, response) => {
+        response.set('Cache-Control', 'no-store');
         const identity = getChatIdentityFromRequest(request);
         if (!identity?.chatId) {
             return response.send({});
@@ -118,6 +123,7 @@ async function init(router) {
     });
 
     router.get('/latest', (request, response) => {
+        response.set('Cache-Control', 'no-store');
         const identity = getChatIdentityFromRequest(request);
         if (!identity?.chatId) {
             return response.send({});
@@ -128,6 +134,7 @@ async function init(router) {
     });
 
     router.get('/status/:jobId', (request, response) => {
+        response.set('Cache-Control', 'no-store');
         const job = getJob(request.params.jobId);
         if (!job) {
             const structuredError = toStructuredError(createStructuredError(
