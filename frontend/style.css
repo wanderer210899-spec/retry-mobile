@@ -1,12 +1,8 @@
 /* ── Token map ─────────────────────────────────────────────────── */
 #retry-mobile-panel {
-    --rm-border: color-mix(in srgb, var(--SmartThemeBorderColor, #7a7a84) 66%, transparent);
-    --rm-accent: var(--SmartThemeQuoteColor, var(--SmartThemeEmColor, #86a970));
-    --rm-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor, #20242a) 82%, transparent);
-    --rm-surface-soft: color-mix(in srgb, var(--SmartThemeBlurTintColor, #20242a) 66%, transparent);
-    --rm-surface-strong: color-mix(in srgb, var(--SmartThemeBlurTintColor, #20242a) 92%, transparent);
-    --rm-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
-    margin-bottom: 14px;
+    /* Keep only theme-forward tokens (avoid building our own “surface”). */
+    --rm-border: var(--SmartThemeBorderColor, rgba(127, 127, 127, 0.45));
+    --rm-accent: var(--SmartThemeQuoteColor, var(--SmartThemeEmColor, currentColor));
 }
 
 /* ── Drawer host ────────────────────────────────────────────────── */
@@ -19,12 +15,11 @@
     display: grid;
     gap: 12px;
     padding: 12px;
+    /* Let SillyTavern themes own surface/background colors. */
     border: 1px solid var(--rm-border);
     border-radius: 12px;
-    background:
-        radial-gradient(circle at top right, color-mix(in srgb, var(--rm-accent) 12%, transparent), transparent 44%),
-        linear-gradient(180deg, color-mix(in srgb, var(--rm-surface) 95%, transparent), color-mix(in srgb, var(--rm-surface-soft) 88%, transparent));
-    box-shadow: var(--rm-shadow);
+    background: transparent;
+    box-shadow: none;
 }
 
 /* ── Hidden utility ─────────────────────────────────────────────── */
@@ -39,7 +34,6 @@
     gap: 0;
     margin: -12px -12px 0;
     padding: 8px 8px 0;
-    background: color-mix(in srgb, var(--rm-surface-soft) 80%, transparent);
     border-radius: 12px 12px 0 0;
     border-bottom: 1px solid var(--rm-border);
 }
@@ -71,7 +65,7 @@
 }
 
 .rm-tab.rm-tab--active {
-    background: color-mix(in srgb, var(--rm-surface-strong) 70%, transparent) !important;
+    background: transparent !important;
     opacity: 1;
     border-bottom: 2px solid var(--rm-accent) !important;
 }
@@ -89,7 +83,6 @@
     gap: 6px;
     margin: 0 -12px;
     padding: 8px 12px;
-    background: color-mix(in srgb, var(--rm-surface-soft) 80%, transparent);
     border-bottom: 1px solid var(--rm-border);
 }
 
@@ -106,7 +99,7 @@
     padding: 12px;
     border: 1px solid var(--rm-border);
     border-radius: 10px;
-    background: color-mix(in srgb, var(--rm-surface-soft) 90%, transparent);
+    background: transparent;
 }
 
 /* ── Section-row: title + pill/button on same line ──────────────── */
@@ -138,7 +131,7 @@
     padding: 4px 10px;
     border-radius: 999px;
     border: 1px solid var(--rm-border);
-    background: color-mix(in srgb, var(--rm-surface-strong) 90%, transparent);
+    background: transparent;
     font-size: 0.84rem;
     white-space: nowrap;
 }
@@ -177,7 +170,7 @@
     padding: 6px 4px;
     border: 1px solid var(--rm-border);
     border-radius: 6px;
-    background: color-mix(in srgb, var(--rm-surface-strong) 86%, transparent);
+    background: transparent;
     text-align: center;
 }
 
@@ -221,10 +214,8 @@
     width: 68px;
     flex-shrink: 0;
     padding: 5px 8px;
-    border: 1px solid var(--rm-border);
+    /* Keep sizing; let ST theme style the control. */
     border-radius: 6px;
-    background: color-mix(in srgb, var(--rm-surface-strong) 94%, transparent);
-    color: inherit;
     text-align: center;
     font: inherit;
     font-size: 0.9rem;
@@ -238,7 +229,6 @@
 /* ── Run mode toggle ────────────────────────────────────────────── */
 .rm-mode-toggle {
     display: flex;
-    background: color-mix(in srgb, var(--rm-surface-strong) 88%, transparent);
     border: 1px solid var(--rm-border);
     border-radius: 8px;
     padding: 3px;
@@ -271,9 +261,8 @@
 }
 
 .rm-mode-toggle__option input[type="radio"]:checked + span {
-    background: color-mix(in srgb, var(--rm-accent) 22%, var(--rm-surface-strong));
     opacity: 1;
-    border: 1px solid color-mix(in srgb, var(--rm-accent) 40%, var(--rm-border));
+    border: 1px solid var(--rm-accent);
 }
 
 /* ── Acceptance hard block radio grid ───────────────────────────── */
@@ -302,9 +291,9 @@
     gap: 6px;
     flex: 1;
     padding: 6px 10px;
-    border: 1px solid color-mix(in srgb, var(--rm-border) 82%, transparent);
+    border: 1px solid var(--rm-border);
     border-radius: 7px;
-    background: color-mix(in srgb, var(--rm-surface) 80%, transparent);
+    background: transparent;
     cursor: pointer;
     font-size: 0.86rem;
 }
@@ -325,9 +314,9 @@
     align-items: center;
     gap: 7px;
     padding: 7px 10px;
-    border: 1px solid color-mix(in srgb, var(--rm-border) 78%, transparent);
+    border: 1px solid var(--rm-border);
     border-radius: 7px;
-    background: color-mix(in srgb, var(--rm-surface) 80%, transparent);
+    background: transparent;
     cursor: pointer;
     font-size: 0.84rem;
 }
@@ -341,10 +330,8 @@
     width: 100%;
     min-height: 76px;
     padding: 9px 10px;
-    border: 1px solid var(--rm-border);
     border-radius: 8px;
-    background: color-mix(in srgb, var(--rm-surface-strong) 94%, transparent);
-    color: inherit;
+    /* Keep layout; let ST theme style the control. */
     resize: vertical;
     font: inherit;
     font-size: 0.9rem;
@@ -368,8 +355,8 @@
 }
 
 .rm-qr-toggle.rm-qr-toggle--active {
-    border-color: color-mix(in srgb, var(--rm-accent) 60%, var(--SmartThemeBorderColor, #7a7a84));
-    background: color-mix(in srgb, var(--rm-accent) 18%, transparent);
+    border-color: var(--rm-accent);
+    background: transparent;
 }
 
 .rm-qr-status {
@@ -417,8 +404,7 @@
 }
 
 .rm-button--primary {
-    background: linear-gradient(135deg, color-mix(in srgb, var(--rm-accent) 34%, transparent), color-mix(in srgb, var(--rm-surface-strong) 72%, transparent));
-    border-color: color-mix(in srgb, var(--rm-accent) 52%, var(--SmartThemeBorderColor, #7a7a84));
+    border-color: var(--rm-accent);
 }
 
 .rm-button--danger {
@@ -448,12 +434,11 @@
     border-radius: 8px;
     line-height: 1.5;
     font-size: 0.88rem;
-    background: color-mix(in srgb, var(--rm-surface) 90%, transparent);
+    background: transparent;
 }
 
 .rm-error {
-    border-color: color-mix(in srgb, #d26f6f 52%, var(--SmartThemeBorderColor, #7a7a84));
-    color: color-mix(in srgb, #ffd6d6 72%, currentColor);
+    border-color: #d26f6f;
 }
 
 /* ── Diagnostics output ─────────────────────────────────────────── */
@@ -556,7 +541,7 @@
     padding: 9px 10px;
     border: 1px solid var(--rm-border);
     border-radius: 8px;
-    background: color-mix(in srgb, var(--rm-surface) 84%, transparent);
+    background: transparent;
     font-size: 0.86rem;
 }
 
@@ -572,7 +557,6 @@
     padding: 10px 12px;
     border: 1px solid var(--rm-border);
     border-radius: 8px;
-    background: color-mix(in srgb, var(--rm-surface-strong) 92%, transparent);
     font: 0.85rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
     white-space: pre-wrap;
     color: inherit;

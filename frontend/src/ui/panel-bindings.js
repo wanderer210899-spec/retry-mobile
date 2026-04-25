@@ -103,7 +103,8 @@ function bindPanelEvents(drawer, runtime, {
         if (!action) {
             const header = event.target?.closest?.('.inline-drawer-toggle');
             if (header) {
-                drawer.classList.toggle('inline-drawer-closed');
+                // Let SillyTavern's built-in inline-drawer handler manage open/close state.
+                // (Toggling our own closed class can desync with ST's inline `display` styles.)
             }
             return;
         }

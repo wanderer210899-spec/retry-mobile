@@ -22,13 +22,6 @@ const BUTTON_SPECS = Object.freeze([
         icon: 'fa-sliders',
         title: 'Focus the Retry Mobile settings panel',
     },
-    {
-        label: 'Run Diagnostics',
-        automationId: 'retry-mobile-diagnostics',
-        message: `/${SLASH_COMMAND_PREFIX}-diagnostics`,
-        icon: 'fa-stethoscope',
-        title: 'Run Retry Mobile diagnostics',
-    },
 ]);
 
 export function getQuickReplyStatus() {

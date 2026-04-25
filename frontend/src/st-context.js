@@ -149,7 +149,10 @@ export function showToast(kind, title, message) {
 
 export function focusPanelDrawer(drawerElement) {
     if (!drawerElement) {
-        return;
+        drawerElement = document.getElementById('retry-mobile-panel');
+        if (!drawerElement) {
+            return;
+        }
     }
 
     let ancestor = drawerElement.parentElement;
@@ -162,16 +165,39 @@ export function focusPanelDrawer(drawerElement) {
         ancestor = ancestor.parentElement;
     }
 
-    window.setTimeout(() => {
-        drawerElement.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    const openDrawer = () => {
         const toggle = drawerElement.querySelector?.('.inline-drawer-toggle');
         const content = drawerElement.querySelector?.('.inline-drawer-content');
         const isCollapsed = drawerElement.classList.contains('inline-drawer-closed')
             || (content != null && window.getComputedStyle(content).display === 'none');
-        if (toggle && isCollapsed) {
-            toggle.click();
+
+        if (!toggle) {
+            return !isCollapsed;
         }
-    }, 80);
+
+        if (isCollapsed) {
+            // Some mobile WebViews occasionally swallow the first click; do both:
+            // 1) click the toggle
+            // 2) force the "open" class that ST's own drawers rely on
+            toggle.click?.();
+            drawerElement.classList.add('open');
+        }
+
+        return true;
+    };
+
+    // Attempt immediately (avoids timing flake on mobile).
+    drawerElement.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    const didAttempt = openDrawer();
+    if (!didAttempt) {
+        return;
+    }
+
+    // Retry once on the next frame in case layout/host mounts lag behind the command.
+    window.requestAnimationFrame(() => {
+        drawerElement.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+        openDrawer();
+    });
 }
 
 export function registerSlashCommand(context, {

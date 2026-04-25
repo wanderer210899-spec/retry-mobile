@@ -10,6 +10,7 @@ export function buildPanelTemplate() {
     return `
         <div class="inline-drawer-toggle inline-drawer-header">
             <b>${EXTENSION_NAME}</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down interactable" tabindex="0" role="button"></div>
         </div>
         <div class="inline-drawer-content">
             <div class="rm-panel__body">
