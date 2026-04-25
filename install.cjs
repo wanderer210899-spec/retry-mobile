@@ -13,6 +13,21 @@ const BACKEND_SOURCE = path.join(SOURCE_ROOT, 'server');
 const RAW_REPOSITORY_BASE = REPOSITORY_URL.replace('https://github.com/', 'https://raw.githubusercontent.com/');
 const RELEASE_MANIFEST_FILE = 'release.json';
 
+const ansi = {
+    reset: '\x1b[0m',
+    bold: '\x1b[1m',
+    dim: '\x1b[2m',
+    green: '\x1b[32m',
+};
+
+function style(code, text) {
+    return `${code}${text}${ansi.reset}`;
+}
+
+function clearScreen() {
+    process.stdout.write('\x1Bc');
+}
+
 if (require.main === module) {
     main().catch((error) => {
         console.error(`\n${PLUGIN_NAME} installer failed.`);
@@ -38,27 +53,29 @@ async function main() {
 
     try {
         let keepRunning = true;
+        let lastResult = '';
         while (keepRunning) {
             refreshProfiles(layout);
             layout.installSource = resolveLayoutInstallSource(layout);
             await refreshInstallerReleaseStatus(layout);
-            renderMenu(layout, platform);
+            clearScreen();
+            renderMenu(layout, platform, lastResult);
             const choice = await promptMainMenuChoice(rl);
             switch (choice) {
                 case '1':
-                    await configureServerPluginSettings(rl, layout, platform);
+                    lastResult = await configureServerPluginSettings(rl, layout, platform);
                     break;
                 case '2':
-                    await installOrUpdateNow(rl, layout, platform);
+                    lastResult = await installOrUpdateNow(rl, layout, platform);
                     break;
                 case '3':
-                    await uninstallFlow(rl, layout);
+                    lastResult = await uninstallFlow(rl, layout);
                     break;
                 case '0':
                     keepRunning = false;
                     break;
                 default:
-                    console.log('Choose a valid option: 0, 1, 2, or 3.');
+                    lastResult = 'Choose a valid option: 0, 1, 2, or 3.';
                     break;
             }
         }
@@ -103,10 +120,10 @@ async function headlessInstall(layout, platform) {
         installFrontendForProfiles(layout, [selectedProfile]);
         refreshProfiles(layout);
         console.log(`[Headless] Frontend installed for profile ${selectedProfile.handle}.`);
-        logProcessComplete('[Headless] Install complete.', [
+        console.log(`\n${formatProcessComplete('[Headless] Install complete.', [
             `Backend updated and frontend installed for profile ${selectedProfile.handle}.`,
             'Restart SillyTavern for changes to take effect.',
-        ], platform);
+        ], platform)}`);
         return;
     }
 
@@ -121,10 +138,10 @@ async function headlessInstall(layout, platform) {
     refreshProfiles(layout);
     console.log('[Headless] Frontend installed (global third-party).');
 
-    logProcessComplete('[Headless] Install complete.', [
+    console.log(`\n${formatProcessComplete('[Headless] Install complete.', [
         'Backend and global frontend updated.',
         'Restart SillyTavern for changes to take effect.',
-    ], platform);
+    ], platform)}`);
 }
 
 function detectPlatform() {
@@ -201,7 +218,6 @@ function parseConfigSummary(configText) {
     return {
         dataRoot: extractYamlScalar(configText, 'dataRoot') || './data',
         enableServerPlugins: extractYamlScalar(configText, 'enableServerPlugins') === 'true',
-        enableServerPluginsAutoUpdate: extractYamlScalar(configText, 'enableServerPluginsAutoUpdate') === 'true',
     };
 }
 
@@ -276,14 +292,20 @@ function createProfileRecord(root, handle = path.basename(root)) {
     };
 }
 
-function renderMenu(layout, platform) {
+function renderMenu(layout, platform, lastResult = '') {
     const installSource = layout.installSource || resolveLayoutInstallSource(layout);
     console.log('\n ==============================================================');
     console.log(` | > ${PLUGIN_NAME} Installer`);
     console.log(' ==============================================================');
+    if (lastResult) {
+        console.log(' |');
+        console.log(` | ${lastResult}`);
+        console.log(' |');
+        console.log(' ______________________________________________________________');
+    }
     console.log(' ______________________________________________________________');
-    console.log(' | **What would you like to do?**');
-    console.log(' |   1. Server plugin / auto-update');
+    console.log(' | What would you like to do?');
+    console.log(' |   1. Enable server plugin');
     console.log(' |   2. Install / Update now');
     console.log(' |   3. Uninstall');
     console.log(' ______________________________________________________________');
@@ -291,15 +313,14 @@ function renderMenu(layout, platform) {
     console.log(' |   0. Exit');
     console.log(' ______________________________________________________________');
             console.log(' | Local Install:');
-            console.log(` |   Working dir: ${truncateMiddle(layout.workingDir, 42)}`);
-            console.log(` |   ST root:     ${truncateMiddle(layout.stRoot, 42)}`);
-            console.log(` |   Repository:  ${truncateMiddle(REPOSITORY_URL, 42)}`);
-            console.log(` |   Branch:      ${truncateMiddle(installSource.branch, 42)}`);
-            console.log(` |   Source Ver:  ${truncateMiddle(formatInstallerReleaseStatus(layout.releaseUpdate), 42)}`);
+            console.log(` |   Working dir: ${abbreviatePath(layout.workingDir, 48)}`);
+            console.log(` |   ST root:     ${abbreviatePath(layout.stRoot, 48)}`);
+            console.log(` |   Repository:  ${abbreviatePath(REPOSITORY_URL, 48)}`);
+            console.log(` |   Branch:      ${abbreviatePath(installSource.branch, 48)}`);
+            console.log(` |   Source Ver:  ${abbreviatePath(formatInstallerReleaseStatus(layout.releaseUpdate), 48)}`);
             console.log(' ______________________________________________________________');
     console.log(' | Retry Mobile Status:');
     console.log(` |   Server plugins: ${layout.config.enableServerPlugins ? 'Enabled' : 'Disabled'}`);
-    console.log(` |   Auto-update:    ${layout.config.enableServerPluginsAutoUpdate ? 'Enabled' : 'Disabled'}`);
     console.log(` |   Backend:        ${fs.existsSync(layout.backendTarget) ? 'Installed' : 'Not installed'}`);
     console.log(` |   Everyone:       ${layout.globalFrontendInstalled ? 'Installed in third-party' : 'Not installed in third-party'}`);
     if (layout.profiles.length === 0) {
@@ -322,49 +343,25 @@ function renderMenu(layout, platform) {
 }
 
 async function promptMainMenuChoice(rl) {
-    return (await rl.question(' Choose Your Destiny (0-3): ')).trim();
+    return (await rl.question(' Please select an option: ')).trim();
 }
 
 async function configureServerPluginSettings(rl, layout, platform) {
-    console.log('\nServer plugin settings');
-    console.log('1. Enable server plugin');
-    console.log('2. Enable plugin auto-update');
-    console.log('3. Enable both');
-    console.log('0. Cancel');
-    console.log('Plugin auto-update lets SillyTavern automatically update server-side plugins inside plugins/.');
-
-    const choice = (await rl.question('Selection: ')).trim();
-    if (choice === '1') {
-        updateServerPluginSettings(layout, { enableServerPlugins: true });
-        logProcessComplete('Config change complete.', [
-            'Server plugins are now enabled in config.yaml.',
-            'Plugin auto-update was left unchanged.',
-        ], platform);
-        return;
+    console.log('\nServer plugin setting');
+    if (layout.config.enableServerPlugins) {
+        console.log('Server plugins are already enabled.');
+        return 'Server plugins are already enabled.';
     }
 
-    if (choice === '2') {
-        updateServerPluginSettings(layout, { enableServerPluginsAutoUpdate: true });
-        const lines = ['Server plugin auto-update is now enabled in config.yaml.'];
-        if (!layout.config.enableServerPlugins) {
-            lines.push('Server plugins are still disabled. Auto-update will only apply after server plugins are enabled.');
-        }
-        logProcessComplete('Config change complete.', lines, platform);
-        return;
+    const enable = await confirm(rl, 'Enable server plugins in config.yaml?', true);
+    if (!enable) {
+        return 'No config changes were made.';
     }
 
-    if (choice === '3') {
-        updateServerPluginSettings(layout, {
-            enableServerPlugins: true,
-            enableServerPluginsAutoUpdate: true,
-        });
-        logProcessComplete('Config change complete.', [
-            'Server plugins and plugin auto-update are now enabled in config.yaml.',
-        ], platform);
-        return;
-    }
-
-    console.log('No config changes were made.');
+    updateServerPluginSettings(layout, { enableServerPlugins: true });
+    return formatProcessComplete('Config change complete.', [
+        'Server plugins are now enabled in config.yaml.',
+    ], platform);
 }
 
 function updateServerPluginSettings(layout, changes) {
@@ -373,10 +370,6 @@ function updateServerPluginSettings(layout, changes) {
 
     if (typeof changes.enableServerPlugins === 'boolean') {
         configText = upsertYamlBoolean(configText, 'enableServerPlugins', changes.enableServerPlugins);
-    }
-
-    if (typeof changes.enableServerPluginsAutoUpdate === 'boolean') {
-        configText = upsertYamlBoolean(configText, 'enableServerPluginsAutoUpdate', changes.enableServerPluginsAutoUpdate);
     }
 
     fs.writeFileSync(layout.configPath, configText, 'utf8');
@@ -389,21 +382,26 @@ function logRestartMessage(platform) {
         : 'Restart SillyTavern in Termux for the change to take effect.');
 }
 
-function logProcessComplete(title, lines, platform) {
-    console.log(`\n${title}`);
+function formatProcessComplete(title, lines, platform) {
+    const payload = [];
+    payload.push(title);
     for (const line of lines) {
-        console.log(line);
+        payload.push(line);
     }
     if (platform) {
-        logRestartMessage(platform);
+        payload.push(platform === 'windows'
+            ? 'Restart SillyTavern from your Windows launcher for the change to take effect.'
+            : 'Restart SillyTavern in Termux for the change to take effect.');
     }
+    return payload.join('\n');
 }
 
 async function installOrUpdateNow(rl, layout, platform) {
     if (!layout.config.enableServerPlugins) {
-        console.log('Server plugins are disabled. Install / Update now will not change config.yaml.');
-        console.log('Use option 1 first to enable the server plugin prerequisite, then run Install / Update now again.');
-        return;
+        return [
+            'Server plugins are disabled. Install / Update now will not change config.yaml.',
+            'Use option 1 first to enable the server plugin prerequisite, then run Install / Update now again.',
+        ].join('\n');
     }
 
     ensureWritable(layout.pluginsDir, true);
@@ -412,11 +410,10 @@ async function installOrUpdateNow(rl, layout, platform) {
     const target = await promptFrontendDestination(rl, layout);
     if (!target) {
         refreshProfiles(layout);
-        logProcessComplete('Install / Update process complete.', [
+        return formatProcessComplete('Install / Update process complete.', [
             'Backend installed or updated.',
             'Frontend selection was cancelled.',
         ], platform);
-        return;
     }
 
     const completionLines = ['Backend installed or updated.'];
@@ -425,8 +422,7 @@ async function installOrUpdateNow(rl, layout, platform) {
         if (installedProfiles.length > 0) {
             const migrate = await confirm(rl, 'Profile-local frontend installs were found. Remove them and switch to one global install for everyone?', true);
             if (!migrate) {
-                console.log('Global frontend install cancelled to avoid duplicate frontend copies.');
-                return;
+                return 'Global frontend install cancelled to avoid duplicate frontend copies.';
             }
 
             removeProfileFrontends(installedProfiles);
@@ -437,8 +433,7 @@ async function installOrUpdateNow(rl, layout, platform) {
         completionLines.push(`Installed ${PLUGIN_NAME} frontend for everyone in public/scripts/extensions/third-party/${PLUGIN_ID}.`);
     } else {
         if (layout.globalFrontendInstalled) {
-            console.log('A global third-party frontend install already exists. Remove it first from Uninstall before creating profile-local installs.');
-            return;
+            return 'A global third-party frontend install already exists. Remove it first from Uninstall before creating profile-local installs.';
         }
 
         installFrontendForProfiles(layout, target.profiles);
@@ -450,7 +445,7 @@ async function installOrUpdateNow(rl, layout, platform) {
         completionLines.push(`Legacy backend ${LEGACY_PLUGIN_ID} is still present. Remove it manually when you are done migrating.`);
     }
 
-    logProcessComplete('Install / Update process complete.', completionLines, platform);
+    return formatProcessComplete('Install / Update process complete.', completionLines, platform);
 }
 
 async function promptFrontendDestination(rl, layout) {
@@ -509,47 +504,43 @@ async function uninstallFlow(rl, layout) {
     if (choice === '1') {
         const installedProfiles = layout.profiles.filter((profile) => profile.hasFrontend);
         if (installedProfiles.length === 0) {
-            console.log('No profile-local frontend installs were found.');
-            return;
+            return 'No profile-local frontend installs were found.';
         }
 
         const selected = await promptForProfiles(rl, installedProfiles, true);
         if (selected.length === 0) {
-            console.log('No profiles selected.');
-            return;
+            return 'No profiles selected.';
         }
 
         removeProfileFrontends(selected);
         refreshProfiles(layout);
-        console.log(`Removed ${PLUGIN_NAME} frontend from ${selected.map((profile) => profile.handle).join(', ')}.`);
-        return;
+        return `Removed ${PLUGIN_NAME} frontend from ${selected.map((profile) => profile.handle).join(', ')}.`;
     }
 
     if (choice === '2') {
         if (!layout.globalFrontendInstalled) {
-            console.log('No global third-party frontend install was found.');
-            return;
+            return 'No global third-party frontend install was found.';
         }
 
         removeDirectory(layout.globalFrontendTarget);
         refreshProfiles(layout);
-        console.log(`Removed ${PLUGIN_NAME} from public/scripts/extensions/third-party.`);
-        return;
+        return `Removed ${PLUGIN_NAME} from public/scripts/extensions/third-party.`;
     }
 
     if (choice === '3') {
         const approved = await confirm(rl, 'Remove the backend plus all profile and global frontend installs?', false);
         if (!approved) {
-            console.log('Uninstall cancelled.');
-            return;
+            return 'Uninstall cancelled.';
         }
 
         removeDirectory(layout.backendTarget);
         removeDirectory(layout.globalFrontendTarget);
         removeProfileFrontends(layout.profiles.filter((profile) => profile.hasFrontend));
         refreshProfiles(layout);
-        console.log(`Removed ${PLUGIN_NAME} backend and all frontend installs.`);
+        return `Removed ${PLUGIN_NAME} backend and all frontend installs.`;
     }
+
+    return 'Uninstall cancelled.';
 }
 
 function installBackend(layout) {
@@ -878,7 +869,11 @@ function normalizeVersion(value) {
 }
 
 function formatInstallerReleaseStatus(releaseUpdate) {
-    return releaseUpdate?.message || 'Update check unavailable';
+    const message = releaseUpdate?.message || 'Update check unavailable';
+    if (releaseUpdate?.hasUpdate) {
+        return style(ansi.green, message);
+    }
+    return message;
 }
 
 function truncateMiddle(value, maxLength) {
@@ -889,6 +884,16 @@ function truncateMiddle(value, maxLength) {
 
     const edge = Math.max(8, Math.floor((maxLength - 3) / 2));
     return `${text.slice(0, edge)}...${text.slice(-edge)}`;
+}
+
+function abbreviatePath(value, maxLength = 48) {
+    const raw = String(value || '');
+    const home = String(process.env.HOME || process.env.USERPROFILE || '');
+    const normalized = home && raw.startsWith(home) ? `~${raw.slice(home.length)}` : raw;
+    if (normalized.length <= maxLength) {
+        return normalized;
+    }
+    return `…${normalized.slice(-(maxLength - 1))}`;
 }
 
 async function confirm(rl, prompt, defaultValue) {

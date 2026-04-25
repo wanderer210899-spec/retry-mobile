@@ -55,7 +55,6 @@ function createFakeSillyTavernRoot(sandboxRoot) {
     writeFile(path.join(stRoot, 'config.yaml'), [
         'dataRoot: ./data',
         'enableServerPlugins: true',
-        'enableServerPluginsAutoUpdate: false',
         '',
     ].join('\n'));
     return stRoot;
