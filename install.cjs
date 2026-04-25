@@ -5,6 +5,7 @@ const readline = require('node:readline/promises');
 
 const { readInstallSourceFromRoot, resolveInstallSource, writeInstallSource } = require('./server/install-source');
 const { DEFAULT_BRANCH, PLUGIN_ID, PLUGIN_NAME, REPOSITORY_URL } = require('./server/plugin-meta');
+const { normalizeLanguage, translate } = require('./server/i18n-catalog');
 
 const LEGACY_PLUGIN_ID = 'auto-reroll';
 const SOURCE_ROOT = __dirname;
@@ -28,6 +29,13 @@ function clearScreen() {
     process.stdout.write('\x1Bc');
 }
 
+function ti(language, key, vars = {}) {
+    return translate(`installer.${key}`, {
+        language: normalizeLanguage(language || 'en'),
+        vars,
+    });
+}
+
 if (require.main === module) {
     main().catch((error) => {
         console.error(`\n${PLUGIN_NAME} installer failed.`);
@@ -40,6 +48,7 @@ async function main() {
     const platform = detectPlatform();
     warnIfVersionsMismatch();
     const layout = resolveLocalLayout(process.cwd(), platform);
+    layout.uiLanguage = 'en';
 
     if (process.env.RETRY_MOBILE_HEADLESS === '1') {
         await headlessInstall(layout, platform);
@@ -52,30 +61,32 @@ async function main() {
     });
 
     try {
+        layout.uiLanguage = await promptInstallerLanguage(rl);
         let keepRunning = true;
         let lastResult = '';
         while (keepRunning) {
             refreshProfiles(layout);
             layout.installSource = resolveLayoutInstallSource(layout);
+            layout.installSource.uiLanguage = layout.uiLanguage || layout.installSource.uiLanguage || 'en';
             await refreshInstallerReleaseStatus(layout);
             clearScreen();
-            renderMenu(layout, platform, lastResult);
-            const choice = await promptMainMenuChoice(rl);
+            renderMenu(layout, platform, lastResult, layout.uiLanguage);
+            const choice = await promptMainMenuChoice(rl, layout.uiLanguage);
             switch (choice) {
                 case '1':
-                    lastResult = await configureServerPluginSettings(rl, layout, platform);
+                    lastResult = await configureServerPluginSettings(rl, layout, platform, layout.uiLanguage);
                     break;
                 case '2':
-                    lastResult = await installOrUpdateNow(rl, layout, platform);
+                    lastResult = await installOrUpdateNow(rl, layout, platform, layout.uiLanguage);
                     break;
                 case '3':
-                    lastResult = await uninstallFlow(rl, layout);
+                    lastResult = await uninstallFlow(rl, layout, layout.uiLanguage);
                     break;
                 case '0':
                     keepRunning = false;
                     break;
                 default:
-                    lastResult = 'Choose a valid option: 0, 1, 2, or 3.';
+                    lastResult = ti(layout.uiLanguage, 'chooseMainOptionInvalid');
                     break;
             }
         }
@@ -87,6 +98,7 @@ async function main() {
 async function headlessInstall(layout, platform) {
     console.log('\n[Headless] Non-interactive install (RETRY_MOBILE_HEADLESS=1)');
     layout.installSource = resolveLayoutInstallSource(layout);
+    layout.installSource.uiLanguage = normalizeLanguage(process.env.RETRY_MOBILE_UI_LANGUAGE || 'en');
     await refreshInstallerReleaseStatus(layout);
     const requestedProfileHandle = String(process.env.RETRY_MOBILE_PROFILE || '').trim();
 
@@ -292,10 +304,10 @@ function createProfileRecord(root, handle = path.basename(root)) {
     };
 }
 
-function renderMenu(layout, platform, lastResult = '') {
+function renderMenu(layout, platform, lastResult = '', language = 'en') {
     const installSource = layout.installSource || resolveLayoutInstallSource(layout);
     console.log('\n ==============================================================');
-    console.log(` | > ${PLUGIN_NAME} Installer`);
+    console.log(` | > ${ti(language, 'menuTitle', { pluginName: PLUGIN_NAME })}`);
     console.log(' ==============================================================');
     if (lastResult) {
         console.log(' |');
@@ -304,46 +316,65 @@ function renderMenu(layout, platform, lastResult = '') {
         console.log(' ______________________________________________________________');
     }
     console.log(' ______________________________________________________________');
-    console.log(' | What would you like to do?');
-    console.log(' |   1. Enable server plugin');
-    console.log(' |   2. Install / Update now');
-    console.log(' |   3. Uninstall');
+    console.log(` | ${ti(language, 'menuQuestion')}`);
+    console.log(` |   1. ${ti(language, 'menuEnableServerPlugin')}`);
+    console.log(` |   2. ${ti(language, 'menuInstallNow')}`);
+    console.log(` |   3. ${ti(language, 'menuUninstall')}`);
     console.log(' ______________________________________________________________');
     console.log(' | Menu Options:');
-    console.log(' |   0. Exit');
+    console.log(` |   0. ${ti(language, 'menuExit')}`);
     console.log(' ______________________________________________________________');
-            console.log(' | Local Install:');
-            console.log(` |   Working dir: ${abbreviatePath(layout.workingDir, 48)}`);
-            console.log(` |   ST root:     ${abbreviatePath(layout.stRoot, 48)}`);
-            console.log(` |   Repository:  ${abbreviatePath(REPOSITORY_URL, 48)}`);
-            console.log(` |   Branch:      ${abbreviatePath(installSource.branch, 48)}`);
-            console.log(` |   Source Ver:  ${abbreviatePath(formatInstallerReleaseStatus(layout.releaseUpdate), 48)}`);
+            console.log(` | ${ti(language, 'localInstallTitle')}`);
+            console.log(` |   ${ti(language, 'workingDir', { value: abbreviatePath(layout.workingDir, 48) })}`);
+            console.log(` |   ${ti(language, 'stRoot', { value: abbreviatePath(layout.stRoot, 48) })}`);
+            console.log(` |   ${ti(language, 'repository', { value: abbreviatePath(REPOSITORY_URL, 48) })}`);
+            console.log(` |   ${ti(language, 'branch', { value: abbreviatePath(installSource.branch, 48) })}`);
+            console.log(` |   ${ti(language, 'sourceVersion', { value: abbreviatePath(formatInstallerReleaseStatus(layout.releaseUpdate), 48) })}`);
             console.log(' ______________________________________________________________');
-    console.log(' | Retry Mobile Status:');
-    console.log(` |   Server plugins: ${layout.config.enableServerPlugins ? 'Enabled' : 'Disabled'}`);
-    console.log(` |   Backend:        ${fs.existsSync(layout.backendTarget) ? 'Installed' : 'Not installed'}`);
-    console.log(` |   Everyone:       ${layout.globalFrontendInstalled ? 'Installed in third-party' : 'Not installed in third-party'}`);
+    console.log(` | ${ti(language, 'statusTitle')}`);
+    console.log(` |   Server plugins: ${layout.config.enableServerPlugins ? ti(language, 'serverPluginsEnabled') : ti(language, 'serverPluginsDisabled')}`);
+    console.log(` |   Backend:        ${fs.existsSync(layout.backendTarget) ? ti(language, 'installed') : ti(language, 'notInstalled')}`);
+    console.log(` |   Everyone:       ${layout.globalFrontendInstalled ? ti(language, 'installedInThirdParty') : ti(language, 'notInstalledInThirdParty')}`);
     if (layout.profiles.length === 0) {
-        console.log(' |   Profiles:       None detected in data root');
+        console.log(` |   Profiles:       ${ti(language, 'profilesNoneDetected')}`);
     } else {
         for (const profile of layout.profiles) {
-            console.log(` |   ${truncateMiddle(`Profile ${profile.handle}`, 28)}: ${profile.hasFrontend ? 'Installed' : 'Not installed'}`);
+            console.log(` |   ${ti(language, 'profileRow', {
+                profile: truncateMiddle(`Profile ${profile.handle}`, 28),
+                status: profile.hasFrontend ? ti(language, 'installed') : ti(language, 'notInstalled'),
+            })}`);
         }
     }
     if (fs.existsSync(layout.legacyBackendTarget)) {
-        console.log(` |   Legacy backend detected: ${LEGACY_PLUGIN_ID}`);
+        console.log(` |   ${ti(language, 'legacyBackendDetected', { legacyId: LEGACY_PLUGIN_ID })}`);
     }
     console.log(' ______________________________________________________________');
     if (platform === 'windows') {
-        console.log(' | Windows note: Restart SillyTavern from your launcher after config or install changes.');
+        console.log(` | ${ti(language, 'windowsRestartNote')}`);
     } else if (platform === 'termux') {
-        console.log(' | Termux note: Stop the running SillyTavern process before replacing plugin files.');
+        console.log(` | ${ti(language, 'termuxRestartNote')}`);
     }
     console.log(' ==============================================================');
 }
 
-async function promptMainMenuChoice(rl) {
-    return (await rl.question(' Please select an option: ')).trim();
+async function promptMainMenuChoice(rl, language = 'en') {
+    return (await rl.question(ti(language, 'chooseMainOptionPrompt'))).trim();
+}
+
+async function promptInstallerLanguage(rl) {
+    while (true) {
+        console.log(`\n${ti('en', 'selectLanguageTitle')}`);
+        console.log(ti('en', 'languageOptionChinese'));
+        console.log(ti('en', 'languageOptionEnglish'));
+        const answer = (await rl.question(ti('en', 'languagePrompt'))).trim();
+        if (answer === '1') {
+            return 'zh';
+        }
+        if (answer === '2') {
+            return 'en';
+        }
+        console.log(ti('en', 'languageInvalid'));
+    }
 }
 
 async function configureServerPluginSettings(rl, layout, platform) {
@@ -760,6 +791,7 @@ function resolveLayoutInstallSource(layout) {
     return resolveInstallSource({
         repoRoot: SOURCE_ROOT,
         overrideBranch: process.env.RETRY_MOBILE_BRANCH,
+        overrideUiLanguage: layout.uiLanguage || process.env.RETRY_MOBILE_UI_LANGUAGE,
         existingRoots: [
             layout.backendTarget,
             layout.globalFrontendTarget,
@@ -777,6 +809,7 @@ function buildInstalledMetadata(installSource) {
         repositoryUrl: REPOSITORY_URL,
         installedAt: new Date().toISOString(),
         selectedFrom: installSource?.selectedFrom || '',
+        uiLanguage: installSource?.uiLanguage || 'en',
     };
 }
 

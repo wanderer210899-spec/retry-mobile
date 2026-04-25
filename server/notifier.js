@@ -1,6 +1,7 @@
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { normalizeLanguage, translate } = require('./i18n-catalog');
 
 const TERMUX_BIN_DIRS = [
     '/data/data/com.termux/files/usr/bin',
@@ -132,15 +133,36 @@ function buildMessage(runConfig, stage, payload) {
         return customMessage;
     }
 
+    const language = normalizeLanguage(runConfig?.uiLanguage || '');
+
     if (stage === 'success') {
-        return `Accepted ${payload.acceptedCount}/${payload.targetAcceptedCount} - ${payload.characterCount}c - ${payload.tokenCount}t`;
+        return translate('backendNotifier.accepted', {
+            language,
+            vars: {
+                acceptedCount: stringifyTemplateValue(payload.acceptedCount),
+                targetAcceptedCount: stringifyTemplateValue(payload.targetAcceptedCount),
+                characterCount: stringifyTemplateValue(payload.characterCount),
+                tokenCount: stringifyTemplateValue(payload.tokenCount),
+            },
+        });
     }
 
     if (stage === 'completed') {
-        return `Done - ${payload.acceptedCount} accepted in ${payload.attemptCount} attempts.`;
+        return translate('backendNotifier.completed', {
+            language,
+            vars: {
+                acceptedCount: stringifyTemplateValue(payload.acceptedCount),
+                attemptCount: stringifyTemplateValue(payload.attemptCount),
+            },
+        });
     }
 
-    return `Retry Mobile ${stage}.`;
+    return translate('backendNotifier.fallback', {
+        language,
+        vars: {
+            stage: stringifyTemplateValue(stage),
+        },
+    });
 }
 
 function renderCustomMessage(runConfig, stage, payload) {

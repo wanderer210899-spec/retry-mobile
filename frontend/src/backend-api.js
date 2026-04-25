@@ -100,12 +100,20 @@ export async function fetchCapabilities() {
             userDirectoryScanSupport: false,
             termux: false,
             termuxCheckedAt: null,
+            uiLanguage: 'en',
+            supportedUiLanguages: ['en', 'zh'],
         };
     }
 }
 
 export async function fetchReleaseInfo() {
     return requestJson(`${BASE_URL}/release-info`, {
+        method: 'GET',
+    });
+}
+
+export async function fetchI18nCatalog() {
+    return requestJson(`${BASE_URL}/i18n-catalog`, {
         method: 'GET',
     });
 }

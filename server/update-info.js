@@ -18,6 +18,7 @@ async function getReleaseInfo() {
         installedAt: '',
         repositoryUrl: REPOSITORY_URL,
         selectedFrom: 'default',
+        uiLanguage: '',
     };
     const selectedBranch = installSource.branch || DEFAULT_BRANCH;
     const localRelease = readJsonFile(path.join(runtimeRoot, RELEASE_MANIFEST_FILE)) || {};
@@ -61,6 +62,7 @@ async function getReleaseInfo() {
             commit: installSource.commit || '',
             installedAt: installSource.installedAt || '',
             selectedFrom: installSource.selectedFrom || '',
+            uiLanguage: installSource.uiLanguage || '',
         },
         latest,
         update,

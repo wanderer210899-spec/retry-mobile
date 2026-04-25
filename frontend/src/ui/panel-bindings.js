@@ -5,6 +5,7 @@ import {
     VALIDATION_MODE,
 } from '../constants.js';
 import { buildPanelTemplate } from './panel-template.js';
+import { setLanguage } from '../i18n.js';
 
 export function mountPanel(runtime, {
     render,
@@ -143,12 +144,21 @@ function bindPanelEvents(drawer, runtime, {
     });
 
     drawer.addEventListener('change', (event) => {
+        const languageChanged = event.target?.id === `${EXTENSION_ID}-ui-language`;
         const changed = updateSettingsFromChange(event.target, runtime.settings);
         if (!changed) {
             return;
         }
 
         persistSettings();
+        if (languageChanged) {
+            remountLocalizedPanel(drawer, runtime, {
+                render,
+                persistSettings,
+                actions,
+            });
+            return;
+        }
         render();
     });
 }
@@ -166,6 +176,7 @@ function hydrateForm(runtime) {
     drawer.querySelector(`#${EXTENSION_ID}-characters`).value = String(runtime.settings.minCharacters);
     drawer.querySelector(`#${EXTENSION_ID}-tokens`).value = String(runtime.settings.minTokens);
     drawer.querySelector(`#${EXTENSION_ID}-notification-template`).value = runtime.settings.notificationMessageTemplate || '';
+    drawer.querySelector(`#${EXTENSION_ID}-ui-language`).value = String(runtime.settings.uiLanguage || 'en');
     drawer.querySelectorAll(`input[name="${EXTENSION_ID}-run-mode"]`).forEach((element) => {
         element.checked = element.value === runtime.settings.runMode;
     });
@@ -238,6 +249,12 @@ function updateSettingsFromChange(target, settings) {
         return true;
     }
 
+    if (target?.id === `${EXTENSION_ID}-ui-language`) {
+        settings.uiLanguage = String(target.value || '').trim().toLowerCase() === 'zh' ? 'zh' : 'en';
+        setLanguage(settings.uiLanguage);
+        return true;
+    }
+
     return false;
 }
 
@@ -248,4 +265,13 @@ function clampWholeNumber(value, minimum, fallback) {
     }
 
     return parsed;
+}
+
+function remountLocalizedPanel(drawer, runtime, options) {
+    drawer.dataset.rmBound = '';
+    drawer.innerHTML = buildPanelTemplate();
+    cachePanelElements(runtime, drawer);
+    bindPanelEvents(drawer, runtime, options);
+    hydrateForm(runtime);
+    options.render();
 }

@@ -14,5 +14,5 @@ function init() {
     }
 
     booted = true;
-    bootRetryMobile();
+    void bootRetryMobile();
 }

@@ -1,35 +1,38 @@
 import { QUICK_REPLY_SET_NAME, SLASH_COMMAND_PREFIX } from './constants.js';
+import { t } from './i18n.js';
 
-const BUTTON_SPECS = Object.freeze([
-    {
-        label: 'Start Retry',
-        automationId: 'retry-mobile-arm',
-        message: `/${SLASH_COMMAND_PREFIX}-start`,
-        icon: 'fa-tower-broadcast',
-        title: 'Arm Retry Mobile for the next qualifying generation request',
-    },
-    {
-        label: 'Stop Retry',
-        automationId: 'retry-mobile-stop',
-        message: `/${SLASH_COMMAND_PREFIX}-stop`,
-        icon: 'fa-hand',
-        title: 'Stop the armed or running Retry Mobile job',
-    },
-    {
-        label: 'Open Panel',
-        automationId: 'retry-mobile-panel',
-        message: `/${SLASH_COMMAND_PREFIX}-panel`,
-        icon: 'fa-sliders',
-        title: 'Focus the Retry Mobile settings panel',
-    },
-]);
+function getButtonSpecs() {
+    return [
+        {
+            label: t('quickReply.startLabel'),
+            automationId: 'retry-mobile-arm',
+            message: `/${SLASH_COMMAND_PREFIX}-start`,
+            icon: 'fa-tower-broadcast',
+            title: t('quickReply.startTitle'),
+        },
+        {
+            label: t('quickReply.stopLabel'),
+            automationId: 'retry-mobile-stop',
+            message: `/${SLASH_COMMAND_PREFIX}-stop`,
+            icon: 'fa-hand',
+            title: t('quickReply.stopTitle'),
+        },
+        {
+            label: t('quickReply.panelLabel'),
+            automationId: 'retry-mobile-panel',
+            message: `/${SLASH_COMMAND_PREFIX}-panel`,
+            icon: 'fa-sliders',
+            title: t('quickReply.panelTitle'),
+        },
+    ];
+}
 
 export function getQuickReplyStatus() {
     const api = getQuickReplyApi();
     if (!api) {
         return {
             ok: false,
-            reason: 'Quick Reply API unavailable',
+            reason: t('quickReply.apiUnavailable'),
         };
     }
 
@@ -38,6 +41,7 @@ export function getQuickReplyStatus() {
     const chatSets = api.listChatSets?.() ?? [];
     const attachedGlobal = globalSets.includes(QUICK_REPLY_SET_NAME);
     const attachedChat = chatSets.includes(QUICK_REPLY_SET_NAME);
+    const specs = getButtonSpecs();
     const automationIds = Array.isArray(set?.qrList)
         ? set.qrList.map((item) => item?.automationId).filter(Boolean)
         : [];
@@ -48,7 +52,7 @@ export function getQuickReplyStatus() {
         attached: attachedGlobal || attachedChat,
         attachedGlobal,
         attachedChat,
-        buttonCount: BUTTON_SPECS.filter((spec) => automationIds.includes(spec.automationId)).length,
+        buttonCount: specs.filter((spec) => automationIds.includes(spec.automationId)).length,
     };
 }
 
@@ -57,7 +61,7 @@ export function setQuickReplyAttached(enabled) {
     if (!api) {
         return {
             ok: false,
-            reason: 'Quick Reply API unavailable',
+            reason: t('quickReply.apiUnavailable'),
         };
     }
 
@@ -77,10 +81,10 @@ export function setQuickReplyAttached(enabled) {
         });
 
     if (!set) {
-        return { ok: false, reason: 'Could not create QR set' };
+        return { ok: false, reason: t('quickReply.createSetFailed') };
     }
 
-    BUTTON_SPECS.forEach((spec) => {
+    getButtonSpecs().forEach((spec) => {
         ensureButton(api, QUICK_REPLY_SET_NAME, spec);
     });
 

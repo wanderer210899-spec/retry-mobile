@@ -19,6 +19,7 @@ export const VALIDATION_MODE = Object.freeze({
 });
 
 export const DEFAULT_SETTINGS = Object.freeze({
+    uiLanguage: 'en',
     runMode: RUN_MODE.SINGLE,
     targetAcceptedCount: 3,
     maxAttempts: 30,

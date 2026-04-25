@@ -1,4 +1,5 @@
 const jobs = new Map();
+const { normalizeLanguage, translate } = require('./i18n-catalog');
 const ATTEMPT_LOG_LIMIT = 24;
 const ORPHAN_PREVIEW_LIMIT = 3;
 const ORPHAN_PREVIEW_TEXT_LIMIT = 240;
@@ -290,61 +291,62 @@ function snapshotJobForPersistence(job) {
 }
 
 function describePhase(job) {
+    const language = normalizeLanguage(job?.runConfig?.uiLanguage || '');
     if (!job) {
-        return 'Idle';
+        return translate('backendPhase.idle', { language });
     }
 
     if (job.state === 'completed') {
-        return 'Completed';
+        return translate('backendPhase.completed', { language });
     }
 
     if (job.state === 'failed') {
-        return 'Failed';
+        return translate('backendPhase.failed', { language });
     }
 
     if (job.state === 'cancelled') {
-        return 'Cancelled';
+        return translate('backendPhase.cancelled', { language });
     }
 
     if (job.phase === 'partial_on_recovery') {
-        return 'Partially recovered after backend restart';
+        return translate('backendPhase.partial_on_recovery', { language });
     }
 
     if (job.phase === 'completed_on_recovery') {
-        return 'Recovered completed run after backend restart';
+        return translate('backendPhase.completed_on_recovery', { language });
     }
 
     if (job.phase === 'recovery_ambiguous') {
-        return 'Recovery needs attention';
+        return translate('backendPhase.recovery_ambiguous', { language });
     }
 
     if (job.phase === 'native_confirming_persisted') {
-        return 'Confirming the native turn in the saved chat';
+        return translate('backendPhase.native_confirming_persisted', { language });
     }
 
     if (job.nativeState === 'pending') {
-        return 'Waiting for native first reply';
+        return translate('backendPhase.waiting_native', { language });
     }
 
     if (job.phase === 'native_confirmed' && Number(job.attemptCount) === 0 && Number(job.acceptedCount) === 0) {
-        return 'Native first reply confirmed';
+        return translate('backendPhase.native_confirmed', { language });
     }
 
     if (job.phase === 'native_abandoned') {
         if (job.recoveryMode === 'reuse_empty_placeholder') {
-            return 'Native abandoned, backend reused empty native placeholder';
+            return translate('backendPhase.native_abandoned_reuse_placeholder', { language });
         }
         if (job.recoveryMode === 'create_missing_turn') {
-            return 'Native abandoned, backend created the missing assistant turn';
+            return translate('backendPhase.native_abandoned_create_missing_turn', { language });
         }
-        return 'Native abandoned, backend recovered the turn';
+        return translate('backendPhase.native_abandoned_recovered', { language });
     }
 
     if (job.phase === 'requesting_generation' || job.phase === 'writing_chat' || job.phase === 'awaiting_retry_results') {
-        return 'Retry loop active';
+        return translate('backendPhase.retry_loop_active', { language });
     }
 
-    return 'Retry loop active';
+    return translate('backendPhase.retry_loop_active', { language });
 }
 
 function persistJobSnapshot(job) {

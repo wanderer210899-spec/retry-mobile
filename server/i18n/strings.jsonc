@@ -1,0 +1,333 @@
+{
+  // Retry Mobile localization catalog.
+  // Keep this as the single manual review/edit surface for labels and messages.
+  // Placeholder format: {name}
+  "meta": {
+    "defaultLanguage": "en",
+    "supportedLanguages": ["en", "zh"]
+  },
+
+  "installer": {
+    "selectLanguageTitle": {
+      "en": "Select installer language:",
+      "zh": "请选择程序语言："
+    },
+    "languageOptionChinese": {
+      "en": "1. 中文",
+      "zh": "1. 中文"
+    },
+    "languageOptionEnglish": {
+      "en": "2. English",
+      "zh": "2. English"
+    },
+    "languagePrompt": {
+      "en": "Selection: ",
+      "zh": "选择："
+    },
+    "languageInvalid": {
+      "en": "Choose 1 or 2.",
+      "zh": "请输入 1 或 2。"
+    },
+    "menuTitle": {
+      "en": "{pluginName} Installer",
+      "zh": "{pluginName} 安装器"
+    },
+    "menuQuestion": {
+      "en": "What would you like to do?",
+      "zh": "请选择要执行的操作："
+    },
+    "menuEnableServerPlugin": {
+      "en": "Enable server plugin",
+      "zh": "启用服务器插件"
+    },
+    "menuInstallNow": {
+      "en": "Install / Update now",
+      "zh": "立即安装 / 更新"
+    },
+    "menuUninstall": {
+      "en": "Uninstall",
+      "zh": "卸载"
+    },
+    "menuExit": {
+      "en": "Exit",
+      "zh": "退出"
+    },
+    "chooseMainOptionPrompt": {
+      "en": " Please select an option: ",
+      "zh": " 请选择一个选项："
+    },
+    "chooseMainOptionInvalid": {
+      "en": "Choose a valid option: 0, 1, 2, or 3.",
+      "zh": "请输入有效选项：0、1、2 或 3。"
+    },
+    "localInstallTitle": {
+      "en": "Local Install:",
+      "zh": "本地安装："
+    },
+    "workingDir": {
+      "en": "Working dir: {value}",
+      "zh": "工作目录：{value}"
+    },
+    "stRoot": {
+      "en": "ST root:     {value}",
+      "zh": "ST 根目录：  {value}"
+    },
+    "repository": {
+      "en": "Repository:  {value}",
+      "zh": "仓库地址：  {value}"
+    },
+    "branch": {
+      "en": "Branch:      {value}",
+      "zh": "分支：      {value}"
+    },
+    "sourceVersion": {
+      "en": "Source Ver:  {value}",
+      "zh": "源代码版本：  {value}"
+    },
+    "statusTitle": {
+      "en": "Retry Mobile Status:",
+      "zh": "Retry Mobile 状态："
+    },
+    "serverPluginsEnabled": {
+      "en": "Enabled",
+      "zh": "已启用"
+    },
+    "serverPluginsDisabled": {
+      "en": "Disabled",
+      "zh": "未启用"
+    },
+    "installed": {
+      "en": "Installed",
+      "zh": "已安装"
+    },
+    "notInstalled": {
+      "en": "Not installed",
+      "zh": "未安装"
+    },
+    "installedInThirdParty": {
+      "en": "Installed in third-party",
+      "zh": "已安装到 third-party"
+    },
+    "notInstalledInThirdParty": {
+      "en": "Not installed in third-party",
+      "zh": "未安装到 third-party"
+    },
+    "profilesNoneDetected": {
+      "en": "None detected in data root",
+      "zh": "在 data root 中未检测到配置档"
+    },
+    "profileRow": {
+      "en": "{profile}: {status}",
+      "zh": "{profile}：{status}"
+    },
+    "legacyBackendDetected": {
+      "en": "Legacy backend detected: {legacyId}",
+      "zh": "检测到旧版后端：{legacyId}"
+    },
+    "windowsRestartNote": {
+      "en": "Windows note: Restart SillyTavern from your launcher after config or install changes.",
+      "zh": "Windows 提示：配置或安装变更后，请通过启动器重启 SillyTavern。"
+    },
+    "termuxRestartNote": {
+      "en": "Termux note: Stop the running SillyTavern process before replacing plugin files.",
+      "zh": "Termux 提示：替换插件文件前，请先停止正在运行的 SillyTavern 进程。"
+    }
+  },
+
+  "panel": {
+    "tabMain": { "en": "Main", "zh": "主菜单" },
+    "tabSystem": { "en": "System", "zh": "系统" },
+    "statusIdle": { "en": "Idle", "zh": "空闲" },
+    "configurationTitle": { "en": "Configuration", "zh": "配置" },
+    "runModeLabel": { "en": "Run mode", "zh": "运行模式" },
+    "runModeSingle": { "en": "Single", "zh": "单次" },
+    "runModeToggle": { "en": "Toggle", "zh": "持续运行" },
+    "acceptedGoalLabel": { "en": "Accepted outputs goal", "zh": "目标回复数" },
+    "maxAttemptsLabel": { "en": "Maximum attempts", "zh": "最大尝试次数" },
+    "attemptTimeoutLabel": { "en": "Attempt timeout (s)", "zh": "单次超时（秒）" },
+    "nativeGraceLabel": { "en": "Hidden-tab takeover delay (s)", "zh": "后台接管延迟（秒）" },
+    "minLengthBlockLabel": { "en": "Min. length block", "zh": "最小长度限制" },
+    "charactersLabel": { "en": "Characters", "zh": "字符数" },
+    "tokensLabel": { "en": "Tokens", "zh": "Token 数" },
+    "minimumCharactersLabel": { "en": "Minimum characters", "zh": "最少字数" },
+    "minimumTokensLabel": { "en": "Minimum tokens", "zh": "最少token数" },
+    "notificationsTitle": { "en": "Notifications", "zh": "通知" },
+    "termuxTemplateLabel": { "en": "Termux notification template", "zh": "Termux 通知模板" },
+    "termuxTemplatePlaceholder": { "en": "Leave blank for default.", "zh": "留空则使用默认模板。" },
+    "notifyOnAccepted": { "en": "Notify on accepted", "zh": "接收时通知" },
+    "notifyOnComplete": { "en": "Notify on complete", "zh": "完成时通知" },
+    "vibrateOnAccepted": { "en": "Vibrate on accepted", "zh": "接收时震动" },
+    "vibrateOnComplete": { "en": "Vibrate on complete", "zh": "完成时震动" },
+    "quickRepliesLabel": { "en": "Quick Replies", "zh": "快捷回复" },
+    "inject": { "en": "Inject", "zh": "注入" },
+    "uninject": { "en": "Uninject", "zh": "移除注入" },
+    "start": { "en": "Start", "zh": "开始" },
+    "stop": { "en": "Stop", "zh": "停止" },
+    "installUpdateTitle": { "en": "Install & Update", "zh": "安装与更新" },
+    "github": { "en": "GitHub", "zh": "GitHub" },
+    "checking": { "en": "Checking...", "zh": "检查中..." },
+    "retryLogTitle": { "en": "Retry Log", "zh": "重试日志" },
+    "show": { "en": "Show", "zh": "显示" },
+    "hide": { "en": "Hide", "zh": "隐藏" },
+    "copy": { "en": "Copy", "zh": "复制" },
+    "download": { "en": "Download", "zh": "下载" },
+    "languageLabel": { "en": "Language", "zh": "语言" },
+    "languageEnglish": { "en": "English", "zh": "English" },
+    "languageChinese": { "en": "中文", "zh": "中文" }
+  },
+
+  "toasts": {
+    "title": { "en": "Retry Mobile", "zh": "Retry Mobile" },
+    "capturedStarting": {
+      "en": "Captured request. Starting backend retry job…",
+      "zh": "已捕获请求，正在启动后端重试任务…"
+    },
+    "nativeGenerating": { "en": "Generating native reply…", "zh": "正在生成原生首条回复…" },
+    "retryAttempt": { "en": "Retry attempt {attempt}/{max}.", "zh": "重试轮次 {attempt}/{max}。" },
+    "acceptedProgress": { "en": "Accepted {accepted}/{target}.", "zh": "已通过 {accepted}/{target}。" },
+    "jobComplete": { "en": "Job complete{summary}.", "zh": "任务完成{summary}。" },
+    "jobCancelled": { "en": "Job cancelled{summary}.", "zh": "任务已取消{summary}。" },
+    "jobFailedFallback": { "en": "Retry Mobile failed.", "zh": "Retry Mobile 任务失败。" },
+    "nativeOutcomeReportFailed": {
+      "en": "Could not report native wait outcome to backend (non-fatal).",
+      "zh": "无法向后端上报原生等待结果（非致命）。"
+    },
+    "diagnosticsPassed": {
+      "en": "Diagnostics passed. Retry Mobile can arm for capture.",
+      "zh": "诊断通过，Retry Mobile 可进入待捕获状态。"
+    },
+    "diagnosticsFailed": {
+      "en": "Diagnostics found missing capabilities. Start stays fail-closed.",
+      "zh": "诊断发现能力缺失，Start 继续保持故障关闭策略。"
+    },
+    "quickRepliesInjected": {
+      "en": "Retry Mobile Quick Replies were injected into the active toolbar.",
+      "zh": "Retry Mobile 快捷回复已注入当前工具栏。"
+    },
+    "quickRepliesUninjected": {
+      "en": "Retry Mobile Quick Replies were uninjected from the active toolbar.",
+      "zh": "Retry Mobile 快捷回复已从当前工具栏移除。"
+    },
+    "retryLogUnavailable": {
+      "en": "No retry log is available yet.",
+      "zh": "当前还没有可用的重试日志。"
+    },
+    "retryLogCopied": {
+      "en": "Retry log copied to clipboard.",
+      "zh": "重试日志已复制到剪贴板。"
+    },
+    "retryLogCopyFailed": {
+      "en": "Retry log copy failed in this browser session.",
+      "zh": "本次浏览器会话中复制重试日志失败。"
+    },
+    "retryLogDownloaded": {
+      "en": "Retry log downloaded as {filename}.",
+      "zh": "重试日志已下载为 {filename}。"
+    },
+    "retryLogDownloadFailed": {
+      "en": "Retry log download failed in this browser session.",
+      "zh": "本次浏览器会话中下载重试日志失败。"
+    }
+  },
+
+  "quickReply": {
+    "startLabel": { "en": "Start Retry", "zh": "开始重试" },
+    "startTitle": { "en": "Arm Retry Mobile for the next qualifying generation request", "zh": "让 Retry Mobile 等待下一次符合条件的生成请求" },
+    "stopLabel": { "en": "Stop Retry", "zh": "停止重试" },
+    "stopTitle": { "en": "Stop the armed or running Retry Mobile job", "zh": "停止已待命或运行中的 Retry Mobile 任务" },
+    "panelLabel": { "en": "Open Panel", "zh": "打开面板" },
+    "panelTitle": { "en": "Focus the Retry Mobile settings panel", "zh": "聚焦到 Retry Mobile 设置面板" },
+    "apiUnavailable": { "en": "Quick Reply API unavailable", "zh": "Quick Reply API 不可用" },
+    "createSetFailed": { "en": "Could not create QR set", "zh": "无法创建 QR 集合" }
+  },
+
+  "render": {
+    "statAccepted": { "en": "Accepted", "zh": "接收数" },
+    "statAttempts": { "en": "Attempts", "zh": "尝试数" },
+    "statTarget": { "en": "Target", "zh": "目标" },
+    "statTimeout": { "en": "Timeout", "zh": "超时" },
+    "retryLogEmpty": { "en": "No retry log is available yet.", "zh": "当前还没有可用的重试日志。" },
+    "releaseChecking": { "en": "Checking Retry Mobile install status...", "zh": "正在检查 Retry Mobile 安装状态..." },
+    "releaseUpdateInfoUnavailable": { "en": "Update information unavailable.", "zh": "更新信息不可用。" },
+    "releaseUpdateAvailable": { "en": "Update available", "zh": "有可用更新" },
+    "releaseUpToDate": { "en": "Up to date", "zh": "已是最新" },
+    "releaseVersion": { "en": "Version", "zh": "版本" },
+    "releaseBranch": { "en": "Branch", "zh": "分支" },
+    "quickReplyUnavailable": { "en": "Quick Reply API unavailable in this session.", "zh": "当前会话中 Quick Reply API 不可用。" },
+    "quickReplyInjected": { "en": "Injected ({count}/3 Retry Mobile buttons detected in the set).", "zh": "已注入（集合中检测到 {count}/3 个 Retry Mobile 按钮）。" },
+    "quickReplyDetached": { "en": "Detached ({count}/3 Retry Mobile buttons saved in the set).", "zh": "已分离（集合中保存了 {count}/3 个 Retry Mobile 按钮）。" },
+    "quickReplyMissingSet": { "en": "No Retry Mobile Quick Reply set exists yet.", "zh": "尚未创建 Retry Mobile Quick Reply 集合。" }
+  },
+
+  "runState": {
+    "armed": { "en": "Armed for next qualifying request", "zh": "已待命，等待下一次符合条件的请求" },
+    "capturing": { "en": "Capturing request and starting backend handoff", "zh": "正在捕获请求并启动后端接管" },
+    "reserving": { "en": "Reserving backend job", "zh": "正在预留后端任务" },
+    "waiting_native": { "en": "Waiting for native first reply", "zh": "等待原生首条回复" },
+    "running": { "en": "Retry loop active", "zh": "重试循环进行中" },
+    "backend_running": { "en": "Retry loop active", "zh": "重试循环进行中" },
+    "stopping": { "en": "Stopping", "zh": "停止中" },
+    "completing": { "en": "Finishing UI", "zh": "正在完成界面收尾" },
+    "recovering": { "en": "Recovering", "zh": "恢复中" },
+    "completed": { "en": "Completed", "zh": "已完成" },
+    "failed": { "en": "Failed", "zh": "失败" },
+    "cancelled": { "en": "Cancelled", "zh": "已取消" },
+    "captured_pending_native": { "en": "Waiting for native first reply", "zh": "等待原生首条回复" },
+    "native_confirmed": { "en": "Native first reply confirmed", "zh": "已确认原生首条回复" },
+    "native_abandoned": { "en": "Native abandoned, backend recovered the turn", "zh": "原生流程中断，后端已恢复该消息轮次" },
+    "idle": { "en": "Idle", "zh": "空闲" },
+    "reconnecting": { "en": "Reconnecting to backend", "zh": "正在重新连接后端" },
+    "reattaching": { "en": "Reattaching to backend run", "zh": "正在重新附着到后端任务" }
+  },
+
+  "backendPhase": {
+    "idle": { "en": "Idle", "zh": "空闲" },
+    "completed": { "en": "Completed", "zh": "已完成" },
+    "failed": { "en": "Failed", "zh": "失败" },
+    "cancelled": { "en": "Cancelled", "zh": "已取消" },
+    "partial_on_recovery": { "en": "Partially recovered after backend restart", "zh": "后端重启后已部分恢复" },
+    "completed_on_recovery": { "en": "Recovered completed run after backend restart", "zh": "后端重启后已恢复已完成任务" },
+    "recovery_ambiguous": { "en": "Recovery needs attention", "zh": "恢复状态需要人工检查" },
+    "native_confirming_persisted": { "en": "Confirming the native turn in the saved chat", "zh": "正在已保存聊天中确认原生消息轮次" },
+    "waiting_native": { "en": "Waiting for native first reply", "zh": "等待原生首条回复" },
+    "native_confirmed": { "en": "Native first reply confirmed", "zh": "已确认原生首条回复" },
+    "native_abandoned_reuse_placeholder": { "en": "Native abandoned, backend reused empty native placeholder", "zh": "原生流程中断，后端复用了空白原生占位消息" },
+    "native_abandoned_create_missing_turn": { "en": "Native abandoned, backend created the missing assistant turn", "zh": "原生流程中断，后端已创建缺失的助手消息轮次" },
+    "native_abandoned_recovered": { "en": "Native abandoned, backend recovered the turn", "zh": "原生流程中断，后端已恢复该消息轮次" },
+    "retry_loop_active": { "en": "Retry loop active", "zh": "重试循环进行中" }
+  },
+
+  "backendNotifier": {
+    "accepted": {
+      "en": "Accepted {acceptedCount}/{targetAcceptedCount} - {characterCount}c - {tokenCount}t",
+      "zh": "已通过 {acceptedCount}/{targetAcceptedCount} - {characterCount}字 - {tokenCount}t"
+    },
+    "completed": {
+      "en": "Done - {acceptedCount} accepted in {attemptCount} attempts.",
+      "zh": "完成 - 共通过 {acceptedCount} 条，用时 {attemptCount} 次尝试。"
+    },
+    "fallback": {
+      "en": "Retry Mobile {stage}.",
+      "zh": "Retry Mobile {stage}。"
+    }
+  },
+
+  "system": {
+    "releaseFallbackMessage": {
+      "en": "Retry Mobile could not reach the backend release endpoint.",
+      "zh": "Retry Mobile 无法连接后端发布信息接口。"
+    },
+    "releaseFallbackUpdateNow": {
+      "en": "From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.",
+      "zh": "请在本地 SillyTavern 目录运行 Retry Mobile 引导安装脚本，并选择 Install / Update now。"
+    },
+    "releaseFallbackAddProfile": {
+      "en": "From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now to add another profile or install for everyone.",
+      "zh": "请在本地 SillyTavern 目录运行 Retry Mobile 引导安装脚本，并选择 Install / Update now 以添加新配置档或为所有人安装。"
+    },
+    "slashStartHelp": { "en": "Arm Retry Mobile for the next qualifying generation request.", "zh": "让 Retry Mobile 等待下一次符合条件的生成请求。" },
+    "slashStopHelp": { "en": "Stop the armed or running Retry Mobile job.", "zh": "停止已待命或运行中的 Retry Mobile 任务。" },
+    "slashPanelHelp": { "en": "Focus the Retry Mobile settings panel.", "zh": "聚焦到 Retry Mobile 设置面板。" },
+    "slashDiagnosticsHelp": { "en": "Run Retry Mobile diagnostics.", "zh": "运行 Retry Mobile 诊断。" }
+  }
+}

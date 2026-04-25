@@ -1,5 +1,6 @@
 import { formatStructuredError } from '../retry-error.js';
 import { formatVisibleStateLabel } from '../core/run-state.js';
+import { t } from '../i18n.js';
 
 export function deriveUiState(context, runtime) {
     const phase = context?.state || 'idle';
@@ -90,7 +91,7 @@ function deriveToasts(phase, status, toastScope) {
     if (phase === 'running' && state === 'running') {
         if (nativeState === 'pending') {
             if (!nextScope.lastNativePendingToast) {
-                toastsToFire.push({ kind: 'info', title: 'Retry Mobile', message: 'Generating native reply…' });
+                toastsToFire.push({ kind: 'info', title: t('toasts.title'), message: t('toasts.nativeGenerating') });
                 nextScope.lastNativePendingToast = true;
             }
         } else if (nextScope.lastNativePendingToast) {
@@ -104,8 +105,8 @@ function deriveToasts(phase, status, toastScope) {
             && nextScope.lastAttemptCount !== attemptCount) {
             toastsToFire.push({
                 kind: 'info',
-                title: 'Retry Mobile',
-                message: `Retry attempt ${attemptCount}/${maxAttempts}.`,
+                title: t('toasts.title'),
+                message: t('toasts.retryAttempt', { attempt: attemptCount, max: maxAttempts }),
             });
             nextScope.lastAttemptCount = attemptCount;
         }
@@ -116,8 +117,8 @@ function deriveToasts(phase, status, toastScope) {
             && nextScope.lastAcceptedCount !== acceptedCount) {
             toastsToFire.push({
                 kind: 'success',
-                title: 'Retry Mobile',
-                message: `Accepted ${acceptedCount}/${targetAcceptedCount}.`,
+                title: t('toasts.title'),
+                message: t('toasts.acceptedProgress', { accepted: acceptedCount, target: targetAcceptedCount }),
             });
             nextScope.lastAcceptedCount = acceptedCount;
         }
@@ -136,14 +137,14 @@ function deriveToasts(phase, status, toastScope) {
             }
             const summary = summaryParts.length ? ` (${summaryParts.join(', ')})` : '';
             if (state === 'completed') {
-                toastsToFire.push({ kind: 'success', title: 'Retry Mobile', message: `Job complete${summary}.` });
+                toastsToFire.push({ kind: 'success', title: t('toasts.title'), message: t('toasts.jobComplete', { summary }) });
             } else if (state === 'cancelled') {
-                toastsToFire.push({ kind: 'warning', title: 'Retry Mobile', message: `Job cancelled${summary}.` });
+                toastsToFire.push({ kind: 'warning', title: t('toasts.title'), message: t('toasts.jobCancelled', { summary }) });
             } else {
                 const message = status?.structuredError?.message
                     || status?.lastError
-                    || 'Retry Mobile failed.';
-                toastsToFire.push({ kind: 'error', title: 'Retry Mobile', message: `${message}${summary}` });
+                    || t('toasts.jobFailedFallback');
+                toastsToFire.push({ kind: 'error', title: t('toasts.title'), message: `${message}${summary}` });
             }
         }
     }
@@ -168,7 +169,7 @@ function deriveRunErrorToasts(phase, runError, toastScope) {
     return {
         toastsToFire: [{
             kind: 'warning',
-            title: 'Retry Mobile',
+            title: t('toasts.title'),
             message: formatStructuredError(runError),
         }],
         nextToastScope: {

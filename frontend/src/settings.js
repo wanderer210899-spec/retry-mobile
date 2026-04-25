@@ -34,6 +34,8 @@ function normalizeSettings(source) {
         ...(source || {}),
     };
 
+    settings.uiLanguage = normalizeUiLanguage(settings.uiLanguage, DEFAULT_SETTINGS.uiLanguage);
+
     settings.runMode = settings.runMode === RUN_MODE.TOGGLE
         ? RUN_MODE.TOGGLE
         : RUN_MODE.SINGLE;
@@ -106,5 +108,13 @@ function normalizeBoolean(value, fallback) {
         return false;
     }
 
+    return fallback;
+}
+
+function normalizeUiLanguage(value, fallback) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'zh' || normalized === 'en') {
+        return normalized;
+    }
     return fallback;
 }

@@ -1,19 +1,21 @@
+import { t } from '../i18n.js';
+
 const STATE_LABELS = Object.freeze({
-    armed: 'Armed for next qualifying request',
-    capturing: 'Capturing request and starting backend handoff',
-    reserving: 'Reserving backend job',
-    waiting_native: 'Waiting for native first reply',
-    running: 'Retry loop active',
-    backend_running: 'Retry loop active',
-    stopping: 'Stopping',
-    completing: 'Finishing UI',
-    recovering: 'Recovering',
-    completed: 'Completed',
-    failed: 'Failed',
-    cancelled: 'Cancelled',
-    captured_pending_native: 'Waiting for native first reply',
-    native_confirmed: 'Native first reply confirmed',
-    native_abandoned: 'Native abandoned, backend recovered the turn',
+    armed: 'runState.armed',
+    capturing: 'runState.capturing',
+    reserving: 'runState.reserving',
+    waiting_native: 'runState.waiting_native',
+    running: 'runState.running',
+    backend_running: 'runState.backend_running',
+    stopping: 'runState.stopping',
+    completing: 'runState.completing',
+    recovering: 'runState.recovering',
+    completed: 'runState.completed',
+    failed: 'runState.failed',
+    cancelled: 'runState.cancelled',
+    captured_pending_native: 'runState.captured_pending_native',
+    native_confirmed: 'runState.native_confirmed',
+    native_abandoned: 'runState.native_abandoned',
 });
 
 export function resolveRunStateFromStatus(status) {
@@ -41,7 +43,8 @@ export function resolveRunStateFromStatus(status) {
 }
 
 export function formatStateLabel(state) {
-    return STATE_LABELS[String(state || '').trim()] || 'Idle';
+    const key = STATE_LABELS[String(state || '').trim()] || 'runState.idle';
+    return t(key);
 }
 
 export function formatVisibleStateLabel(state, status, transport = 'healthy') {
@@ -51,11 +54,11 @@ export function formatVisibleStateLabel(state, status, transport = 'healthy') {
 
     if ((state === 'recovering' || state === 'running' || state === 'backend_running')
         && transport !== 'healthy') {
-        return 'Reconnecting to backend';
+        return t('runState.reconnecting');
     }
 
     if (state === 'recovering' && !status) {
-        return 'Reattaching to backend run';
+        return t('runState.reattaching');
     }
 
     if (!status) {

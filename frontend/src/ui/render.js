@@ -2,6 +2,7 @@ import { formatVisibleStateLabel, isRunningLikeState } from '../core/run-state.j
 import { syncValidationControls } from './panel-bindings.js';
 import { deriveUiState } from './derive-ui.js';
 import { showToast } from '../st-context.js';
+import { t } from '../i18n.js';
 
 export function createRenderer({ runtime }) {
     return function render() {
@@ -26,10 +27,10 @@ export function createRenderer({ runtime }) {
         runtime.ui.statusText.dataset.state = state;
 
         runtime.ui.stats.innerHTML = [
-            renderStat('Accepted', activeStatus?.acceptedCount ?? 0),
-            renderStat('Attempts', activeStatus?.attemptCount ?? 0),
-            renderStat('Target', runtime.settings.targetAcceptedCount),
-            renderStat('Timeout', `${runtime.settings.attemptTimeoutSeconds}s`),
+            renderStat(t('render.statAccepted'), activeStatus?.acceptedCount ?? 0),
+            renderStat(t('render.statAttempts'), activeStatus?.attemptCount ?? 0),
+            renderStat(t('render.statTarget'), runtime.settings.targetAcceptedCount),
+            renderStat(t('render.statTimeout'), `${runtime.settings.attemptTimeoutSeconds}s`),
         ].join('');
 
         runtime.ui.errorBox.hidden = !snapshot.errorVisible;
@@ -42,7 +43,7 @@ export function createRenderer({ runtime }) {
             runtime.ui.releaseInfoContainer.innerHTML = renderReleaseInfo(runtime.releaseInfo);
         }
         if (runtime.ui.retryLogContainer) {
-            runtime.ui.retryLogContainer.textContent = runtime.log.text || 'No retry log is available yet.';
+            runtime.ui.retryLogContainer.textContent = runtime.log.text || t('render.retryLogEmpty');
         }
         if (runtime.ui.retryLogShell) {
             runtime.ui.retryLogShell.hidden = !runtime.log.show;
@@ -61,18 +62,18 @@ export function createRenderer({ runtime }) {
 
         if (runtime.ui.actionToggleButton) {
             const stopMode = isRunningLikeState(state);
-            runtime.ui.actionToggleButton.textContent = stopMode ? 'Stop' : 'Start';
+            runtime.ui.actionToggleButton.textContent = stopMode ? t('panel.stop') : t('panel.start');
             runtime.ui.actionToggleButton.classList.toggle('rm-button--danger', stopMode);
             runtime.ui.actionToggleButton.classList.toggle('rm-button--primary', !stopMode);
         }
         if (runtime.ui.quickReplyToggleButton) {
             const attached = Boolean(runtime.quickReplyStatus?.attached);
-            runtime.ui.quickReplyToggleButton.textContent = attached ? 'Uninject' : 'Inject';
+            runtime.ui.quickReplyToggleButton.textContent = attached ? t('panel.uninject') : t('panel.inject');
             runtime.ui.quickReplyToggleButton.classList.toggle('rm-qr-toggle--active', attached);
         }
 
         if (runtime.ui.toggleLogButton) {
-            runtime.ui.toggleLogButton.textContent = runtime.log.show ? 'Hide' : 'Show';
+            runtime.ui.toggleLogButton.textContent = runtime.log.show ? t('panel.hide') : t('panel.show');
         }
     };
 }
@@ -88,7 +89,7 @@ function renderStat(title, value) {
 
 function renderReleaseInfo(releaseInfo) {
     if (!releaseInfo) {
-        return '<div class="rm-release-card__line">Checking Retry Mobile install status...</div>';
+        return `<div class="rm-release-card__line">${escapeHtml(t('render.releaseChecking'))}</div>`;
     }
 
     const localVersion = releaseInfo.installed?.version || 'unknown';
@@ -97,10 +98,10 @@ function renderReleaseInfo(releaseInfo) {
     const commit = typeof releaseInfo.installed?.commit === 'string' && releaseInfo.installed.commit
         ? releaseInfo.installed.commit.slice(0, 12)
         : '';
-    const updateMessage = releaseInfo.update?.message || 'Update information unavailable.';
+    const updateMessage = releaseInfo.update?.message || t('render.releaseUpdateInfoUnavailable');
     const hasUpdate = Boolean(releaseInfo.update?.hasUpdate);
     const updateStateClass = hasUpdate ? 'rm-release-card__status--warning' : 'rm-release-card__status--ok';
-    const updateLabel = hasUpdate ? 'Update available' : 'Up to date';
+    const updateLabel = hasUpdate ? t('render.releaseUpdateAvailable') : t('render.releaseUpToDate');
 
     return `
         <div class="rm-release-card__header">
@@ -108,26 +109,26 @@ function renderReleaseInfo(releaseInfo) {
         </div>
         <div class="rm-release-card__line">${escapeHtml(updateMessage)}</div>
         <div class="rm-release-card__grid">
-            <div><strong>Version</strong><span>${escapeHtml(localVersion)} -> ${escapeHtml(latestVersion)}</span></div>
-            <div><strong>Branch</strong><span>${escapeHtml(branch)}${commit ? ` @ ${escapeHtml(commit)}` : ''}</span></div>
+            <div><strong>${escapeHtml(t('render.releaseVersion'))}</strong><span>${escapeHtml(localVersion)} -> ${escapeHtml(latestVersion)}</span></div>
+            <div><strong>${escapeHtml(t('render.releaseBranch'))}</strong><span>${escapeHtml(branch)}${commit ? ` @ ${escapeHtml(commit)}` : ''}</span></div>
         </div>
     `;
 }
 
 function renderQuickReplyStatusLine(status) {
     if (!status?.ok) {
-        return 'Quick Reply API unavailable in this session.';
+        return t('render.quickReplyUnavailable');
     }
 
     if (status.attached) {
-        return `Injected (${status.buttonCount}/4 Retry Mobile buttons detected in the set).`;
+        return t('render.quickReplyInjected', { count: status.buttonCount });
     }
 
     if (status.setExists) {
-        return `Detached (${status.buttonCount}/4 Retry Mobile buttons saved in the set).`;
+        return t('render.quickReplyDetached', { count: status.buttonCount });
     }
 
-    return 'No Retry Mobile Quick Reply set exists yet.';
+    return t('render.quickReplyMissingSet');
 }
 
 function escapeHtml(value) {

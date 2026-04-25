@@ -17,6 +17,7 @@ import { createBackendPort } from './backend-client.js';
 import { createAppPorts } from './app-ports.js';
 import { syncRuntimeFromFsm } from './app-runtime-sync.js';
 import { chooseOperationalChatIdentity, resolveExpectedPreviousGeneration } from './start-payload.js';
+import { initializeI18n, setLanguage, t } from './i18n.js';
 import {
     createRestoreController,
     resolveCaptureTarget,
@@ -25,8 +26,11 @@ import {
 
 const runtime = createRuntime();
 
-export function bootRetryMobile() {
-    runtime.settings = readSettings(getContext());
+export async function bootRetryMobile() {
+    const context = getContext();
+    const hadStoredLanguage = hasStoredUiLanguage(context);
+    runtime.settings = readSettings(context);
+    await initializeI18n(runtime.settings.uiLanguage || 'en');
     runtime.sessionId = getFrontendSessionId();
     runtime.controlError = null;
     runtime.pendingNativeOutcome = null;
@@ -78,7 +82,7 @@ export function bootRetryMobile() {
             }
 
             runtime.controlError = null;
-            showToast('info', 'Retry Mobile', 'Captured request. Starting backend retry job…');
+            showToast('info', t('toasts.title'), t('toasts.capturedStarting'));
             const current = retryFsm.getContext();
             const chatIdentity = getChatIdentity(getContext());
             const captureTarget = resolveCaptureTarget(
@@ -278,7 +282,20 @@ export function bootRetryMobile() {
         runtime.termuxAvailable = Boolean(caps?.termux);
         render();
     });
-    void systemController.refreshReleaseInfo();
+    void systemController.refreshReleaseInfo().then((info) => {
+        if (hadStoredLanguage) {
+            return;
+        }
+        const suggestedLanguage = String(info?.installed?.uiLanguage || '').trim().toLowerCase();
+        if (suggestedLanguage !== 'en' && suggestedLanguage !== 'zh') {
+            return;
+        }
+        runtime.settings.uiLanguage = suggestedLanguage;
+        setLanguage(suggestedLanguage);
+        persistSettings();
+        ensurePanelMounted();
+        render();
+    });
     render();
     void restoreController.restoreControlState();
 
@@ -322,7 +339,7 @@ export function bootRetryMobile() {
         } catch (requestError) {
             // Non-fatal: the backend can still recover native state from persisted chat.
             console.warn('[retry-mobile:native-failed] Backend rejected native failure hint:', requestError);
-            showToast('warning', 'Retry Mobile', 'Could not report native wait outcome to backend (non-fatal).');
+            showToast('warning', t('toasts.title'), t('toasts.nativeOutcomeReportFailed'));
         }
     }
 
@@ -363,7 +380,10 @@ export function bootRetryMobile() {
                 retryFsm.resume({
                     reason: type,
                     isVisible: Boolean(stPort.isVisible?.()),
-                    chatIdentity: resolveCaptureSubscriptionChatIdentity(context),
+                    chatIdentity: resolveCaptureSubscriptionChatIdentity(
+                        context,
+                        getChatIdentity(getContext()),
+                    ),
                     pendingVisibleRender: context.pendingVisibleRender,
                 });
                 syncRuntime();
@@ -617,4 +637,9 @@ function cloneValue(value) {
     }
 
     return JSON.parse(JSON.stringify(value));
+}
+
+function hasStoredUiLanguage(context) {
+    const value = context?.extensionSettings?.retryMobile?.uiLanguage;
+    return value === 'en' || value === 'zh';
 }

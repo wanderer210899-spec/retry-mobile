@@ -22,6 +22,7 @@ import {
     syncRetryLogForStatus,
 } from '../logs/retry-log.js';
 import { createStructuredError } from '../retry-error.js';
+import { t } from '../i18n.js';
 
 const backendLog = createLogger(LOG_PREFIX.BACKEND);
 const qrLog = createLogger(LOG_PREFIX.QR);
@@ -51,8 +52,8 @@ export function createSystemController({
         runtime.diagnostics = await runDiagnostics(getContext());
         if (showFeedback) {
             showToast(runtime.diagnostics.startEnabled ? 'success' : 'warning', EXTENSION_NAME, runtime.diagnostics.startEnabled
-                ? 'Diagnostics passed. Retry Mobile can arm for capture.'
-                : 'Diagnostics found missing capabilities. Start stays fail-closed.');
+                ? t('toasts.diagnosticsPassed')
+                : t('toasts.diagnosticsFailed'));
         }
 
         render();
@@ -69,7 +70,7 @@ export function createSystemController({
                 update: {
                     canCheck: false,
                     hasUpdate: false,
-                    message: error?.message || 'Retry Mobile could not reach the backend release endpoint.',
+                    message: error?.message || t('system.releaseFallbackMessage'),
                 },
                 installed: {
                     version: '',
@@ -81,13 +82,14 @@ export function createSystemController({
                     branch: 'unknown',
                 },
                 instructions: {
-                    updateNow: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now.',
-                    addProfile: 'From your local SillyTavern directory, run the Retry Mobile bootstrap installer and choose Install / Update now to add another profile or install for everyone.',
+                    updateNow: t('system.releaseFallbackUpdateNow'),
+                    addProfile: t('system.releaseFallbackAddProfile'),
                 },
             };
         }
 
         render();
+        return runtime.releaseInfo;
     }
 
     function refreshQuickReplyState(options = {}) {
@@ -120,7 +122,7 @@ export function createSystemController({
         if (!result.ok) {
             setJobError?.(createStructuredError(
                 'capture_missing_payload',
-                result.reason || 'Quick Reply controls are unavailable in this SillyTavern session.',
+                result.reason || t('quickReply.apiUnavailable'),
             ));
             return;
         }
@@ -130,8 +132,8 @@ export function createSystemController({
             'success',
             EXTENSION_NAME,
             shouldAttach
-                ? 'Retry Mobile Quick Replies were injected into the active toolbar.'
-                : 'Retry Mobile Quick Replies were uninjected from the active toolbar.',
+                ? t('toasts.quickRepliesInjected')
+                : t('toasts.quickRepliesUninjected'),
         );
         render();
     }
@@ -141,16 +143,16 @@ export function createSystemController({
         const logContext = getRetryLogContext(runtime);
         const text = logContext.text || '';
         if (!text.trim()) {
-            showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
+            showToast('info', EXTENSION_NAME, t('toasts.retryLogUnavailable'));
             return;
         }
 
         try {
             await navigator.clipboard.writeText(text);
-            showToast('success', EXTENSION_NAME, 'Retry log copied to clipboard.');
+            showToast('success', EXTENSION_NAME, t('toasts.retryLogCopied'));
         } catch (error) {
             backendLog.warn('Retry log copy failed.', error);
-            showToast('warning', EXTENSION_NAME, 'Retry log copy failed in this browser session.');
+            showToast('warning', EXTENSION_NAME, t('toasts.retryLogCopyFailed'));
         }
     }
 
@@ -159,7 +161,7 @@ export function createSystemController({
         const logContext = getRetryLogContext(runtime);
         const text = logContext.text || '';
         if (!text.trim()) {
-            showToast('info', EXTENSION_NAME, 'No retry log is available yet.');
+            showToast('info', EXTENSION_NAME, t('toasts.retryLogUnavailable'));
             return;
         }
 
@@ -176,10 +178,10 @@ export function createSystemController({
             document.body.append(anchor);
             anchor.click();
             anchor.remove();
-            showToast('success', EXTENSION_NAME, `Retry log downloaded as ${anchor.download}.`);
+            showToast('success', EXTENSION_NAME, t('toasts.retryLogDownloaded', { filename: anchor.download }));
         } catch (error) {
             backendLog.warn('Retry log download failed.', error);
-            showToast('warning', EXTENSION_NAME, 'Retry log download failed in this browser session.');
+            showToast('warning', EXTENSION_NAME, t('toasts.retryLogDownloadFailed'));
         } finally {
             window.setTimeout(() => URL.revokeObjectURL(url), 0);
         }
@@ -196,28 +198,28 @@ export function createSystemController({
             callback: async () => {
                 await armPluginFromUi();
             },
-            helpString: 'Arm Retry Mobile for the next qualifying generation request.',
+            helpString: t('system.slashStartHelp'),
         });
         registerSlashCommand(context, {
             name: `${SLASH_COMMAND_PREFIX}-stop`,
             callback: async () => {
                 await stopPlugin();
             },
-            helpString: 'Stop the armed or running Retry Mobile job.',
+            helpString: t('system.slashStopHelp'),
         });
         registerSlashCommand(context, {
             name: `${SLASH_COMMAND_PREFIX}-panel`,
             callback: async () => {
                 focusPanelDrawer(runtime.ui.panel);
             },
-            helpString: 'Focus the Retry Mobile settings panel.',
+            helpString: t('system.slashPanelHelp'),
         });
         registerSlashCommand(context, {
             name: `${SLASH_COMMAND_PREFIX}-diagnostics`,
             callback: async () => {
                 await refreshDiagnostics(true);
             },
-            helpString: 'Run Retry Mobile diagnostics.',
+            helpString: t('system.slashDiagnosticsHelp'),
         });
     }
 

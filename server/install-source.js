@@ -45,7 +45,14 @@ function writeInstallSource(targetRoot, payload) {
     return destination;
 }
 
-function resolveInstallSource({ repoRoot, overrideBranch, existingRoots = [], defaultBranch = 'main', repositoryUrl = '' }) {
+function resolveInstallSource({
+    repoRoot,
+    overrideBranch,
+    overrideUiLanguage,
+    existingRoots = [],
+    defaultBranch = 'main',
+    repositoryUrl = '',
+}) {
     const normalizedOverride = normalizeString(overrideBranch);
     const gitSource = detectGitInstallSource(repoRoot, { defaultBranch, repositoryUrl });
     const existingSource = readFirstInstalledSource(existingRoots, { defaultBranch, repositoryUrl });
@@ -65,6 +72,7 @@ function resolveInstallSource({ repoRoot, overrideBranch, existingRoots = [], de
         branch,
         commit,
         repositoryUrl,
+        uiLanguage: normalizeLanguageCode(overrideUiLanguage) || normalizeLanguageCode(existingSource?.uiLanguage),
         selectedFrom: normalizedOverride
             ? 'override'
             : (gitSource?.branch
@@ -181,6 +189,7 @@ function normalizeInstallSource(payload, options = {}) {
         repositoryUrl: normalizeString(payload?.repositoryUrl) || normalizeString(options.repositoryUrl),
         installedAt: normalizeString(payload?.installedAt),
         selectedFrom: normalizeString(payload?.selectedFrom),
+        uiLanguage: normalizeLanguageCode(payload?.uiLanguage) || normalizeLanguageCode(options.uiLanguage) || '',
     };
 }
 
@@ -198,6 +207,11 @@ function readJsonFile(filePath) {
 
 function normalizeString(value) {
     return String(value || '').trim();
+}
+
+function normalizeLanguageCode(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized === 'zh' ? 'zh' : normalized === 'en' ? 'en' : '';
 }
 
 module.exports = {

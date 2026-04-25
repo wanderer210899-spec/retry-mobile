@@ -30,6 +30,8 @@ const {
     initializeStRuntime,
 } = require('./st-runtime');
 const { getReleaseInfo } = require('./update-info');
+const { getCatalog, getSupportedLanguages, normalizeLanguage } = require('./i18n-catalog');
+const { readInstallSourceFromRoot, resolvePluginRuntimeRoot } = require('./install-source');
 const {
     buildChatKey,
     createJob,
@@ -67,6 +69,8 @@ async function init(router) {
     router.get('/capabilities', (_request, response) => {
         const termux = getTermuxStatus();
         const compatibility = getCompatibilitySnapshot();
+        const runtimeRoot = resolvePluginRuntimeRoot(__dirname);
+        const installSource = readInstallSourceFromRoot(runtimeRoot, {}) || {};
         return response.send({
             protocolVersion: PROTOCOL_VERSION,
             minSupportedProtocolVersion: MIN_SUPPORTED_PROTOCOL_VERSION,
@@ -77,6 +81,17 @@ async function init(router) {
             userDirectoryScanSupport: compatibility.userDirectoryScanSupport,
             termux: Boolean(termux.available),
             termuxCheckedAt: termux.checkedAt,
+            uiLanguage: normalizeLanguage(installSource.uiLanguage || ''),
+            supportedUiLanguages: getSupportedLanguages(),
+        });
+    });
+
+    router.get('/i18n-catalog', (_request, response) => {
+        response.set('Cache-Control', 'no-store');
+        return response.send({
+            defaultLanguage: normalizeLanguage(getCatalog()?.meta?.defaultLanguage || 'en'),
+            supportedLanguages: getSupportedLanguages(),
+            strings: getCatalog(),
         });
     });
 
