@@ -5,7 +5,9 @@ import { resolveCaptureSubscriptionChatIdentity } from './app-recovery.js';
 export function syncRuntimeFromFsm(runtime, fsm) {
     const context = fsm.getContext();
     const terminalStatus = context.lastTerminalResult?.status || null;
-    runtime.controlError = context.error || null;
+    runtime.controlError = context.state === RetryState.RUNNING
+        ? null
+        : (context.terminalError || null);
 
     if (context.jobId) {
         runtime.activeJobId = context.jobId;

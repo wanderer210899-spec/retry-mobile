@@ -30,10 +30,6 @@ export function bootRetryMobile() {
     runtime.sessionId = getFrontendSessionId();
     runtime.controlError = null;
     runtime.pendingNativeOutcome = null;
-    runtime.toast.lastJobId = '';
-    runtime.toast.lastAttemptCount = null;
-    runtime.toast.lastAcceptedCount = null;
-    runtime.toast.lastTerminalState = '';
 
     const render = createRenderer({ runtime });
     const intentPort = createIntentPort({ getContext });
@@ -173,7 +169,7 @@ export function bootRetryMobile() {
             chatIdentity: getChatIdentity(getContext()),
         });
         if (retryFsm.getState() !== RetryState.ARMED) {
-            runtime.controlError = retryFsm.getContext().error || createStructuredError(
+            runtime.controlError = retryFsm.getContext().terminalError || createStructuredError(
                 'retry_arm_failed',
                 'Retry Mobile could not arm the retry loop due to an invalid intent mode.',
             );
@@ -383,7 +379,6 @@ export function bootRetryMobile() {
             runtime.activeJobStatus = status;
             runtime.activeJobId = status.jobId || fallbackJobId || runtime.activeJobId || null;
             runtime.activeJobStatusObservedAt = status.updatedAt || new Date().toISOString();
-            maybeToastJobProgress(runtime, status);
             return statusChanged;
         }
 
@@ -391,91 +386,6 @@ export function bootRetryMobile() {
             runtime.activeJobId = fallbackJobId;
         }
         return false;
-    }
-
-    function maybeToastJobProgress(runtime, status) {
-        if (!status || typeof status !== 'object') {
-            return;
-        }
-
-        const jobId = String(status.jobId || runtime.activeJobId || '');
-        const state = String(status.state || '').trim();
-        const nativeState = String(status.nativeState || '').trim();
-        const attemptCount = Number.isFinite(Number(status.attemptCount)) ? Number(status.attemptCount) : null;
-        const maxAttempts = Number.isFinite(Number(status.maxAttempts)) ? Number(status.maxAttempts) : null;
-        const acceptedCount = Number.isFinite(Number(status.acceptedCount)) ? Number(status.acceptedCount) : null;
-        const targetAcceptedCount = Number.isFinite(Number(status.targetAcceptedCount)) ? Number(status.targetAcceptedCount) : null;
-
-        if (jobId && runtime.toast.lastJobId && runtime.toast.lastJobId !== jobId) {
-            runtime.toast.lastAttemptCount = null;
-            runtime.toast.lastAcceptedCount = null;
-            runtime.toast.lastTerminalState = '';
-            runtime.toast.lastNativePendingToast = false;
-        }
-        runtime.toast.lastJobId = jobId || runtime.toast.lastJobId || '';
-
-        if (state === 'running') {
-            // While native is still pending, do not claim attempt progress. This avoids the misleading "0/N" toast.
-            if (nativeState === 'pending') {
-                if (!runtime.toast.lastNativePendingToast) {
-                    runtime.toast.lastNativePendingToast = true;
-                    showToast('info', 'Retry Mobile', 'Generating native reply…');
-                }
-            } else if (runtime.toast.lastNativePendingToast) {
-                runtime.toast.lastNativePendingToast = false;
-            }
-
-            // Only toast attempt progress after the native phase has completed (confirmed/abandoned)
-            // and the backend has started real retry attempts.
-            if (nativeState !== 'pending'
-                && attemptCount != null
-                && maxAttempts != null
-                && attemptCount > 0
-                && runtime.toast.lastAttemptCount !== attemptCount) {
-                runtime.toast.lastAttemptCount = attemptCount;
-                showToast('info', 'Retry Mobile', `Retry attempt ${attemptCount}/${maxAttempts}.`);
-            }
-
-            if (acceptedCount != null
-                && targetAcceptedCount != null
-                && runtime.toast.lastAcceptedCount !== acceptedCount
-                && acceptedCount > 0) {
-                runtime.toast.lastAcceptedCount = acceptedCount;
-                showToast('success', 'Retry Mobile', `Accepted ${acceptedCount}/${targetAcceptedCount}.`);
-            }
-
-            return;
-        }
-
-        if (state === 'completed' || state === 'failed' || state === 'cancelled') {
-            if (runtime.toast.lastTerminalState === state) {
-                return;
-            }
-            runtime.toast.lastTerminalState = state;
-
-            const summaryParts = [];
-            if (acceptedCount != null && targetAcceptedCount != null) {
-                summaryParts.push(`${acceptedCount}/${targetAcceptedCount} accepted`);
-            }
-            if (attemptCount != null && maxAttempts != null) {
-                summaryParts.push(`${attemptCount}/${maxAttempts} attempts`);
-            }
-            const summary = summaryParts.length ? ` (${summaryParts.join(', ')})` : '';
-
-            if (state === 'completed') {
-                showToast('success', 'Retry Mobile', `Job complete${summary}.`);
-                return;
-            }
-            if (state === 'cancelled') {
-                showToast('warning', 'Retry Mobile', `Job cancelled${summary}.`);
-                return;
-            }
-
-            const message = status?.structuredError?.message
-                || status?.lastError
-                || 'Retry Mobile failed.';
-            showToast('error', 'Retry Mobile', `${message}${summary}`);
-        }
     }
 
     async function buildStartPayload(payload) {

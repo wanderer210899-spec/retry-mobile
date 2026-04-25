@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     RetryState,
+    createRunningContext,
     createInitialRetryContext,
     createRetryFsm,
     resolvePollingCadence,
@@ -233,7 +234,8 @@ test('createInitialRetryContext exposes the explicit FSM context shape', () => {
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
         lastTerminalResult: null,
-        error: null,
+        terminalError: null,
+        toastScope: null,
     });
 });
 
@@ -567,7 +569,7 @@ test('terminal completed status applies final accepted output before re-arming',
 
     const applyCall = calls.find((entry) => entry.method === 'applyAcceptedOutput');
     assert.ok(applyCall, 'expected terminal completion to patch the accepted output');
-    assert.equal(applyCall.args[0].terminalOutcome, 'completed');
+    assert.equal(Object.prototype.hasOwnProperty.call(applyCall.args[0], 'terminalOutcome'), false);
     assert.equal(applyCall.args[0].status.targetMessageVersion, 1);
     assert.equal(fsm.getContext().state, RetryState.ARMED);
 });
@@ -614,7 +616,7 @@ test('running poll status does not advance applied version when applyAcceptedOut
     assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 2);
     assert.equal(fsm.getContext().lastAppliedVersion, 0);
     assert.equal(fsm.getContext().state, RetryState.RUNNING);
-    assert.equal(fsm.getContext().error?.code, 'render_apply_failed');
+    assert.equal(fsm.getContext().runError?.code, 'render_apply_failed');
     assert.deepEqual(lastCall(calls, 'clearGeneratingIndicator')?.args[0], chatIdentity);
 });
 
@@ -670,8 +672,8 @@ test('running poll status surfaces a structured error and clears the indicator w
 
     assert.equal(fsm.getContext().state, RetryState.RUNNING);
     assert.equal(fsm.getContext().lastAppliedVersion, 0);
-    assert.equal(fsm.getContext().error?.code, 'render_apply_failed');
-    assert.match(fsm.getContext().error?.detail || '', /message patch failed/);
+    assert.equal(fsm.getContext().runError?.code, 'render_apply_failed');
+    assert.match(fsm.getContext().runError?.detail || '', /message patch failed/);
     assert.deepEqual(lastCall(calls, 'clearGeneratingIndicator')?.args[0], chatIdentity);
 });
 
@@ -1035,7 +1037,7 @@ test('jobFailed from CAPTURING keeps durable intent armed instead of silently dr
 
     assert.equal(failed.state, RetryState.ARMED);
     assert.equal(failed.runId, 'run-2');
-    assert.equal(failed.error.code, 'retry_job_failed');
+    assert.equal(failed.terminalError.code, 'retry_job_failed');
     assert.equal(failed.lastTerminalResult.outcome, 'failed');
 });
 
@@ -1215,4 +1217,146 @@ test('userStop from RUNNING cancels the backend job, disengages intent, and retu
             target,
         },
     ]);
+});
+
+test('CURRENTLY FAILING (pre-fix): running context shape excludes terminalError key', () => {
+    const ctx = createRunningContext({
+        state: RetryState.RUNNING,
+        intent: { mode: 'toggle', engaged: true, singleTarget: null, settings: {} },
+        chatIdentity: null,
+        runId: 'run-1',
+        jobId: 'job-1',
+        pollingToken: null,
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(ctx, 'terminalError'), false);
+});
+
+test('CURRENTLY FAILING (pre-fix): running context rejects terminalError writes in dev mode', () => {
+    const previousDev = globalThis.__RM_DEV__;
+    globalThis.__RM_DEV__ = true;
+    try {
+        const ctx = createRunningContext({
+            state: RetryState.RUNNING,
+            intent: { mode: 'toggle', engaged: true, singleTarget: null, settings: {} },
+            chatIdentity: null,
+            runId: 'run-1',
+            jobId: 'job-1',
+            pollingToken: null,
+        });
+        assert.throws(() => {
+            ctx.terminalError = { code: 'retry_job_failed', message: 'bad', detail: '' };
+        });
+    } finally {
+        globalThis.__RM_DEV__ = previousDev;
+    }
+});
+
+test('CURRENTLY FAILING (pre-fix): healthy running polls clear runError even with no version bump', async () => {
+    const { fsm, emitPolledStatus, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    setApplyAcceptedOutputResult({ ok: false });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().runError?.code, 'render_apply_failed');
+
+    setApplyAcceptedOutputResult({ ok: true });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().runError, null);
+});
+
+test('running apply-success branch clears existing runError', async () => {
+    const { fsm, emitPolledStatus, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    setApplyAcceptedOutputResult({ ok: false });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().runError?.code, 'render_apply_failed');
+
+    setApplyAcceptedOutputResult({ ok: true });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 3 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().runError, null);
+});
+
+test('running hidden-tab queue branch clears runError while deferring render', async () => {
+    const { fsm, emitPolledStatus, setApplyAcceptedOutputResult, setVisible } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    setApplyAcceptedOutputResult({ ok: false });
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().runError?.code, 'render_apply_failed');
+
+    setVisible(false);
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 3 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().runError, null);
+    assert.equal(Boolean(fsm.getContext().pendingVisibleRender), true);
+});
+
+test('CURRENTLY FAILING (pre-fix): queued final render payload does not carry terminalOutcome', async () => {
+    const { fsm, emitPolledStatus, calls, setVisible } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    setVisible(false);
+    await emitPolledStatus({
+        jobId: 'job-1',
+        state: 'completed',
+        targetMessageVersion: 1,
+        status: 'done',
+    });
+    const queuedCall = calls.filter((entry) => entry.method === 'queueVisibleRender').at(-1);
+    assert.equal(Boolean(queuedCall), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(queuedCall.args[0], 'terminalOutcome'), false);
+});
+
+test('toast scope lifecycle resets at running entry and clears on terminal transition', () => {
+    const { fsm } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    assert.equal(fsm.getToastScope()?.jobId, 'job-1');
+
+    fsm.jobCompleted({
+        status: { state: 'completed', jobId: 'job-1' },
+    });
+    assert.equal(fsm.getToastScope(), null);
 });

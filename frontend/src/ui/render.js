@@ -1,6 +1,7 @@
-import { formatStructuredError } from '../retry-error.js';
 import { formatVisibleStateLabel, isRunningLikeState } from '../core/run-state.js';
 import { syncValidationControls } from './panel-bindings.js';
+import { deriveUiState } from './derive-ui.js';
+import { showToast } from '../st-context.js';
 
 export function createRenderer({ runtime }) {
     return function render() {
@@ -8,14 +9,20 @@ export function createRenderer({ runtime }) {
             return;
         }
 
-        const snapshot = getControlSnapshot(runtime);
+        const context = runtime.retryFsm?.getContext?.() || null;
+        const snapshot = deriveUiState(context, runtime);
         const state = snapshot.phase;
         const activeStatus = snapshot.activeStatus;
-        const errorText = shouldShowError(snapshot)
-            ? formatStructuredError(snapshot.error)
-            : '';
+        const errorText = snapshot.errorVisible ? snapshot.errorText : '';
 
-        runtime.ui.statusText.textContent = formatVisibleStateLabel(state, activeStatus, snapshot.transport);
+        for (const toast of snapshot.toastsToFire || []) {
+            showToast(toast.kind, toast.title, toast.message);
+        }
+        if (snapshot.nextToastScope && runtime.retryFsm?.setToastScope) {
+            runtime.retryFsm.setToastScope(snapshot.nextToastScope);
+        }
+
+        runtime.ui.statusText.textContent = snapshot.statusLabel || formatVisibleStateLabel(state, activeStatus, snapshot.transport);
         runtime.ui.statusText.dataset.state = state;
 
         runtime.ui.stats.innerHTML = [
@@ -25,7 +32,7 @@ export function createRenderer({ runtime }) {
             renderStat('Timeout', `${runtime.settings.attemptTimeoutSeconds}s`),
         ].join('');
 
-        runtime.ui.errorBox.hidden = !errorText;
+        runtime.ui.errorBox.hidden = !snapshot.errorVisible;
         runtime.ui.errorBox.textContent = errorText;
 
         if (runtime.ui.quickReplyStatusLine) {
@@ -68,33 +75,6 @@ export function createRenderer({ runtime }) {
             runtime.ui.toggleLogButton.textContent = runtime.log.show ? 'Hide' : 'Show';
         }
     };
-}
-
-function getControlSnapshot(runtime) {
-    const context = runtime.retryFsm?.getContext?.() || null;
-    const phase = context?.state || 'idle';
-    const activeStatus = runtime.activeJobStatus
-        || context?.lastTerminalResult?.status
-        || null;
-
-    return {
-        phase,
-        activeStatus,
-        error: (phase === 'running' ? (context?.error || null) : (runtime.controlError || context?.error || null)),
-        transport: 'healthy',
-    };
-}
-
-function shouldShowError(snapshot) {
-    if (!snapshot?.error) {
-        return false;
-    }
-
-    if (snapshot.phase !== 'running') {
-        return true;
-    }
-
-    return snapshot.error?.code === 'render_apply_failed';
 }
 
 function renderStat(title, value) {

@@ -3,10 +3,9 @@ import assert from 'node:assert/strict';
 
 import { createStPort, normalizePendingVisibleRender } from './st-adapter.js';
 
-test('normalizePendingVisibleRender upgrades queued terminal outcomes to terminal cleanup payloads', () => {
+test('normalizePendingVisibleRender keeps queued completed payloads on accepted-output path', () => {
     const original = {
         kind: 'accepted_output',
-        terminalOutcome: 'completed',
         chatIdentity: {
             kind: 'character',
             chatId: 'chat-1',
@@ -21,11 +20,9 @@ test('normalizePendingVisibleRender upgrades queued terminal outcomes to termina
     const normalized = normalizePendingVisibleRender(original);
 
     assert.deepEqual(normalized, {
-        type: 'terminal',
+        type: 'accepted_output',
         payload: {
             kind: 'accepted_output',
-            terminalOutcome: 'completed',
-            outcome: 'completed',
             chatIdentity: {
                 kind: 'character',
                 chatId: 'chat-1',
@@ -38,6 +35,8 @@ test('normalizePendingVisibleRender upgrades queued terminal outcomes to termina
         },
     });
     assert.notStrictEqual(normalized.payload, original);
+    assert.equal(Object.prototype.hasOwnProperty.call(normalized.payload, 'terminalOutcome'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(normalized.payload, 'outcome'), false);
 });
 
 test('normalizePendingVisibleRender leaves normal accepted-output patches on the incremental path', () => {

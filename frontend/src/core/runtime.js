@@ -44,13 +44,6 @@ export function createRuntime() {
             assistantMessageIndex: null,
         },
         pendingNativeOutcome: null,
-        toast: {
-            lastJobId: '',
-            lastAttemptCount: null,
-            lastAcceptedCount: null,
-            lastTerminalState: '',
-            lastNativePendingToast: false,
-        },
         log: {
             text: '',
             jobId: '',

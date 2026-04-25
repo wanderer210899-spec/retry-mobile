@@ -224,7 +224,7 @@ export function createRestoreController({
             if (armPayload && retryFsm.getState() === RetryState.IDLE) {
                 retryFsm.arm(armPayload);
                 if (retryFsm.getState() !== RetryState.ARMED) {
-                    runtime.controlError = retryFsm.getContext().error || createStructuredError(
+                    runtime.controlError = retryFsm.getContext().terminalError || createStructuredError(
                         'retry_arm_failed',
                         'Retry Mobile could not restore armed mode from saved settings.',
                     );

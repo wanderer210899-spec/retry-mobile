@@ -1,6 +1,5 @@
 /files
 /scripts
 /.cursor
-/.playwright-cli
-/.output
+/AGENT.md
 

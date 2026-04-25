@@ -3,27 +3,23 @@ import { createArmCaptureSession } from './st-capture.js';
 import { getChatIdentity, getContext, showToast } from './st-context.js';
 import { waitForNativeCompletion } from './st-lifecycle.js';
 import { isSameChat } from './st-chat.js';
-import { applyAcceptedOutput, finishTerminalUi, reloadSessionUi } from './render/st-operations.js';
+import { applyAcceptedOutput, reloadSessionUi } from './render/st-operations.js';
 
 export function normalizePendingVisibleRender(renderPayload) {
     if (!renderPayload) {
         return { type: 'none', payload: null };
     }
 
-    const terminalOutcome = resolveTerminalOutcome(renderPayload);
-    if (terminalOutcome) {
-        return {
-            type: 'terminal',
-            payload: {
-                ...cloneValue(renderPayload),
-                outcome: terminalOutcome,
-            },
-        };
+    const normalizedPayload = cloneValue(renderPayload) || {};
+    delete normalizedPayload.terminalOutcome;
+    delete normalizedPayload.outcome;
+    if (normalizedPayload.kind === 'terminal') {
+        normalizedPayload.kind = 'accepted_output';
     }
 
     return {
         type: 'accepted_output',
-        payload: cloneValue(renderPayload),
+        payload: normalizedPayload,
     };
 }
 
@@ -106,10 +102,6 @@ export function createStPort({
                 return { ok: false };
             }
 
-            if (normalized.type === 'terminal') {
-                return finishTerminalUi(normalized.payload);
-            }
-
             return applyAcceptedOutput(normalized.payload);
         },
         notifyToast(kind, title, message) {
@@ -182,15 +174,3 @@ function cloneValue(value) {
     return JSON.parse(JSON.stringify(value));
 }
 
-function resolveTerminalOutcome(renderPayload) {
-    const outcome = String(renderPayload?.outcome || renderPayload?.terminalOutcome || '').trim();
-    if (outcome === 'completed' || outcome === 'failed' || outcome === 'cancelled') {
-        return outcome;
-    }
-
-    if (renderPayload?.kind === 'terminal') {
-        return 'completed';
-    }
-
-    return '';
-}

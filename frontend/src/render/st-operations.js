@@ -15,7 +15,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ok: false,
             recoveryRequired: false,
             error: createStructuredError(
-                'capture_chat_changed',
+                'client_chat_changed',
                 'Retry Mobile could not apply an accepted output because the active chat changed.',
             ),
         };
@@ -35,7 +35,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ok: false,
             recoveryRequired: true,
             error: createStructuredError(
-                'backend_write_failed',
+                'client_target_missing',
                 'Retry Mobile could not find a valid accepted output to apply.',
             ),
         };
@@ -47,7 +47,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ok: false,
             recoveryRequired: true,
             error: createStructuredError(
-                'backend_write_failed',
+                'client_target_dom_missing',
                 'Retry Mobile could not find the target assistant message in the live chat.',
             ),
         };
@@ -59,7 +59,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ok: false,
             recoveryRequired: true,
             error: createStructuredError(
-                'backend_write_failed',
+                'client_patch_unsafe',
                 'Retry Mobile could not safely patch the target assistant turn.',
             ),
         };
@@ -70,7 +70,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ok: false,
             recoveryRequired: true,
             error: createStructuredError(
-                'backend_write_failed',
+                'client_anchor_mismatch',
                 'Retry Mobile refused to patch a live assistant turn whose anchor no longer matches backend truth.',
             ),
         };
@@ -113,7 +113,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ok: false,
             recoveryRequired: true,
             error: createStructuredError(
-                'backend_write_failed',
+                'client_patch_failed',
                 error instanceof Error ? error.message : 'Retry Mobile could not patch the accepted output.',
             ),
         };
@@ -191,7 +191,7 @@ export async function finishTerminalUi({ outcome, status, chatIdentity, signal }
                 ok: false,
                 recoveryRequired: true,
                 error: createStructuredError(
-                    'backend_write_failed',
+                    'client_terminal_settle_failed',
                     'Retry Mobile could not settle SillyTavern UI after the run ended.',
                 ),
             };
@@ -207,7 +207,7 @@ export async function finishTerminalUi({ outcome, status, chatIdentity, signal }
             ok: false,
             recoveryRequired: true,
             error: createStructuredError(
-                'backend_write_failed',
+                'client_terminal_cleanup_failed',
                 error instanceof Error ? error.message : 'Retry Mobile could not finish terminal UI cleanup.',
             ),
         };

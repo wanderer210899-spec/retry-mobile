@@ -27,7 +27,7 @@ export function resolvePollingCadence(context, isVisible) {
 
 export function createInitialRetryContext(overrides = {}) {
     const intent = normalizeIntent(overrides.intent);
-    return normalizeContextForState({
+    return createContextForState({
         state: overrides.state || RetryState.IDLE,
         intent,
         chatIdentity: clonePlain(overrides.chatIdentity) || null,
@@ -41,7 +41,8 @@ export function createInitialRetryContext(overrides = {}) {
         lastAppliedVersion: numberOrNull(overrides.lastAppliedVersion) || 0,
         pendingVisibleRender: clonePlain(overrides.pendingVisibleRender) || null,
         lastTerminalResult: clonePlain(overrides.lastTerminalResult) || null,
-        error: clonePlain(overrides.error) || null,
+        runError: clonePlain(overrides.runError) || null,
+        terminalError: clonePlain(overrides.terminalError) || null,
     });
 }
 
@@ -61,6 +62,8 @@ export function createRetryFsm({
     return {
         getState,
         getContext,
+        getToastScope,
+        setToastScope,
         arm,
         capture,
         jobStarted,
@@ -77,6 +80,18 @@ export function createRetryFsm({
 
     function getContext() {
         return clonePlain(context);
+    }
+
+    function getToastScope() {
+        return clonePlain(context.toastScope) || null;
+    }
+
+    function setToastScope(nextToastScope) {
+        context = createContextForState({
+            ...context,
+            toastScope: normalizeToastScope(nextToastScope, context.jobId),
+        });
+        return getContext();
     }
 
     function arm(payload = {}) {
@@ -98,7 +113,7 @@ export function createRetryFsm({
             ? resolveSingleTarget(nextIntent, payload.target || context.target)
             : null;
 
-        const nextContext = normalizeContextForState({
+        const nextContext = createContextForState({
             ...context,
             state: RetryState.ARMED,
             intent: nextIntent,
@@ -111,7 +126,7 @@ export function createRetryFsm({
             pollingToken: null,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
-            error: null,
+            terminalError: null,
         });
 
         enterArmed(nextContext);
@@ -134,14 +149,14 @@ export function createRetryFsm({
 
         leaveArmed(context);
 
-        const nextContext = normalizeContextForState({
+        const nextContext = createContextForState({
             ...context,
             state: RetryState.CAPTURING,
             chatIdentity: clonePlain(payload.chatIdentity) || context.chatIdentity || null,
             capturedRequest,
             captureFingerprint: clonePlain(payload.fingerprint ?? payload.captureFingerprint) || null,
             target: clonePlain(payload.target) || context.target || null,
-            error: null,
+            terminalError: null,
         });
 
         context = nextContext;
@@ -180,11 +195,12 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
-            error: null,
+            runError: null,
+            terminalError: null,
         };
 
         const entryPatch = enterRunning(runningContext);
-        context = normalizeContextForState({
+        context = createContextForState({
             ...runningContext,
             ...entryPatch,
         });
@@ -207,7 +223,7 @@ export function createRetryFsm({
             ? resolveSingleTarget(nextIntent, previous.target)
             : null;
 
-        const nextContext = normalizeContextForState({
+        const nextContext = createTerminalContext({
             ...previous,
             state: nextState,
             intent: nextIntent,
@@ -221,8 +237,9 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
+            runError: null,
             lastTerminalResult: createTerminalResult('completed', payload, previous, null, now),
-            error: null,
+            terminalError: null,
         });
 
         if (nextState === RetryState.ARMED) {
@@ -258,7 +275,7 @@ export function createRetryFsm({
             ? resolveSingleTarget(nextIntent, previous.target)
             : null;
 
-        const nextContext = normalizeContextForState({
+        const nextContext = createTerminalContext({
             ...previous,
             state: nextState,
             intent: nextIntent,
@@ -272,8 +289,9 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
+            runError: null,
             lastTerminalResult: createTerminalResult('failed', payload, previous, normalizedError, now),
-            error: normalizedError,
+            terminalError: normalizedError,
         });
 
         if (nextState === RetryState.ARMED) {
@@ -323,11 +341,12 @@ export function createRetryFsm({
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
             lastTerminalResult: null,
-            error: null,
+            runError: null,
+            terminalError: null,
         };
 
         const entryPatch = enterRunning(runningContext);
-        context = normalizeContextForState({
+        context = createContextForState({
             ...runningContext,
             ...entryPatch,
         });
@@ -339,14 +358,14 @@ export function createRetryFsm({
             return illegalTransition('resume', [RetryState.RUNNING], payload);
         }
 
-        const nextContext = normalizeContextForState({
+        const nextContext = createContextForState({
             ...context,
             chatIdentity: clonePlain(payload.chatIdentity) || context.chatIdentity || null,
             target: clonePlain(payload.target) || context.target || null,
             pendingVisibleRender: payload.pendingVisibleRender === undefined
                 ? context.pendingVisibleRender
                 : clonePlain(payload.pendingVisibleRender),
-            error: null,
+            runError: null,
         });
 
         context = nextContext;
@@ -363,18 +382,18 @@ export function createRetryFsm({
                         try {
                             await stPort.guardedReload?.();
                         } catch {}
-                        context = normalizeContextForState({
+                        context = createContextForState({
                             ...context,
                             pendingVisibleRender: null,
                         });
                         return;
                     }
-                    context = normalizeContextForState({
+                    context = createContextForState({
                         ...context,
                         lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
                         pendingVisibleRender: null,
                     });
-                    if (pendingRender?.terminalOutcome === 'completed') {
+                    if (String(pendingRender?.status?.state || '').trim() === 'completed') {
                         // Never trust a queued "completed" snapshot blindly after a hidden-tab window.
                         // Re-check backend truth; otherwise a cached/stale terminal snapshot could
                         // incorrectly transition the frontend to done while the backend keeps running.
@@ -395,7 +414,7 @@ export function createRetryFsm({
                     try {
                         await stPort.guardedReload?.();
                     } catch {}
-                    if (pendingRender?.terminalOutcome === 'completed' && isState(context, RetryState.RUNNING)) {
+                    if (String(pendingRender?.status?.state || '').trim() === 'completed' && isState(context, RetryState.RUNNING)) {
                         try {
                             const fresh = await backendPort.pollStatus?.(context.jobId);
                             if (fresh?.state === 'completed') {
@@ -454,7 +473,7 @@ export function createRetryFsm({
         }
 
         const nextIntent = disengageIntent();
-        context = normalizeContextForState({
+        context = createTerminalContext({
             ...previous,
             state: RetryState.IDLE,
             intent: nextIntent,
@@ -467,8 +486,9 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
+            runError: null,
             lastTerminalResult: createTerminalResult('cancelled', payload, previous, null, now),
-            error: null,
+            terminalError: null,
         });
         return getContext();
     }
@@ -537,6 +557,9 @@ export function createRetryFsm({
         stPort.setGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(nextContext)));
         return {
             pollingToken: stringOrNull(pollingToken),
+            runError: null,
+            terminalError: null,
+            toastScope: normalizeToastScope(null, nextContext.jobId),
         };
     }
 
@@ -554,7 +577,7 @@ export function createRetryFsm({
 
     function refreshIntent() {
         const nextIntent = readIntentSnapshot(intentPort, context.intent);
-        context = normalizeContextForState({
+        context = createContextForState({
             ...context,
             intent: nextIntent,
         });
@@ -670,9 +693,10 @@ export function createRetryFsm({
         }
 
         const nextVersion = numberOrNull(status?.targetMessageVersion) || 0;
-        context = normalizeContextForState({
+        context = createContextForState({
             ...context,
             lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
+            runError: null,
         });
         if (nextVersion <= Number(context.lastAppliedVersion || 0)) {
             return;
@@ -685,9 +709,10 @@ export function createRetryFsm({
         };
         if (stPort.isVisible?.() === false) {
             const queued = stPort.queueVisibleRender?.(renderPayload) || renderPayload;
-            context = normalizeContextForState({
+            context = createContextForState({
                 ...context,
                 pendingVisibleRender: clonePlain(queued),
+                runError: null,
             });
             return;
         }
@@ -701,12 +726,12 @@ export function createRetryFsm({
                     handleVisibleApplyFailure(result?.error);
                     return;
                 }
-                context = normalizeContextForState({
+                context = createContextForState({
                     ...context,
                     lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
                     lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
                     pendingVisibleRender: null,
-                    error: null,
+                    runError: null,
                 });
             })
             .catch((error) => {
@@ -723,14 +748,13 @@ export function createRetryFsm({
 
         const renderPayload = {
             kind: 'accepted_output',
-            terminalOutcome: 'completed',
             chatIdentity: clonePlain(context.chatIdentity),
             status: clonePlain(status),
         };
 
         if (stPort.isVisible?.() === false) {
             const queued = stPort.queueVisibleRender?.(renderPayload) || renderPayload;
-            context = normalizeContextForState({
+            context = createContextForState({
                 ...context,
                 pendingVisibleRender: clonePlain(queued),
             });
@@ -746,7 +770,7 @@ export function createRetryFsm({
                 await completeAfterBestEffortReload(status);
                 return;
             }
-            context = normalizeContextForState({
+            context = createContextForState({
                 ...context,
                 lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
                 pendingVisibleRender: null,
@@ -789,9 +813,9 @@ export function createRetryFsm({
             return;
         }
 
-        context = normalizeContextForState({
+        context = createContextForState({
             ...context,
-            error: toRenderApplyError(error),
+            runError: toRenderApplyError(error),
         });
         stPort.clearGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(context)));
     }
@@ -817,8 +841,23 @@ function toRenderApplyError(error) {
     );
 }
 
-function normalizeContextForState(nextContext) {
-    const normalized = {
+function createContextForState(nextContext) {
+    const normalized = normalizeBaseContext(nextContext);
+    switch (normalized.state) {
+        case RetryState.IDLE:
+            return createIdleContext(normalized);
+        case RetryState.ARMED:
+            return createArmedContext(normalized);
+        case RetryState.CAPTURING:
+            return createCapturingContext(normalized);
+        case RetryState.RUNNING:
+        default:
+            return createRunningContext(normalized);
+    }
+}
+
+function normalizeBaseContext(nextContext) {
+    return {
         ...nextContext,
         intent: normalizeIntent(nextContext.intent),
         chatIdentity: clonePlain(nextContext.chatIdentity) || null,
@@ -832,51 +871,102 @@ function normalizeContextForState(nextContext) {
         lastKnownTargetMessageVersion: numberOrNull(nextContext.lastKnownTargetMessageVersion) || 0,
         pendingVisibleRender: clonePlain(nextContext.pendingVisibleRender) || null,
         lastTerminalResult: clonePlain(nextContext.lastTerminalResult) || null,
-        error: clonePlain(nextContext.error) || null,
+        toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
+        runError: clonePlain(nextContext.runError) || null,
+        terminalError: clonePlain(nextContext.terminalError) || null,
     };
+}
 
+export function createIdleContext(nextContext) {
+    const { runError: _ignoredRunError, ...rest } = nextContext;
+    return lockContextShape({
+        ...rest,
+        state: RetryState.IDLE,
+        capturedRequest: null,
+        captureFingerprint: null,
+        target: null,
+        runId: null,
+        jobId: null,
+        pollingToken: null,
+        lastKnownTargetMessageVersion: 0,
+        lastAppliedVersion: 0,
+        pendingVisibleRender: null,
+        toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
+        terminalError: clonePlain(nextContext.terminalError) || null,
+    });
+}
+
+export function createArmedContext(nextContext) {
+    const { runError: _ignoredRunError, ...rest } = nextContext;
+    return lockContextShape({
+        ...rest,
+        state: RetryState.ARMED,
+        capturedRequest: null,
+        captureFingerprint: null,
+        jobId: null,
+        pollingToken: null,
+        lastKnownTargetMessageVersion: 0,
+        lastAppliedVersion: 0,
+        pendingVisibleRender: null,
+        toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
+        terminalError: clonePlain(nextContext.terminalError) || null,
+    });
+}
+
+export function createCapturingContext(nextContext) {
+    const { runError: _ignoredRunError, ...rest } = nextContext;
+    return lockContextShape({
+        ...rest,
+        state: RetryState.CAPTURING,
+        jobId: null,
+        pollingToken: null,
+        lastKnownTargetMessageVersion: 0,
+        lastAppliedVersion: 0,
+        pendingVisibleRender: null,
+        toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
+        terminalError: clonePlain(nextContext.terminalError) || null,
+    });
+}
+
+export function createRunningContext(nextContext) {
+    const { terminalError: _ignoredTerminalError, ...rest } = nextContext;
+    return lockContextShape({
+        ...rest,
+        state: RetryState.RUNNING,
+        capturedRequest: null,
+        captureFingerprint: null,
+        toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
+        runError: clonePlain(nextContext.runError) || null,
+    });
+}
+
+export function createTerminalContext(nextContext) {
+    const normalized = {
+        ...nextContext,
+        runError: null,
+        toastScope: null,
+    };
     switch (normalized.state) {
-        case RetryState.IDLE:
-            return {
-                ...normalized,
-                capturedRequest: null,
-                captureFingerprint: null,
-                target: null,
-                runId: null,
-                jobId: null,
-                pollingToken: null,
-                lastKnownTargetMessageVersion: 0,
-                lastAppliedVersion: 0,
-                pendingVisibleRender: null,
-            };
         case RetryState.ARMED:
-            return {
-                ...normalized,
-                capturedRequest: null,
-                captureFingerprint: null,
-                jobId: null,
-                pollingToken: null,
-                lastKnownTargetMessageVersion: 0,
-                lastAppliedVersion: 0,
-                pendingVisibleRender: null,
-            };
+            return createArmedContext(normalized);
         case RetryState.CAPTURING:
-            return {
-                ...normalized,
-                jobId: null,
-                pollingToken: null,
-                lastKnownTargetMessageVersion: 0,
-                lastAppliedVersion: 0,
-                pendingVisibleRender: null,
-            };
-        case RetryState.RUNNING:
+            return createCapturingContext(normalized);
+        case RetryState.IDLE:
         default:
-            return {
-                ...normalized,
-                capturedRequest: null,
-                captureFingerprint: null,
-            };
+            return createIdleContext(normalized);
     }
+}
+
+function lockContextShape(contextValue) {
+    const sealed = Object.preventExtensions(contextValue);
+    if (isDevMode()) {
+        return Object.freeze(sealed);
+    }
+    return sealed;
+}
+
+function isDevMode() {
+    return Boolean(globalThis?.__RM_DEV__);
 }
 
 function normalizeIntent(intent = {}) {
@@ -1015,6 +1105,21 @@ function buildChatIdentityKey(chatIdentity) {
     }
 
     return `${kind}:${chatId || ''}:${groupId}`;
+}
+
+function normalizeToastScope(scope, jobId) {
+    const normalizedJobId = stringOrNull(jobId) || stringOrNull(scope?.jobId) || null;
+    if (!scope && !normalizedJobId) {
+        return null;
+    }
+    return {
+        jobId: normalizedJobId,
+        lastAttemptCount: numberOrNull(scope?.lastAttemptCount),
+        lastAcceptedCount: numberOrNull(scope?.lastAcceptedCount),
+        lastTerminalState: stringOrNull(scope?.lastTerminalState) || null,
+        lastNativePendingToast: Boolean(scope?.lastNativePendingToast),
+        lastRunErrorKey: stringOrNull(scope?.lastRunErrorKey) || null,
+    };
 }
 
 function resolveTargetChatIdentity(context) {
