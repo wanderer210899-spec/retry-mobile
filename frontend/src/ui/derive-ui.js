@@ -4,9 +4,17 @@ import { t } from '../i18n.js';
 
 export function deriveUiState(context, runtime) {
     const phase = context?.state || 'idle';
-    const activeStatus = runtime?.activeJobStatus || context?.lastTerminalResult?.status || null;
+    // `activeStatus` drives the stats card and visible label and must reflect
+    // only the *current* phase. ARMED/CAPTURING are user-facing "fresh" states
+    // and must not project any prior terminal numbers; RUNNING uses the live
+    // backend cache; IDLE may surface the last terminal snapshot for display.
+    const activeStatus = resolveActiveStatusForDisplay(phase, context, runtime);
+    // `toastStatus` is what `deriveToasts` matches against to fire one-shot
+    // terminal notifications. Even when the panel hides stats during ARMED
+    // (auto-rearm path), the FSM still needs to fire "Completed N/T" once.
+    const toastStatus = resolveStatusForToasts(phase, context, runtime);
     const transport = resolveTransportState(runtime, context, phase);
-    const toastDerivation = deriveToasts(phase, activeStatus, context?.toastScope || null);
+    const toastDerivation = deriveToasts(phase, toastStatus, context?.toastScope || null);
 
     if (globalThis?.__RM_DEV__ && phase === 'running' && context?.terminalError) {
         throw new Error('[INVARIANT] terminalError in running state — this is a bug in the FSM transition, not a backend error');
@@ -36,6 +44,45 @@ export function deriveUiState(context, runtime) {
     };
     assertNoRawKeys(uiState);
     return Object.freeze(uiState);
+}
+
+function resolveActiveStatusForDisplay(phase, context, runtime) {
+    if (phase === 'running') {
+        // Trust the runtime mirror unless its jobId is known to disagree with
+        // the FSM's current jobId. This filters a stale-but-untouched runtime
+        // status from a previous run as a defense in depth, even though the
+        // FSM contract clears `lastTerminalResult` on `jobStarted`.
+        const fsmJobId = String(context?.jobId || '').trim();
+        const runtimeJobId = String(runtime?.activeJobStatus?.jobId || '').trim();
+        if (fsmJobId && runtimeJobId && fsmJobId !== runtimeJobId) {
+            return null;
+        }
+        return runtime?.activeJobStatus || null;
+    }
+    if (phase === 'idle') {
+        // After Stop / no-rearm completion, the panel surfaces the last
+        // terminal snapshot so the user can still see the resulting counts.
+        return runtime?.activeJobStatus || context?.lastTerminalResult?.status || null;
+    }
+    // ARMED / CAPTURING: fresh "ready for next request" / in-flight handoff.
+    // These phases must show clean defaults; never project a previous run's
+    // counts or error into them.
+    return null;
+}
+
+function resolveStatusForToasts(phase, context, runtime) {
+    if (phase === 'running') {
+        const fsmJobId = String(context?.jobId || '').trim();
+        const runtimeJobId = String(runtime?.activeJobStatus?.jobId || '').trim();
+        if (fsmJobId && runtimeJobId && fsmJobId !== runtimeJobId) {
+            return null;
+        }
+        return runtime?.activeJobStatus || null;
+    }
+    // Non-running phases fire the one-shot terminal toast from the recorded
+    // terminal snapshot. `toastScope.lastTerminalState` already prevents
+    // re-fires across renders within the same scope.
+    return context?.lastTerminalResult?.status || null;
 }
 
 function selectUiError({ phase, context, runtime }) {

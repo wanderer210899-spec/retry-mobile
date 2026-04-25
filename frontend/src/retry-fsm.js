@@ -126,6 +126,11 @@ export function createRetryFsm({
             pollingToken: null,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
+            // Manual arm starts a fresh user-facing run. The previous terminal
+            // result must not bleed into the new armed phase via the toast or
+            // stats projection — it is "history" once Start is pressed.
+            lastTerminalResult: null,
+            toastScope: null,
             terminalError: null,
         });
 
@@ -195,6 +200,14 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
+            // A new RUNNING phase must never inherit the previous job's terminal
+            // snapshot. If we kept it, `deriveUiState` (which falls back to
+            // `lastTerminalResult.status` when `activeJobStatus` is missing) and
+            // any future `syncRuntime` mirror would re-fire the prior terminal
+            // toast against this run's freshly reset toast scope — exactly the
+            // "Generating native… 2/2 turn completed" race observed on first
+            // capture after a completed retry.
+            lastTerminalResult: null,
             runError: null,
             terminalError: null,
         };
@@ -291,7 +304,14 @@ export function createRetryFsm({
             pendingVisibleRender: null,
             runError: null,
             lastTerminalResult: createTerminalResult('failed', payload, previous, normalizedError, now),
-            terminalError: normalizedError,
+            // On auto-rearm (toggle/single mode pulls us back to ARMED) the
+            // failure has already been narrated through the terminal toast and
+            // is preserved on `lastTerminalResult.error` for diagnostics. Carry
+            // it over as a panel `terminalError` only when the FSM lands in
+            // IDLE (no auto-rearm) so the user knows why the run ended; ARMED
+            // is a fresh "ready for next request" state and must not surface a
+            // leftover error box.
+            terminalError: nextState === RetryState.ARMED ? null : normalizedError,
         });
 
         if (nextState === RetryState.ARMED) {

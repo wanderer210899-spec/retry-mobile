@@ -4,7 +4,6 @@ import { resolveCaptureSubscriptionChatIdentity } from './app-recovery.js';
 
 export function syncRuntimeFromFsm(runtime, fsm) {
     const context = fsm.getContext();
-    const terminalStatus = context.lastTerminalResult?.status || null;
     runtime.controlError = context.state === RetryState.RUNNING
         ? null
         : (context.terminalError || null);
@@ -15,8 +14,15 @@ export function syncRuntimeFromFsm(runtime, fsm) {
         runtime.activeJobId = context.lastTerminalResult.jobId;
     }
 
-    if (terminalStatus) {
-        runtime.activeJobStatus = terminalStatus;
+    // The runtime mirror caches the live backend status only. Pushing
+    // `lastTerminalResult.status` back into `activeJobStatus` here would stomp
+    // the freshly written start/poll status with a previous run's terminal
+    // snapshot and re-fire its terminal toast on the next render. The terminal
+    // snapshot stays addressable through `context.lastTerminalResult` for UI
+    // derivation; it must not be confused with a live status.
+    if (context.state !== RetryState.RUNNING
+        && !contextOwnsRuntimeStatus(context, runtime.activeJobStatus)) {
+        runtime.activeJobStatus = null;
     }
 
     syncActiveRunBinding(runtime, context);
@@ -24,6 +30,18 @@ export function syncRuntimeFromFsm(runtime, fsm) {
     if (context.state !== RetryState.RUNNING) {
         runtime.pendingNativeOutcome = null;
     }
+}
+
+function contextOwnsRuntimeStatus(context, runtimeStatus) {
+    if (!runtimeStatus) {
+        return false;
+    }
+    const runtimeJobId = String(runtimeStatus.jobId || '').trim();
+    if (!runtimeJobId) {
+        return false;
+    }
+    const terminalJobId = String(context.lastTerminalResult?.jobId || '').trim();
+    return Boolean(terminalJobId) && runtimeJobId === terminalJobId;
 }
 
 export function syncActiveRunBinding(runtime, context, {

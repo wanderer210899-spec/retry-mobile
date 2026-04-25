@@ -3,6 +3,13 @@
     /* Keep only theme-forward tokens (avoid building our own “surface”). */
     --rm-border: var(--SmartThemeBorderColor, rgba(127, 127, 127, 0.45));
     --rm-accent: var(--SmartThemeQuoteColor, var(--SmartThemeEmColor, currentColor));
+    /*
+     * Typography: two in-panel tiers (drawer title stays theme default).
+     * --rm-font-section: collapsible headers, card section headers, QR row title, in-card field titles.
+     * --rm-font-ui: tabs, status, row labels, controls, stats, buttons, log (mono family only).
+     */
+    --rm-font-section: 0.8125rem;
+    --rm-font-ui: 0.75rem;
 }
 
 /* ── Drawer host ────────────────────────────────────────────────── */
@@ -11,10 +18,12 @@
 }
 
 /* ── Panel body ─────────────────────────────────────────────────── */
-.rm-panel__body {
+#retry-mobile-panel .rm-panel__body {
     display: grid;
     gap: 12px;
     padding: 12px;
+    font-size: var(--rm-font-ui);
+    line-height: 1.45;
     /* Let SillyTavern themes own surface/background colors. */
     border: 1px solid var(--rm-border);
     border-radius: 12px;
@@ -42,6 +51,13 @@
     display: flex;
     gap: 2px;
     flex: 1;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
 }
 
 .rm-tabbar .menu_button {
@@ -49,19 +65,25 @@
 }
 
 .rm-tab {
-    display: flex;
+    display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 5px;
     padding: 6px 14px;
     min-height: 34px;
+    flex: 0 0 auto;
     border: none !important;
     border-radius: 6px 6px 0 0 !important;
     background: transparent !important;
     font-weight: 600;
-    font-size: 0.86rem;
+    font-size: var(--rm-font-ui);
+    line-height: 1.25;
     opacity: 0.58;
     box-shadow: none !important;
     transition: opacity 0.15s, background 0.15s;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+    text-orientation: mixed;
 }
 
 .rm-tab.rm-tab--active {
@@ -115,12 +137,105 @@
     gap: 6px;
 }
 
-/* ── Fieldset title ─────────────────────────────────────────────── */
-.rm-fieldset__title {
-    font-size: 0.78rem;
-    letter-spacing: 0.05em;
+/* ── Section titles (same size: collapsibles, toolbar headers, QR row) ─ */
+#retry-mobile-panel .rm-fieldset__title,
+#retry-mobile-panel .rm-panel__section-title {
+    font-size: var(--rm-font-section);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.72;
+}
+
+/* ── Collapsible fieldsets (details/summary) ───────────────────── */
+.rm-fieldset.rm-collapsible {
+    gap: 0;
+}
+
+.rm-collapsible__summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.rm-fieldset.rm-collapsible > .rm-collapsible__summary::-webkit-details-marker {
+    display: none;
+}
+
+.rm-collapsible__summary::marker {
+    content: '';
+}
+
+.rm-collapsible__title {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: start;
+}
+
+.rm-collapsible__icon {
+    flex-shrink: 0;
+    font-size: 0.75em;
+    opacity: 0.58;
+    transition: transform 0.18s ease;
+}
+
+.rm-fieldset.rm-collapsible[open] .rm-collapsible__icon {
+    transform: rotate(180deg);
+}
+
+.rm-collapsible__content {
+    display: grid;
+    gap: 10px;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--rm-border);
+}
+
+/* ── Rows that must stay horizontal (CJK labels + actions) ─────── */
+.rm-inline-row--controls {
+    flex-wrap: nowrap;
+    align-items: center;
+}
+
+.rm-inline-row--controls .rm-inline-row__label {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.rm-inline-row--controls .rm-qr-toggle,
+.rm-inline-row--controls .rm-select-language {
+    flex-shrink: 0;
+}
+
+.rm-section-row--toolbar {
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.rm-section-row--toolbar > span:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.rm-header-actions--inline {
+    flex-wrap: nowrap;
+    flex-shrink: 0;
+}
+
+.rm-select-language {
+    width: auto;
+    min-width: min(11em, 100%);
+    max-width: min(100%, 240px);
+    text-align: start;
+    padding-inline: 8px 10px;
 }
 
 /* ── Status pill ────────────────────────────────────────────────── */
@@ -132,7 +247,7 @@
     border-radius: 999px;
     border: 1px solid var(--rm-border);
     background: transparent;
-    font-size: 0.84rem;
+    font-size: var(--rm-font-ui);
     white-space: nowrap;
 }
 
@@ -175,7 +290,7 @@
 }
 
 .rm-stat-card strong {
-    font-size: 0.68rem;
+    font-size: var(--rm-font-ui);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.62;
@@ -183,9 +298,9 @@
 }
 
 .rm-stat-card span {
-    font-size: 1rem;
+    font-size: var(--rm-font-ui);
     font-weight: 700;
-    line-height: 1;
+    line-height: 1.2;
 }
 
 /* ── Inline row (label left, control right) ─────────────────────── */
@@ -198,7 +313,7 @@
 }
 
 .rm-inline-row__label {
-    font-size: 0.9rem;
+    font-size: var(--rm-font-ui);
     flex: 1;
     min-width: 0;
 }
@@ -218,7 +333,7 @@
     border-radius: 6px;
     text-align: center;
     font: inherit;
-    font-size: 0.9rem;
+    font-size: var(--rm-font-ui);
 }
 
 .rm-number-input:disabled {
@@ -253,7 +368,7 @@
 .rm-mode-toggle__option span {
     padding: 4px 12px;
     border-radius: 6px;
-    font-size: 0.84rem;
+    font-size: var(--rm-font-ui);
     font-weight: 600;
     opacity: 0.66;
     transition: background 0.15s, opacity 0.15s;
@@ -276,7 +391,7 @@
 }
 
 .rm-field__label {
-    font-size: 0.9rem;
+    font-size: var(--rm-font-section);
     font-weight: 600;
 }
 
@@ -295,7 +410,7 @@
     border-radius: 7px;
     background: transparent;
     cursor: pointer;
-    font-size: 0.86rem;
+    font-size: var(--rm-font-ui);
 }
 
 .rm-block-option input[type="radio"] {
@@ -318,7 +433,7 @@
     border-radius: 7px;
     background: transparent;
     cursor: pointer;
-    font-size: 0.84rem;
+    font-size: var(--rm-font-ui);
 }
 
 .rm-checkbox input {
@@ -334,11 +449,17 @@
     /* Keep layout; let ST theme style the control. */
     resize: vertical;
     font: inherit;
-    font-size: 0.9rem;
+    font-size: var(--rm-font-ui);
+}
+
+/* Standalone field labels (e.g. notification template) — match section title tier */
+#retry-mobile-panel .rm-field > label:first-of-type {
+    font-size: var(--rm-font-section);
+    font-weight: 600;
 }
 
 .rm-field small {
-    font-size: 0.8rem;
+    font-size: var(--rm-font-ui);
     line-height: 1.45;
     opacity: 0.78;
 }
@@ -348,10 +469,13 @@
     margin: 0;
     padding: 4px 14px;
     min-height: 30px;
-    font-size: 0.84rem;
+    font-size: var(--rm-font-ui);
     border-radius: 6px;
     font-weight: 600;
     flex-shrink: 0;
+    white-space: nowrap;
+    min-width: min-content;
+    line-height: 1.25;
 }
 
 .rm-qr-toggle.rm-qr-toggle--active {
@@ -360,7 +484,7 @@
 }
 
 .rm-qr-status {
-    font-size: 0.78rem;
+    font-size: var(--rm-font-ui);
     opacity: 0.7;
     line-height: 1.4;
     min-height: 0;
@@ -375,7 +499,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: 0.82rem;
+    font-size: var(--rm-font-ui);
     font-weight: 600;
     opacity: 0.8;
     text-decoration: none;
@@ -401,6 +525,7 @@
     margin: 0;
     border-radius: 8px;
     min-height: 38px;
+    font-size: var(--rm-font-ui);
 }
 
 .rm-button--primary {
@@ -413,15 +538,19 @@
 
 .rm-button--inline {
     margin: 0;
-    padding: 3px 10px;
+    padding: 3px 12px;
     min-height: 26px;
-    font-size: 0.82rem;
+    font-size: var(--rm-font-ui);
     border-radius: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    min-width: min-content;
+    line-height: 1.25;
 }
 
 /* ── Inline status line ─────────────────────────────────────────── */
 .rm-inline-status {
-    font-size: 0.84rem;
+    font-size: var(--rm-font-ui);
     line-height: 1.45;
     opacity: 0.78;
 }
@@ -433,7 +562,7 @@
     border: 1px solid var(--rm-border);
     border-radius: 8px;
     line-height: 1.5;
-    font-size: 0.88rem;
+    font-size: var(--rm-font-ui);
     background: transparent;
 }
 
@@ -445,7 +574,7 @@
 .rm-diagnostics-output {
     display: grid;
     gap: 4px;
-    font-size: 0.86rem;
+    font-size: var(--rm-font-ui);
 }
 
 .rm-diagnostics__line {
@@ -454,7 +583,7 @@
 }
 
 .rm-diagnostics__title {
-    font-size: 0.78rem;
+    font-size: var(--rm-font-section);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.66;
@@ -472,14 +601,14 @@
     display: flex;
     align-items: baseline;
     gap: 6px;
-    font-size: 0.85rem;
+    font-size: var(--rm-font-ui);
     line-height: 1.45;
 }
 
 .rm-diagnostics__item::before {
     content: attr(data-icon);
     flex-shrink: 0;
-    font-size: 0.8rem;
+    font-size: var(--rm-font-ui);
     opacity: 0.7;
 }
 
@@ -497,14 +626,14 @@
 }
 
 .rm-release-card__eyebrow {
-    font-size: 0.78rem;
+    font-size: var(--rm-font-section);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     opacity: 0.66;
 }
 
 .rm-release-card__line {
-    font-size: 0.86rem;
+    font-size: var(--rm-font-ui);
     line-height: 1.45;
     opacity: 0.82;
     overflow-wrap: anywhere;
@@ -516,7 +645,7 @@
     padding: 3px 9px;
     border-radius: 999px;
     border: 1px solid var(--rm-border);
-    font-size: 0.82rem;
+    font-size: var(--rm-font-ui);
     font-weight: 700;
     white-space: nowrap;
 }
@@ -542,7 +671,7 @@
     border: 1px solid var(--rm-border);
     border-radius: 8px;
     background: transparent;
-    font-size: 0.86rem;
+    font-size: var(--rm-font-ui);
 }
 
 .rm-release-card__grid > div span {
@@ -557,7 +686,9 @@
     padding: 10px 12px;
     border: 1px solid var(--rm-border);
     border-radius: 8px;
-    font: 0.85rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: var(--rm-font-ui);
+    line-height: 1.45;
     white-space: pre-wrap;
     color: inherit;
 }
@@ -567,7 +698,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 8px;
-    font-size: 0.82rem;
+    font-size: var(--rm-font-ui);
     opacity: 0.72;
 }
 
@@ -587,13 +718,16 @@
     .rm-tabbar {
         min-width: 0;
         width: 100%;
+        flex-wrap: nowrap;
+        overflow-x: auto;
     }
 
     .rm-tab {
-        flex: 1 1 0;
+        flex: 0 0 auto;
         justify-content: center;
-        padding: 6px 8px;
-        font-size: 0.82rem;
+        padding: 6px 10px;
+        font-size: var(--rm-font-ui);
+        white-space: nowrap;
     }
 
     .rm-topbar .rm-status-pill {
@@ -641,14 +775,33 @@
         grid-template-columns: 1fr;
     }
 
-    .rm-section-row,
-    .rm-header-actions {
+    .rm-section-row:not(.rm-section-row--toolbar),
+    .rm-header-actions:not(.rm-header-actions--inline) {
         flex-wrap: wrap;
     }
 
-    .rm-github-link,
-    .rm-button--inline,
-    .rm-qr-toggle {
+    .rm-section-row--toolbar {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+    }
+
+    .rm-inline-row.rm-inline-row--controls {
+        flex-wrap: nowrap;
+    }
+
+    .rm-inline-row--controls .rm-inline-row__label {
+        width: auto;
+        flex: 1 1 auto;
+    }
+
+    .rm-header-actions--inline {
+        flex-wrap: nowrap;
+    }
+
+    .rm-github-link {
         max-width: 100%;
     }
 }

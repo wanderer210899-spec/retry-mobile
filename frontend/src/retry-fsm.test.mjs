@@ -1037,8 +1037,13 @@ test('jobFailed from CAPTURING keeps durable intent armed instead of silently dr
 
     assert.equal(failed.state, RetryState.ARMED);
     assert.equal(failed.runId, 'run-2');
-    assert.equal(failed.terminalError.code, 'retry_job_failed');
+    // Auto-rearm into ARMED must not surface the prior failure as a panel
+    // error box. The terminal toast still fires from `lastTerminalResult` and
+    // the error itself is preserved on `lastTerminalResult.error` for logs,
+    // but the new ARMED phase is a fresh "ready for next request" state.
+    assert.equal(failed.terminalError, null);
     assert.equal(failed.lastTerminalResult.outcome, 'failed');
+    assert.equal(failed.lastTerminalResult.error?.code, 'retry_job_failed');
 });
 
 test('late jobStarted after stop during CAPTURING cancels the orphaned backend job without logging an illegal transition', () => {
@@ -1359,4 +1364,122 @@ test('toast scope lifecycle resets at running entry and clears on terminal trans
         status: { state: 'completed', jobId: 'job-1' },
     });
     assert.equal(fsm.getToastScope(), null);
+});
+
+test('jobStarted clears the previous run lastTerminalResult so its terminal status cannot leak into the new RUNNING context', async () => {
+    const { fsm, emitPolledStatus } = createHarness({
+        initialIntent: {
+            mode: 'toggle',
+            engaged: true,
+            singleTarget: null,
+            settings: { targetAcceptedCount: 2, nativeGraceSeconds: 30 },
+        },
+    });
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hi'] },
+        fingerprint: { chatIdentity, userMessageText: 'hi' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    await emitPolledStatus({
+        jobId: 'job-1',
+        state: 'completed',
+        acceptedCount: 2,
+        targetAcceptedCount: 2,
+    });
+
+    const armedCtx = fsm.getContext();
+    assert.equal(armedCtx.state, RetryState.ARMED);
+    assert.equal(armedCtx.lastTerminalResult?.outcome, 'completed');
+
+    fsm.capture({
+        request: { messages: ['next'] },
+        fingerprint: { chatIdentity, userMessageText: 'next' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-2', target });
+
+    const runningCtx = fsm.getContext();
+    assert.equal(runningCtx.state, RetryState.RUNNING);
+    assert.equal(runningCtx.jobId, 'job-2');
+    // The new RUNNING context must not inherit the previous run's terminal
+    // snapshot. Otherwise `deriveUiState` would fall back to it and re-fire
+    // the old "Completed N/T" toast against the freshly reset toast scope —
+    // exactly the symptom on first capture after a completed retry.
+    assert.equal(runningCtx.lastTerminalResult, null);
+});
+
+test('manual arm clears the previous run lastTerminalResult so stats refresh on Start', () => {
+    const { fsm } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hi'] },
+        fingerprint: { chatIdentity, userMessageText: 'hi' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    fsm.userStop();
+    const idleCtx = fsm.getContext();
+    assert.equal(idleCtx.state, RetryState.IDLE);
+    assert.equal(idleCtx.lastTerminalResult?.outcome, 'cancelled');
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    const armedCtx = fsm.getContext();
+    assert.equal(armedCtx.state, RetryState.ARMED);
+    // A manual Start press must produce a clean armed phase so the panel
+    // does not surface the previous run's stats or terminal toast.
+    assert.equal(armedCtx.lastTerminalResult, null);
+    assert.equal(armedCtx.terminalError, null);
+});
+
+test('jobFailed auto-rearm into ARMED clears terminalError so the panel error box is not lit by the previous failure', () => {
+    const { fsm } = createHarness({
+        initialIntent: {
+            mode: 'toggle',
+            engaged: false,
+            singleTarget: null,
+            settings: {},
+        },
+    });
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' } });
+    fsm.capture({ request: { messages: ['hello'] } });
+    const failed = fsm.jobFailed({ error: new Error('backend handoff failed') });
+
+    assert.equal(failed.state, RetryState.ARMED);
+    // The error info is preserved on `lastTerminalResult.error` for diagnostics
+    // and the terminal toast still fires. The panel `terminalError` slot must
+    // be empty so `selectUiError` does not light the error box for the next
+    // armed phase.
+    assert.equal(failed.terminalError, null);
+    assert.equal(failed.lastTerminalResult?.outcome, 'failed');
+    assert.equal(failed.lastTerminalResult?.error?.code, 'retry_job_failed');
+});
+
+test('jobFailed without auto-rearm into IDLE keeps terminalError so the user sees what went wrong', () => {
+    const { fsm } = createHarness({
+        initialIntent: {
+            mode: 'single',
+            engaged: false,
+            singleTarget: null,
+            settings: {},
+        },
+    });
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'single' } });
+    fsm.capture({ request: { messages: ['hello'] } });
+    const failed = fsm.jobFailed({ error: new Error('backend handoff failed') });
+
+    assert.equal(failed.state, RetryState.IDLE);
+    assert.equal(failed.terminalError?.code, 'retry_job_failed');
+    assert.equal(failed.lastTerminalResult?.outcome, 'failed');
 });

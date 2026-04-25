@@ -26,9 +26,12 @@ export function buildPanelTemplate() {
                 <div class="rm-stats-strip" data-role="stats"></div>
 
                 <div class="rm-panel__pane" data-role="main-pane">
-                    <section class="rm-fieldset">
-                        <div class="rm-fieldset__title">${escapeHtml(t('panel.configurationTitle'))}</div>
-
+                    <details class="rm-fieldset rm-collapsible">
+                        <summary class="rm-collapsible__summary">
+                            <span class="rm-fieldset__title rm-collapsible__title">${escapeHtml(t('panel.configurationTitle'))}</span>
+                            <i class="fa-solid fa-chevron-down rm-collapsible__icon" aria-hidden="true"></i>
+                        </summary>
+                        <div class="rm-collapsible__content">
                         <div class="rm-inline-row">
                             <span class="rm-inline-row__label">${escapeHtml(t('panel.runModeLabel'))}</span>
                             <div class="rm-mode-toggle" role="radiogroup" aria-label="${escapeHtml(t('panel.runModeLabel'))}">
@@ -85,10 +88,15 @@ export function buildPanelTemplate() {
                                 </div>
                             </div>
                         </div>
-                    </section>
+                        </div>
+                    </details>
 
-                    <section class="rm-fieldset">
-                        <div class="rm-fieldset__title">${escapeHtml(t('panel.notificationsTitle'))}</div>
+                    <details class="rm-fieldset rm-collapsible">
+                        <summary class="rm-collapsible__summary">
+                            <span class="rm-fieldset__title rm-collapsible__title">${escapeHtml(t('panel.notificationsTitle'))}</span>
+                            <i class="fa-solid fa-chevron-down rm-collapsible__icon" aria-hidden="true"></i>
+                        </summary>
+                        <div class="rm-collapsible__content">
                         <div class="rm-field">
                             <label for="${EXTENSION_ID}-notification-template">${escapeHtml(t('panel.termuxTemplateLabel'))}</label>
                             <textarea id="${EXTENSION_ID}-notification-template" rows="2" placeholder="${escapeHtml(t('panel.termuxTemplatePlaceholder'))}"></textarea>
@@ -111,22 +119,13 @@ export function buildPanelTemplate() {
                                 <span>${escapeHtml(t('panel.vibrateOnComplete'))}</span>
                             </label>
                         </div>
-                    </section>
-
-                    <section class="rm-fieldset">
-                        <div class="rm-inline-row">
-                            <label class="rm-inline-row__label" for="${EXTENSION_ID}-ui-language">${escapeHtml(t('panel.languageLabel'))}</label>
-                            <select id="${EXTENSION_ID}-ui-language" class="rm-number-input">
-                                <option value="en">${escapeHtml(t('panel.languageEnglish'))}</option>
-                                <option value="zh">${escapeHtml(t('panel.languageChinese'))}</option>
-                            </select>
                         </div>
-                    </section>
+                    </details>
 
                     <section class="rm-fieldset">
-                        <div class="rm-inline-row">
-                            <span class="rm-inline-row__label">${escapeHtml(t('panel.quickRepliesLabel'))}</span>
-                            <button class="menu_button rm-qr-toggle" data-action="toggle-qr">${escapeHtml(t('panel.inject'))}</button>
+                        <div class="rm-inline-row rm-inline-row--controls">
+                            <span class="rm-inline-row__label rm-panel__section-title">${escapeHtml(t('panel.quickRepliesLabel'))}</span>
+                            <button class="menu_button rm-qr-toggle" data-action="toggle-qr" type="button">${escapeHtml(t('panel.inject'))}</button>
                         </div>
                         <div class="rm-qr-status" data-role="qr-status"></div>
                     </section>
@@ -138,7 +137,17 @@ export function buildPanelTemplate() {
 
                 <div class="rm-panel__pane" data-role="system-pane" hidden>
                     <section class="rm-fieldset">
-                        <div class="rm-fieldset__title rm-section-row">
+                        <div class="rm-inline-row rm-inline-row--controls">
+                            <label class="rm-inline-row__label rm-panel__section-title" for="${EXTENSION_ID}-ui-language">${escapeHtml(t('panel.languageLabel'))}</label>
+                            <select id="${EXTENSION_ID}-ui-language" class="rm-number-input rm-select-language">
+                                <option value="en">${escapeHtml(t('panel.languageEnglish'))}</option>
+                                <option value="zh">${escapeHtml(t('panel.languageChinese'))}</option>
+                            </select>
+                        </div>
+                    </section>
+
+                    <section class="rm-fieldset">
+                        <div class="rm-fieldset__title rm-section-row rm-section-row--toolbar">
                             <span>${escapeHtml(t('panel.installUpdateTitle'))}</span>
                             <a class="rm-github-link" href="${REPOSITORY_URL}" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github"></i> ${escapeHtml(t('panel.github'))}</a>
                         </div>
@@ -146,12 +155,12 @@ export function buildPanelTemplate() {
                     </section>
 
                     <section class="rm-fieldset">
-                        <div class="rm-fieldset__title rm-section-row">
+                        <div class="rm-fieldset__title rm-section-row rm-section-row--toolbar">
                             <span>${escapeHtml(t('panel.retryLogTitle'))}</span>
-                            <div class="rm-header-actions">
-                                <button class="menu_button rm-button--inline" data-action="toggle-log">${escapeHtml(t('panel.show'))}</button>
-                                <button class="menu_button rm-button--inline" data-action="copy-log">${escapeHtml(t('panel.copy'))}</button>
-                                <button class="menu_button rm-button--inline" data-action="download-log">${escapeHtml(t('panel.download'))}</button>
+                            <div class="rm-header-actions rm-header-actions--inline">
+                                <button class="menu_button rm-button--inline" data-action="toggle-log" type="button">${escapeHtml(t('panel.show'))}</button>
+                                <button class="menu_button rm-button--inline" data-action="copy-log" type="button">${escapeHtml(t('panel.copy'))}</button>
+                                <button class="menu_button rm-button--inline" data-action="download-log" type="button">${escapeHtml(t('panel.download'))}</button>
                             </div>
                         </div>
                         <div class="rm-log-window" data-role="retry-log-shell" hidden>
