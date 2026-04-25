@@ -60,6 +60,10 @@
       "en": "Choose a valid option: 0, 1, 2, or 3.",
       "zh": "请输入有效选项：0、1、2 或 3。"
     },
+    "menuOptionsTitle": {
+      "en": "Menu Options:",
+      "zh": "菜单选项："
+    },
     "localInstallTitle": {
       "en": "Local Install:",
       "zh": "本地安装："
@@ -87,6 +91,22 @@
     "statusTitle": {
       "en": "Retry Mobile Status:",
       "zh": "Retry Mobile 状态："
+    },
+    "statusLabelServerPlugins": {
+      "en": "Server plugins",
+      "zh": "服务器插件"
+    },
+    "statusLabelBackend": {
+      "en": "Backend",
+      "zh": "后端"
+    },
+    "statusLabelEveryone": {
+      "en": "Everyone",
+      "zh": "所有人"
+    },
+    "statusLabelProfiles": {
+      "en": "Profiles",
+      "zh": "配置"
     },
     "serverPluginsEnabled": {
       "en": "Enabled",
@@ -131,6 +151,79 @@
     "termuxRestartNote": {
       "en": "Termux note: Stop the running SillyTavern process before replacing plugin files.",
       "zh": "Termux 提示：替换插件文件前，请先停止正在运行的 SillyTavern 进程。"
+    },
+    "serverPluginSettingTitle": {
+      "en": "Server plugin setting",
+      "zh": "服务器插件设置"
+    },
+    "serverPluginsAlreadyEnabled": {
+      "en": "Server plugins are already enabled.",
+      "zh": "服务器插件已启用。"
+    },
+    "enableServerPluginsConfirm": {
+      "en": "Enable server plugins in config.yaml?",
+      "zh": "是否在 config.yaml 中启用服务器插件？"
+    },
+    "noConfigChanges": {
+      "en": "No config changes were made.",
+      "zh": "未进行任何配置更改。"
+    },
+    "configChangeCompleteTitle": {
+      "en": "Config change complete.",
+      "zh": "配置更改完成。"
+    },
+    "serverPluginsNowEnabled": {
+      "en": "Server plugins are now enabled in config.yaml.",
+      "zh": "服务器插件已在 config.yaml 中启用。"
+    },
+    "frontendDestinationTitle": {
+      "en": "Frontend destination",
+      "zh": "前端安装位置"
+    },
+    "selectionPrompt": {
+      "en": "Selection: ",
+      "zh": "选择："
+    },
+    "cancelOption": {
+      "en": "Cancel",
+      "zh": "取消"
+    },
+    "frontendNoProfilesConfirm": {
+      "en": "No profiles were detected. Install the frontend for everyone in third-party?",
+      "zh": "未检测到配置档。是否将前端安装到 third-party（所有人）？"
+    },
+    "frontendSingleProfileOption": {
+      "en": "Install only for profile: {profile}",
+      "zh": "仅为配置档安装：{profile}"
+    },
+    "frontendEveryoneOption": {
+      "en": "Install for everyone in third-party",
+      "zh": "为所有人安装到 third-party"
+    },
+    "frontendOneProfileOption": {
+      "en": "Install for one profile",
+      "zh": "安装到一个配置档"
+    },
+    "frontendMultipleProfilesOption": {
+      "en": "Install for multiple profiles",
+      "zh": "安装到多个配置档"
+    },
+    "uninstallTitle": {
+      "en": "Uninstall",
+      "zh": "卸载"
+    },
+    "uninstallRemoveSelectedProfiles": {
+      "en": "Remove frontend from selected profiles",
+      "zh": "从选中的配置档移除前端"
+    },
+    "uninstallRemoveEveryone": {
+      "en": "Remove frontend from third-party (everyone)",
+      "zh": "从 third-party 移除前端（所有人）"
+    },
+    "uninstallRemoveEverything": {
+      "en": "Remove everything",
+      "zh": "移除全部"
+    }
     }
   },
 

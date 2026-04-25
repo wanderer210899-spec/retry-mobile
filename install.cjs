@@ -321,7 +321,7 @@ function renderMenu(layout, platform, lastResult = '', language = 'en') {
     console.log(` |   2. ${ti(language, 'menuInstallNow')}`);
     console.log(` |   3. ${ti(language, 'menuUninstall')}`);
     console.log(' ______________________________________________________________');
-    console.log(' | Menu Options:');
+    console.log(` | ${ti(language, 'menuOptionsTitle')}`);
     console.log(` |   0. ${ti(language, 'menuExit')}`);
     console.log(' ______________________________________________________________');
             console.log(` | ${ti(language, 'localInstallTitle')}`);
@@ -332,11 +332,11 @@ function renderMenu(layout, platform, lastResult = '', language = 'en') {
             console.log(` |   ${ti(language, 'sourceVersion', { value: abbreviatePath(formatInstallerReleaseStatus(layout.releaseUpdate), 48) })}`);
             console.log(' ______________________________________________________________');
     console.log(` | ${ti(language, 'statusTitle')}`);
-    console.log(` |   Server plugins: ${layout.config.enableServerPlugins ? ti(language, 'serverPluginsEnabled') : ti(language, 'serverPluginsDisabled')}`);
-    console.log(` |   Backend:        ${fs.existsSync(layout.backendTarget) ? ti(language, 'installed') : ti(language, 'notInstalled')}`);
-    console.log(` |   Everyone:       ${layout.globalFrontendInstalled ? ti(language, 'installedInThirdParty') : ti(language, 'notInstalledInThirdParty')}`);
+    console.log(` |   ${ti(language, 'statusLabelServerPlugins')}: ${layout.config.enableServerPlugins ? ti(language, 'serverPluginsEnabled') : ti(language, 'serverPluginsDisabled')}`);
+    console.log(` |   ${ti(language, 'statusLabelBackend')}:        ${fs.existsSync(layout.backendTarget) ? ti(language, 'installed') : ti(language, 'notInstalled')}`);
+    console.log(` |   ${ti(language, 'statusLabelEveryone')}:       ${layout.globalFrontendInstalled ? ti(language, 'installedInThirdParty') : ti(language, 'notInstalledInThirdParty')}`);
     if (layout.profiles.length === 0) {
-        console.log(` |   Profiles:       ${ti(language, 'profilesNoneDetected')}`);
+        console.log(` |   ${ti(language, 'statusLabelProfiles')}:       ${ti(language, 'profilesNoneDetected')}`);
     } else {
         for (const profile of layout.profiles) {
             console.log(` |   ${ti(language, 'profileRow', {
@@ -377,21 +377,21 @@ async function promptInstallerLanguage(rl) {
     }
 }
 
-async function configureServerPluginSettings(rl, layout, platform) {
-    console.log('\nServer plugin setting');
+async function configureServerPluginSettings(rl, layout, platform, language = 'en') {
+    console.log(`\n${ti(language, 'serverPluginSettingTitle')}`);
     if (layout.config.enableServerPlugins) {
-        console.log('Server plugins are already enabled.');
-        return 'Server plugins are already enabled.';
+        console.log(ti(language, 'serverPluginsAlreadyEnabled'));
+        return ti(language, 'serverPluginsAlreadyEnabled');
     }
 
-    const enable = await confirm(rl, 'Enable server plugins in config.yaml?', true);
+    const enable = await confirm(rl, ti(language, 'enableServerPluginsConfirm'), true);
     if (!enable) {
-        return 'No config changes were made.';
+        return ti(language, 'noConfigChanges');
     }
 
     updateServerPluginSettings(layout, { enableServerPlugins: true });
-    return formatProcessComplete('Config change complete.', [
-        'Server plugins are now enabled in config.yaml.',
+    return formatProcessComplete(ti(language, 'configChangeCompleteTitle'), [
+        ti(language, 'serverPluginsNowEnabled'),
     ], platform);
 }
 
@@ -427,7 +427,7 @@ function formatProcessComplete(title, lines, platform) {
     return payload.join('\n');
 }
 
-async function installOrUpdateNow(rl, layout, platform) {
+async function installOrUpdateNow(rl, layout, platform, language = 'en') {
     if (!layout.config.enableServerPlugins) {
         return [
             'Server plugins are disabled. Install / Update now will not change config.yaml.',
@@ -438,7 +438,7 @@ async function installOrUpdateNow(rl, layout, platform) {
     ensureWritable(layout.pluginsDir, true);
     installBackend(layout);
 
-    const target = await promptFrontendDestination(rl, layout);
+    const target = await promptFrontendDestination(rl, layout, language);
     if (!target) {
         refreshProfiles(layout);
         return formatProcessComplete('Install / Update process complete.', [
@@ -479,21 +479,21 @@ async function installOrUpdateNow(rl, layout, platform) {
     return formatProcessComplete('Install / Update process complete.', completionLines, platform);
 }
 
-async function promptFrontendDestination(rl, layout) {
+async function promptFrontendDestination(rl, layout, language = 'en') {
     const profiles = layout.profiles;
 
     if (profiles.length === 0) {
-        const installGlobal = await confirm(rl, 'No profiles were detected. Install the frontend for everyone in third-party?', true);
+        const installGlobal = await confirm(rl, ti(language, 'frontendNoProfilesConfirm'), true);
         return installGlobal ? { kind: 'global' } : null;
     }
 
     if (profiles.length === 1) {
         const [profile] = profiles;
-        console.log(`\nFrontend destination`);
-        console.log(`1. Install only for profile: ${profile.handle}`);
-        console.log('2. Install for everyone in third-party');
-        console.log('0. Cancel');
-        const choice = (await rl.question('Selection: ')).trim();
+        console.log(`\n${ti(language, 'frontendDestinationTitle')}`);
+        console.log(`1. ${ti(language, 'frontendSingleProfileOption', { profile: profile.handle })}`);
+        console.log(`2. ${ti(language, 'frontendEveryoneOption')}`);
+        console.log(`0. ${ti(language, 'cancelOption')}`);
+        const choice = (await rl.question(ti(language, 'selectionPrompt'))).trim();
         if (choice === '1') {
             return { kind: 'profiles', profiles: [profile] };
         }
@@ -503,12 +503,12 @@ async function promptFrontendDestination(rl, layout) {
         return null;
     }
 
-    console.log('\nFrontend destination');
-    console.log('1. Install for one profile');
-    console.log('2. Install for multiple profiles');
-    console.log('3. Install for everyone in third-party');
-    console.log('0. Cancel');
-    const choice = (await rl.question('Selection: ')).trim();
+    console.log(`\n${ti(language, 'frontendDestinationTitle')}`);
+    console.log(`1. ${ti(language, 'frontendOneProfileOption')}`);
+    console.log(`2. ${ti(language, 'frontendMultipleProfilesOption')}`);
+    console.log(`3. ${ti(language, 'frontendEveryoneOption')}`);
+    console.log(`0. ${ti(language, 'cancelOption')}`);
+    const choice = (await rl.question(ti(language, 'selectionPrompt'))).trim();
     if (choice === '1') {
         const selected = await promptForProfiles(rl, profiles, false);
         return selected.length > 0 ? { kind: 'profiles', profiles: [selected[0]] } : null;
@@ -523,15 +523,15 @@ async function promptFrontendDestination(rl, layout) {
     return null;
 }
 
-async function uninstallFlow(rl, layout) {
+async function uninstallFlow(rl, layout, language = 'en') {
     refreshProfiles(layout);
-    console.log('\nUninstall');
-    console.log('1. Remove frontend from selected profiles');
-    console.log('2. Remove frontend from third-party (everyone)');
-    console.log('3. Remove everything');
-    console.log('0. Cancel');
+    console.log(`\n${ti(language, 'uninstallTitle')}`);
+    console.log(`1. ${ti(language, 'uninstallRemoveSelectedProfiles')}`);
+    console.log(`2. ${ti(language, 'uninstallRemoveEveryone')}`);
+    console.log(`3. ${ti(language, 'uninstallRemoveEverything')}`);
+    console.log(`0. ${ti(language, 'cancelOption')}`);
 
-    const choice = (await rl.question('Selection: ')).trim();
+    const choice = (await rl.question(ti(language, 'selectionPrompt'))).trim();
     if (choice === '1') {
         const installedProfiles = layout.profiles.filter((profile) => profile.hasFrontend);
         if (installedProfiles.length === 0) {
