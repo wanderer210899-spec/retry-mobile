@@ -1,9 +1,10 @@
 import { createStructuredError, normalizeStructuredError } from './retry-error.js';
 import { createArmCaptureSession } from './st-capture.js';
-import { getChatIdentity, getContext, showToast } from './st-context.js';
+import { getChatIdentity, getContext, getEventTypes, showToast, subscribeEvent } from './st-context.js';
 import { waitForNativeCompletion } from './st-lifecycle.js';
 import { isSameChat } from './st-chat.js';
 import { applyAcceptedOutput, reloadSessionUi } from './render/st-operations.js';
+import { t } from './i18n.js';
 
 export function normalizePendingVisibleRender(renderPayload) {
     if (!renderPayload) {
@@ -33,13 +34,25 @@ export function createStPort({
 } = {}) {
     let captureSession = null;
     let nativeController = null;
+    let interactionGuard = null;
+    let lastInteractionToastAt = 0;
 
     return {
         getChatIdentity() {
             return getChatIdentity(getContext());
         },
         isVisible() {
-            return document.visibilityState !== 'hidden' && document.hasFocus();
+            // Avoid relying on `document.hasFocus()` for mobile/webview return.
+            // Some environments report visible while focus is delayed or false,
+            // which would strand pending renders and slow polling unnecessarily.
+            return document.visibilityState !== 'hidden';
+        },
+        enableInteractionGuard() {
+            stopInteractionGuard();
+            interactionGuard = startInteractionGuardSession();
+        },
+        disableInteractionGuard() {
+            stopInteractionGuard();
         },
         subscribeCapture(payload = {}) {
             stopCaptureSession();
@@ -109,6 +122,57 @@ export function createStPort({
         },
     };
 
+    function startInteractionGuardSession() {
+        const context = getContext();
+        const eventTypes = getEventTypes(context);
+        const stops = [];
+        if (!context || !eventTypes) {
+            return { stop() {} };
+        }
+
+        const onBlocked = () => {
+            // Best effort: stop any conflicting native generation quickly.
+            try {
+                context.stopGeneration?.();
+            } catch {}
+
+            const now = Date.now();
+            if (now - lastInteractionToastAt < 1800) {
+                return;
+            }
+            lastInteractionToastAt = now;
+            showToast('warning', t('toasts.title'), t('toasts.interactionBlocked'));
+        };
+
+        const maybeRegister = (name) => {
+            const eventName = eventTypes?.[name];
+            if (!eventName) {
+                return;
+            }
+            stops.push(subscribeEvent(eventName, (payload) => {
+                if (payload?.dryRun === true) {
+                    return;
+                }
+                onBlocked();
+            }, context));
+        };
+
+        maybeRegister('CHAT_COMPLETION_SETTINGS_READY');
+        maybeRegister('TEXT_COMPLETION_SETTINGS_READY');
+        maybeRegister('GENERATE_AFTER_DATA');
+        maybeRegister('MESSAGE_SENT');
+
+        return {
+            stop() {
+                stops.splice(0).forEach((stop) => {
+                    try {
+                        stop();
+                    } catch {}
+                });
+            },
+        };
+    }
+
     async function observeNative(payload, signal) {
         if (!payload?.fingerprint) {
             onNativeEvent?.(
@@ -159,6 +223,13 @@ export function createStPort({
             nativeController.abort();
         }
         nativeController = null;
+    }
+
+    function stopInteractionGuard() {
+        if (interactionGuard?.stop) {
+            interactionGuard.stop();
+        }
+        interactionGuard = null;
     }
 }
 

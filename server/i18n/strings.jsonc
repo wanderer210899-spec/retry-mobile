@@ -270,6 +270,9 @@
 
   "toasts": {
     "title": { "en": "Retry Mobile", "zh": "Retry Mobile" },
+    "pluginOn": { "en": "Retry plugin on.", "zh": "重试插件已开启。" },
+    "pluginOff": { "en": "Retry plugin off.", "zh": "重试插件已关闭。" },
+    "interactionBlocked": { "en": "Retry is running — stop Retry before swiping or sending a new message.", "zh": "重试运行中 — 请先停止重试，再进行滑动或发送新消息。" },
     "capturedStarting": {
       "en": "Captured request. Starting backend retry job…",
       "zh": "已捕获请求，正在启动后端重试任务…"
@@ -353,6 +356,7 @@
 
   "runState": {
     "armed": { "en": "Armed for next qualifying request", "zh": "已待命，等待下一次符合条件的请求" },
+    "armedAfterCompleted": { "en": "Armed — last request completed", "zh": "已待命 — 上一次请求已完成" },
     "capturing": { "en": "Capturing request and starting backend handoff", "zh": "正在捕获请求并启动后端接管" },
     "reserving": { "en": "Reserving backend job", "zh": "正在预留后端任务" },
     "waiting_native": { "en": "Waiting for native first reply", "zh": "等待原生首条回复" },

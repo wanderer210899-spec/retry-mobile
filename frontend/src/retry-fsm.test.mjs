@@ -101,6 +101,12 @@ function createHarness({
         unsubscribeNativeObserver(payload) {
             calls.push({ port: 'st', method: 'unsubscribeNativeObserver', args: [payload] });
         },
+        enableInteractionGuard() {
+            calls.push({ port: 'st', method: 'enableInteractionGuard', args: [] });
+        },
+        disableInteractionGuard() {
+            calls.push({ port: 'st', method: 'disableInteractionGuard', args: [] });
+        },
         setGeneratingIndicator(payload) {
             calls.push({ port: 'st', method: 'setGeneratingIndicator', args: [payload] });
         },

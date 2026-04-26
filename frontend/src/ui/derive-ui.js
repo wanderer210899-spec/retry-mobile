@@ -1,5 +1,5 @@
 import { formatStructuredError } from '../retry-error.js';
-import { formatVisibleStateLabel } from '../core/run-state.js';
+import { formatStateLabel, formatVisibleStateLabel } from '../core/run-state.js';
 import { t } from '../i18n.js';
 
 export function deriveUiState(context, runtime) {
@@ -35,7 +35,7 @@ export function deriveUiState(context, runtime) {
         phase,
         activeStatus,
         transport,
-        statusLabel: formatVisibleStateLabel(phase, activeStatus, transport),
+        statusLabel: resolveStatusLabel(phase, activeStatus, transport, context, runtime),
         error: selectedError,
         errorText,
         errorVisible: shouldShowError(phase, selectedError),
@@ -44,6 +44,27 @@ export function deriveUiState(context, runtime) {
     };
     assertNoRawKeys(uiState);
     return Object.freeze(uiState);
+}
+
+function resolveStatusLabel(phase, activeStatus, transport, context, runtime) {
+    if (phase === 'armed') {
+        const terminal = context?.lastTerminalResult || null;
+        const terminalOutcome = String(terminal?.outcome || '').trim();
+        const terminalState = String(terminal?.status?.state || '').trim();
+        const terminalJobId = String(
+            terminal?.jobId
+            || terminal?.status?.jobId
+            || context?.toastScope?.jobId
+            || runtime?.activeJobStatus?.jobId
+            || '',
+        ).trim();
+        // UX: after an auto-rearm completion we want explicit confirmation that
+        // the plugin is *still armed* and the last run completed successfully.
+        if ((terminalOutcome === 'completed' || terminalState === 'completed') && terminalJobId) {
+            return formatStateLabel('armed_after_completed');
+        }
+    }
+    return formatVisibleStateLabel(phase, activeStatus, transport);
 }
 
 function resolveActiveStatusForDisplay(phase, context, runtime) {

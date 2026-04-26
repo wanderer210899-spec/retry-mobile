@@ -172,7 +172,7 @@ test('deriveUiState in ARMED phase shows clean stats even when runtime cache and
         },
     );
     assert.equal(snapshot.activeStatus, null);
-    assert.equal(snapshot.statusLabel.includes('Completed'), false);
+    assert.equal(snapshot.statusLabel, 'runState.armedAfterCompleted');
     // The deduped scope already saw this terminal — no re-fire.
     assert.deepEqual(snapshot.toastsToFire, []);
 });

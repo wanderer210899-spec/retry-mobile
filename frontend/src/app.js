@@ -18,6 +18,7 @@ import { createAppPorts } from './app-ports.js';
 import { syncRuntimeFromFsm } from './app-runtime-sync.js';
 import { chooseOperationalChatIdentity, resolveExpectedPreviousGeneration } from './start-payload.js';
 import { initializeI18n, setLanguage, t } from './i18n.js';
+import { shouldToastPluginOff, shouldToastPluginOn } from './plugin-toggle-toast.js';
 import {
     createRestoreController,
     resolveCaptureTarget,
@@ -161,6 +162,7 @@ export async function bootRetryMobile() {
     syncRuntime();
 
     const armPluginFromUi = async () => {
+        const previousState = retryFsm.getState();
         const validationError = getArmValidationError(runtime);
         if (validationError) {
             runtime.controlError = validationError;
@@ -179,14 +181,21 @@ export async function bootRetryMobile() {
             );
         }
         syncRuntime();
+        if (shouldToastPluginOn(previousState, retryFsm.getState())) {
+            showToast('success', t('toasts.title'), t('toasts.pluginOn'));
+        }
         render();
     };
 
     const stopPlugin = async () => {
+        const previousState = retryFsm.getState();
         retryFsm.userStop({});
         runtime.controlError = null;
         runtime.pendingNativeOutcome = null;
         syncRuntime();
+        if (shouldToastPluginOff(previousState, retryFsm.getState())) {
+            showToast('info', t('toasts.title'), t('toasts.pluginOff'));
+        }
         render();
     };
 
@@ -388,7 +397,13 @@ export async function bootRetryMobile() {
                 });
                 syncRuntime();
                 render();
+                return;
             }
+
+            // If the browser was suspended long enough, we may have lost our in-memory
+            // mirror even though the backend job is still running. Re-run the boot
+            // recovery path opportunistically to reattach without requiring a full page refresh.
+            void restoreController.restoreControlState();
         }
     }
 

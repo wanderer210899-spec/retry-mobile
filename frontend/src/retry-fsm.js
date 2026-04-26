@@ -574,6 +574,7 @@ export function createRetryFsm({
             target: clonePlain(nextContext.target),
         });
 
+        stPort.enableInteractionGuard?.();
         stPort.setGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(nextContext)));
         return {
             pollingToken: stringOrNull(pollingToken),
@@ -587,6 +588,7 @@ export function createRetryFsm({
         if (previous.pollingToken) {
             backendPort.stopPolling?.(previous.pollingToken);
         }
+        stPort.disableInteractionGuard?.();
         stPort.unsubscribeNativeObserver?.({
             runId: previous.runId,
             chatIdentity: clonePlain(previous.chatIdentity),
