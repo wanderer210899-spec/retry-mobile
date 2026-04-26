@@ -1,6 +1,10 @@
 import { findLatestActiveRunBinding, recoverBoundStatus } from './job/run-binding.js';
 import { createStructuredError } from './retry-error.js';
 import { RetryState } from './retry-fsm.js';
+import { getChatIdentity } from './st-context.js';
+import { wasInternalChatReloadRecentlyTriggered } from './st-chat.js';
+
+const RESTORE_RETRY_CAP = 5;
 
 export function getAttachedJobStatusFromStartError(error) {
     if (Number(error?.status) !== 409) {
@@ -154,13 +158,20 @@ export function createRestoreController({
     retryFsm,
     intentPort,
     baseBackendPort,
+    stPort,
     updateActiveJob,
     render,
     syncRuntimeFromFsm,
     getCurrentChatIdentity,
     toStructuredError,
-    windowRef = window,
+    subscribeEvent = null,
+    eventTypes = null,
+    logEvent = () => {},
+    windowRef = globalThis.window || globalThis,
 }) {
+    let chatChangedStop = null;
+    let restoreRetryCount = 0;
+
     async function restoreControlState() {
         if (retryFsm.getState() !== RetryState.IDLE) {
             return;
@@ -198,6 +209,14 @@ export function createRestoreController({
                     });
                     syncRuntimeFromFsm(retryFsm);
                     render();
+                    if (status?.targetMessageVersion > 0 && stPort?.reconciler?.reconcileAfterRestore) {
+                        const reconcilePayload = {
+                            kind: 'accepted_output',
+                            chatIdentity: status.chatIdentity || chatIdentity,
+                            status,
+                        };
+                        void stPort.reconciler.reconcileAfterRestore(reconcilePayload);
+                    }
                     return;
                 }
             }
@@ -245,6 +264,10 @@ export function createRestoreController({
         if (runtime.restoreRetryHandle) {
             return;
         }
+        if (restoreRetryCount >= RESTORE_RETRY_CAP) {
+            return;
+        }
+        restoreRetryCount += 1;
 
         runtime.restoreRetryHandle = windowRef.setTimeout(() => {
             runtime.restoreRetryHandle = 0;
@@ -252,9 +275,35 @@ export function createRestoreController({
         }, 250);
     }
 
+    function subscribeChatChangedRestore() {
+        if (!subscribeEvent || !eventTypes?.CHAT_CHANGED || chatChangedStop) {
+            return;
+        }
+        chatChangedStop = subscribeEvent(eventTypes.CHAT_CHANGED, () => {
+            const liveChatIdentity = getCurrentChatIdentity?.() || getChatIdentity();
+            if (wasInternalChatReloadRecentlyTriggered(liveChatIdentity)) {
+                void logEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED triggered by Retry Mobile refreshing the current chat.', null);
+                return;
+            }
+            if (retryFsm.getState() !== RetryState.IDLE) {
+                return;
+            }
+            void restoreControlState();
+        });
+    }
+
+    function unsubscribeChatChangedRestore() {
+        if (typeof chatChangedStop === 'function') {
+            chatChangedStop();
+        }
+        chatChangedStop = null;
+    }
+
     return {
         restoreControlState,
         scheduleRestoreRetry,
+        subscribeChatChangedRestore,
+        unsubscribeChatChangedRestore,
     };
 }
 

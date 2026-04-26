@@ -5,6 +5,7 @@ import {
     buildBootArmPayload,
     buildRestoreTarget,
     collectBootRestoreChatIdentities,
+    createRestoreController,
     getAttachedJobStatusFromStartError,
     resolveCaptureTarget,
     resolveCaptureSubscriptionChatIdentity,
@@ -192,4 +193,49 @@ test('buildRestoreTarget prefers the saved single target when it matches the res
             groupId: null,
         },
     }, singleTarget), singleTarget);
+});
+
+test('restore controller subscribes to CHAT_CHANGED and ignores internal reload echoes', async () => {
+    const events = [];
+    let handler = null;
+    const controller = createRestoreController({
+        runtime: {},
+        retryFsm: {
+            getState() {
+                return 'idle';
+            },
+        },
+        intentPort: {},
+        baseBackendPort: {},
+        stPort: {},
+        updateActiveJob() {},
+        render() {},
+        syncRuntimeFromFsm() {},
+        getCurrentChatIdentity() {
+            return {
+                kind: 'character',
+                chatId: 'chat-1',
+                groupId: null,
+            };
+        },
+        toStructuredError(error) {
+            return error;
+        },
+        subscribeEvent(eventName, callback) {
+            events.push(eventName);
+            handler = callback;
+            return () => {};
+        },
+        eventTypes: {
+            CHAT_CHANGED: 'chat_changed',
+        },
+        logEvent(event) {
+            events.push(event);
+        },
+    });
+
+    controller.subscribeChatChangedRestore();
+    assert.deepEqual(events[0], 'chat_changed');
+    assert.equal(typeof handler, 'function');
+    await handler();
 });

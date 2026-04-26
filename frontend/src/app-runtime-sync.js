@@ -32,6 +32,22 @@ export function syncRuntimeFromFsm(runtime, fsm) {
     }
 }
 
+export function updateRuntimeActiveJob(runtime, status, fallbackJobId = '') {
+    if (status) {
+        const statusChanged = buildActiveJobStatusRenderKey(runtime.activeJobStatus)
+            !== buildActiveJobStatusRenderKey(status);
+        runtime.activeJobStatus = status;
+        runtime.activeJobId = status.jobId || fallbackJobId || runtime.activeJobId || null;
+        runtime.activeJobStatusObservedAt = status.updatedAt || new Date().toISOString();
+        return statusChanged;
+    }
+
+    if (fallbackJobId) {
+        runtime.activeJobId = fallbackJobId;
+    }
+    return false;
+}
+
 function contextOwnsRuntimeStatus(context, runtimeStatus) {
     if (!runtimeStatus) {
         return false;
@@ -109,4 +125,27 @@ function cloneValue(value) {
     }
 
     return JSON.parse(JSON.stringify(value));
+}
+
+function buildActiveJobStatusRenderKey(status) {
+    if (!status) {
+        return '';
+    }
+
+    return JSON.stringify({
+        jobId: String(status.jobId || ''),
+        runId: String(status.runId || ''),
+        state: String(status.state || ''),
+        acceptedCount: Number(status.acceptedCount || 0),
+        attemptCount: Number(status.attemptCount || 0),
+        targetMessageVersion: Number(status.targetMessageVersion || 0),
+        targetMessageIndex: Number(status.targetMessageIndex ?? -1),
+        structuredError: status.structuredError
+            ? {
+                code: String(status.structuredError.code || ''),
+                message: String(status.structuredError.message || ''),
+                detail: String(status.structuredError.detail || ''),
+            }
+            : null,
+    });
 }

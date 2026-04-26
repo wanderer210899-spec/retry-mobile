@@ -185,7 +185,7 @@ export function createRetryFsm({
             });
         }
 
-        leaveCapturing(context);
+        leaveCapturing(context, RetryState.RUNNING);
 
         const runningContext = {
             ...context,
@@ -270,7 +270,7 @@ export function createRetryFsm({
 
         const previous = context;
         if (previous.state === RetryState.CAPTURING) {
-            leaveCapturing(previous);
+            leaveCapturing(previous, RetryState.IDLE);
         } else {
             leaveRunning(previous);
         }
@@ -331,7 +331,7 @@ export function createRetryFsm({
         if (previous.state === RetryState.ARMED) {
             leaveArmed(previous);
         } else if (previous.state === RetryState.CAPTURING) {
-            leaveCapturing(previous);
+            leaveCapturing(previous, RetryState.RUNNING);
         }
 
         const status = clonePlain(payload.status) || null;
@@ -393,7 +393,7 @@ export function createRetryFsm({
         if (context.pendingVisibleRender && payload.isVisible === true) {
             const pendingRender = clonePlain(context.pendingVisibleRender);
             const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
-            Promise.resolve(stPort.flushPendingVisibleRender?.(pendingRender))
+            Promise.resolve(stPort.reconciler?.flushPending?.(pendingRender))
                 .then(async (result) => {
                     if (!isState(context, RetryState.RUNNING)) {
                         return;
@@ -480,7 +480,7 @@ export function createRetryFsm({
                     abortedCaptureRuns.delete(oldest);
                 }
             }
-            leaveCapturing(previous);
+            leaveCapturing(previous, RetryState.IDLE);
         } else {
             leaveRunning(previous);
             if (previous.jobId) {
@@ -529,6 +529,8 @@ export function createRetryFsm({
     }
 
     function enterCapturing(nextContext) {
+        stPort.setLockdown?.(true);
+        assertFrontEndContracts('capturing_entry');
         const nativeGraceSeconds = numberOrNull(nextContext.intent?.settings?.nativeGraceSeconds);
         const startPayload = {
             runId: nextContext.runId,
@@ -547,7 +549,11 @@ export function createRetryFsm({
 
     }
 
-    function leaveCapturing() {}
+    function leaveCapturing(previous = null, nextState = null) {
+        if (nextState !== RetryState.RUNNING) {
+            stPort.setLockdown?.(false);
+        }
+    }
 
     function enterRunning(nextContext) {
         const nativeGraceSeconds = numberOrNull(nextContext.intent?.settings?.nativeGraceSeconds);
@@ -574,9 +580,8 @@ export function createRetryFsm({
             target: clonePlain(nextContext.target),
         });
 
-        stPort.enableInteractionGuard?.();
-        stPort.enableTapHijack?.();
-        stPort.setSendBusy?.(true);
+        stPort.setLockdown?.(true);
+        assertFrontEndContracts('running_entry');
         stPort.setGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(nextContext)));
         return {
             pollingToken: stringOrNull(pollingToken),
@@ -587,12 +592,11 @@ export function createRetryFsm({
     }
 
     function leaveRunning(previous) {
+        assertFrontEndContracts('running_exit');
         if (previous.pollingToken) {
             backendPort.stopPolling?.(previous.pollingToken);
         }
-        stPort.disableInteractionGuard?.();
-        stPort.disableTapHijack?.();
-        stPort.setSendBusy?.(false);
+        stPort.setLockdown?.(false);
         stPort.unsubscribeNativeObserver?.({
             runId: previous.runId,
             chatIdentity: clonePlain(previous.chatIdentity),
@@ -734,7 +738,7 @@ export function createRetryFsm({
             status: clonePlain(status),
         };
         if (stPort.isVisible?.() === false) {
-            const queued = stPort.queueVisibleRender?.(renderPayload) || renderPayload;
+            const queued = stPort.reconciler?.queue?.(renderPayload) || renderPayload;
             context = createContextForState({
                 ...context,
                 pendingVisibleRender: clonePlain(queued),
@@ -743,7 +747,7 @@ export function createRetryFsm({
             return;
         }
 
-        Promise.resolve(stPort.applyAcceptedOutput?.(renderPayload))
+        Promise.resolve(stPort.reconciler?.applyStatus?.(renderPayload))
             .then((result) => {
                 if (!isState(context, RetryState.RUNNING)) {
                     return;
@@ -779,7 +783,7 @@ export function createRetryFsm({
         };
 
         if (stPort.isVisible?.() === false) {
-            const queued = stPort.queueVisibleRender?.(renderPayload) || renderPayload;
+            const queued = stPort.reconciler?.queue?.(renderPayload) || renderPayload;
             context = createContextForState({
                 ...context,
                 pendingVisibleRender: clonePlain(queued),
@@ -788,7 +792,7 @@ export function createRetryFsm({
         }
 
         try {
-            const result = await stPort.applyAcceptedOutput?.(renderPayload);
+            const result = await stPort.reconciler?.applyTerminal?.(renderPayload);
             if (!isState(context, RetryState.RUNNING)) {
                 return;
             }
@@ -844,6 +848,30 @@ export function createRetryFsm({
             runError: toRenderApplyError(error),
         });
         stPort.clearGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(context)));
+    }
+
+    function assertFrontEndContracts(stage) {
+        const lockdownActive = stPort.lockdownActive?.();
+        const reconcilerActive = stPort.reconciler?.isActive?.();
+        if (lockdownActive === true && reconcilerActive === true) {
+            return;
+        }
+
+        const detail = {
+            transition: 'frontend_contract_violation',
+            stage,
+            state: context.state,
+            lockdownActive: Boolean(lockdownActive),
+            reconcilerActive: Boolean(reconcilerActive),
+        };
+        if (isDevMode()) {
+            throw createStructuredError(
+                'frontend_contract_violation',
+                `Retry Mobile frontend contract violated during ${stage}.`,
+                JSON.stringify(detail),
+            );
+        }
+        logDeveloperError(logger, detail);
     }
 }
 

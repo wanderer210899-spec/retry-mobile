@@ -32,7 +32,9 @@ export function buildChatKey(chatIdentity) {
     ].join('::');
 }
 
-export function readActiveRunBinding(chatIdentity, storage = getSessionStorage()) {
+export function readActiveRunBinding(chatIdentity, storage = getBindingStorage(), {
+    legacyStorage = getSessionStorage(),
+} = {}) {
     const chatKey = buildChatKey(chatIdentity);
     if (!chatKey || !storage) {
         return null;
@@ -40,16 +42,28 @@ export function readActiveRunBinding(chatIdentity, storage = getSessionStorage()
 
     try {
         const raw = storage.getItem(`${STORAGE_PREFIX}${chatKey}`);
-        if (!raw) {
+        if (raw) {
+            return normalizeBinding(JSON.parse(raw), chatIdentity);
+        }
+        const legacyRaw = legacyStorage?.getItem?.(`${STORAGE_PREFIX}${chatKey}`);
+        if (!legacyRaw) {
             return null;
         }
-        return normalizeBinding(JSON.parse(raw), chatIdentity);
+        const normalized = normalizeBinding(JSON.parse(legacyRaw), chatIdentity);
+        if (!normalized) {
+            return null;
+        }
+        storage.setItem(`${STORAGE_PREFIX}${chatKey}`, JSON.stringify(normalized));
+        try {
+            legacyStorage?.removeItem?.(`${STORAGE_PREFIX}${chatKey}`);
+        } catch {}
+        return normalized;
     } catch {
         return null;
     }
 }
 
-export function findLatestActiveRunBinding(sessionId, storage = getSessionStorage()) {
+export function findLatestActiveRunBinding(sessionId, storage = getBindingStorage()) {
     const sessionKey = String(sessionId || '').trim();
     if (!sessionKey || !storage) {
         return null;
@@ -81,7 +95,7 @@ export function findLatestActiveRunBinding(sessionId, storage = getSessionStorag
     return bindings[0] || null;
 }
 
-export function writeActiveRunBinding(binding, storage = getSessionStorage()) {
+export function writeActiveRunBinding(binding, storage = getBindingStorage()) {
     const normalized = normalizeBinding(binding);
     if (!normalized?.chatKey || !storage) {
         return null;
@@ -95,7 +109,7 @@ export function writeActiveRunBinding(binding, storage = getSessionStorage()) {
     }
 }
 
-export function clearActiveRunBinding(chatIdentity, storage = getSessionStorage()) {
+export function clearActiveRunBinding(chatIdentity, storage = getBindingStorage()) {
     const chatKey = buildChatKey(chatIdentity);
     if (!chatKey || !storage) {
         return;
@@ -108,7 +122,7 @@ export function clearActiveRunBinding(chatIdentity, storage = getSessionStorage(
     }
 }
 
-export function syncActiveRunBindingFromState(state, storage = getSessionStorage()) {
+export function syncActiveRunBindingFromState(state, storage = getBindingStorage()) {
     const nextBinding = buildBindingFromState(state);
     if (!nextBinding) {
         if (state?.chatIdentity) {
@@ -296,6 +310,14 @@ function cloneChatIdentity(chatIdentity) {
 function getSessionStorage() {
     try {
         return globalThis.sessionStorage ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function getBindingStorage() {
+    try {
+        return globalThis.localStorage ?? null;
     } catch {
         return null;
     }

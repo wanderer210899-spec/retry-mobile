@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     buildBindingFromState,
     findLatestActiveRunBinding,
+    readActiveRunBinding,
     recoverBoundStatus,
 } from './run-binding.js';
 
@@ -174,18 +175,49 @@ test('findLatestActiveRunBinding returns the newest binding for the current brow
     assert.equal(binding?.chatIdentity?.chatId, 'chat-2');
 });
 
+test('readActiveRunBinding migrates legacy sessionStorage entries into localStorage', () => {
+    const chatIdentity = {
+        kind: 'character',
+        chatId: 'chat-legacy',
+        groupId: null,
+    };
+    const key = 'retry-mobile:active-run:character::chat-legacy::';
+    const localStorage = createStorage({});
+    const sessionStorage = createStorage({
+        [key]: JSON.stringify({
+            runId: 'run-legacy',
+            jobId: 'job-legacy',
+            sessionId: 'session-legacy',
+            chatIdentity,
+            updatedAt: '2026-04-21T12:00:00.000Z',
+        }),
+    });
+
+    const binding = readActiveRunBinding(chatIdentity, localStorage, {
+        legacyStorage: sessionStorage,
+    });
+    assert.equal(binding?.jobId, 'job-legacy');
+    assert.equal(localStorage.getItem(key) != null, true);
+});
+
 function createStorage(entries) {
     const store = new Map(Object.entries(entries));
-    const keys = [...store.keys()];
+    const keys = () => [...store.keys()];
     return {
         get length() {
-            return keys.length;
+            return keys().length;
         },
         key(index) {
-            return keys[index] ?? null;
+            return keys()[index] ?? null;
         },
         getItem(key) {
             return store.has(key) ? store.get(key) : null;
+        },
+        setItem(key, value) {
+            store.set(key, value);
+        },
+        removeItem(key) {
+            store.delete(key);
         },
     };
 }

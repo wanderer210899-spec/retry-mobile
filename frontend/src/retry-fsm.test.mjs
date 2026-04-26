@@ -19,6 +19,8 @@ function createHarness({
             nativeGraceSeconds: 30,
         },
     },
+    lockdownActive = true,
+    reconcilerActive = true,
 } = {}) {
     const calls = [];
     const logger = {
@@ -101,11 +103,12 @@ function createHarness({
         unsubscribeNativeObserver(payload) {
             calls.push({ port: 'st', method: 'unsubscribeNativeObserver', args: [payload] });
         },
-        enableInteractionGuard() {
-            calls.push({ port: 'st', method: 'enableInteractionGuard', args: [] });
+        setLockdown(active) {
+            calls.push({ port: 'st', method: 'setLockdown', args: [active] });
         },
-        disableInteractionGuard() {
-            calls.push({ port: 'st', method: 'disableInteractionGuard', args: [] });
+        lockdownActive() {
+            calls.push({ port: 'st', method: 'lockdownActive', args: [] });
+            return lockdownActive;
         },
         setGeneratingIndicator(payload) {
             calls.push({ port: 'st', method: 'setGeneratingIndicator', args: [payload] });
@@ -113,31 +116,48 @@ function createHarness({
         clearGeneratingIndicator(payload) {
             calls.push({ port: 'st', method: 'clearGeneratingIndicator', args: [payload] });
         },
-        flushPendingVisibleRender(payload) {
-            calls.push({ port: 'st', method: 'flushPendingVisibleRender', args: [payload] });
-            if (flushPendingVisibleRenderError) {
-                return Promise.reject(flushPendingVisibleRenderError);
-            }
-            return Promise.resolve(flushPendingVisibleRenderResult);
+        guardedReload() {
+            calls.push({ port: 'st', method: 'guardedReload', args: [] });
+            return Promise.resolve(true);
         },
         isVisible() {
             calls.push({ port: 'st', method: 'isVisible', args: [] });
             return visible;
         },
-        queueVisibleRender(payload) {
-            calls.push({ port: 'st', method: 'queueVisibleRender', args: [payload] });
-            return payload;
-        },
-        applyAcceptedOutput(payload) {
-            calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
-            if (applyAcceptedOutputError) {
-                return Promise.reject(applyAcceptedOutputError);
-            }
-            return Promise.resolve(applyAcceptedOutputResult);
-        },
-        guardedReload() {
-            calls.push({ port: 'st', method: 'guardedReload', args: [] });
-            return Promise.resolve(true);
+        reconciler: {
+            isActive() {
+                calls.push({ port: 'st', method: 'reconciler.isActive', args: [] });
+                return reconcilerActive;
+            },
+            queue(payload) {
+                calls.push({ port: 'st', method: 'queueVisibleRender', args: [payload] });
+                return payload;
+            },
+            applyStatus(payload) {
+                calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
+                if (applyAcceptedOutputError) {
+                    return Promise.reject(applyAcceptedOutputError);
+                }
+                return Promise.resolve(applyAcceptedOutputResult);
+            },
+            applyTerminal(payload) {
+                calls.push({ port: 'st', method: 'applyTerminal', args: [payload] });
+                calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
+                if (applyAcceptedOutputError) {
+                    return Promise.reject(applyAcceptedOutputError);
+                }
+                if (applyAcceptedOutputResult?.ok === false) {
+                    calls.push({ port: 'st', method: 'guardedReload', args: [] });
+                }
+                return Promise.resolve(applyAcceptedOutputResult);
+            },
+            flushPending(payload) {
+                calls.push({ port: 'st', method: 'flushPendingVisibleRender', args: [payload] });
+                if (flushPendingVisibleRenderError) {
+                    return Promise.reject(flushPendingVisibleRenderError);
+                }
+                return Promise.resolve(flushPendingVisibleRenderResult);
+            },
         },
     };
 
@@ -477,6 +497,69 @@ test('jobStarted enters RUNNING, starts callback-driven polling, and applies the
     assert.equal(typeof lastCall(calls, 'startPolling')?.args[2], 'function');
     assert.equal(typeof lastCall(calls, 'startPolling')?.args[3], 'function');
     assert.deepEqual(lastCall(calls, 'setGeneratingIndicator')?.args[0], chatIdentity);
+    assert.equal(
+        calls.filter((entry) => entry.method === 'setLockdown' && entry.args[0] === true).length >= 2,
+        true,
+    );
+});
+
+test('lockdown remains active across CAPTURING to RUNNING and clears on user stop', () => {
+    const { fsm, calls } = createHarness();
+    const chatIdentity = {
+        kind: 'character',
+        chatId: 'chat-1',
+        groupId: null,
+    };
+
+    fsm.arm({
+        chatIdentity,
+        intent: {
+            mode: 'toggle',
+        },
+    });
+    fsm.capture({
+        request: {
+            messages: ['hello'],
+        },
+    });
+    fsm.jobStarted({
+        jobId: 'job-1',
+    });
+    fsm.userStop();
+
+    const lockdownCalls = calls.filter((entry) => entry.method === 'setLockdown').map((entry) => entry.args[0]);
+    assert.deepEqual(lockdownCalls, [true, true, false]);
+});
+
+test('dev mode throws when frontend lockdown/reconciler contracts are violated', () => {
+    const previousDev = globalThis.__RM_DEV__;
+    globalThis.__RM_DEV__ = true;
+    try {
+        const { fsm } = createHarness({
+            lockdownActive: false,
+            reconcilerActive: false,
+        });
+        const chatIdentity = {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        };
+        fsm.arm({
+            chatIdentity,
+            intent: {
+                mode: 'toggle',
+            },
+        });
+        assert.throws(() => {
+            fsm.capture({
+                request: {
+                    messages: ['hello'],
+                },
+            });
+        }, /frontend_contract_violation/);
+    } finally {
+        globalThis.__RM_DEV__ = previousDev;
+    }
 });
 
 test('jobStarted provides a cadence selector that tracks lagging, caught-up, and hidden steady-state running', async () => {

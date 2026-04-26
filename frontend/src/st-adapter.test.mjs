@@ -1,79 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createStPort, normalizePendingVisibleRender } from './st-adapter.js';
-
-test('normalizePendingVisibleRender keeps queued completed payloads on accepted-output path', () => {
-    const original = {
-        kind: 'accepted_output',
-        chatIdentity: {
-            kind: 'character',
-            chatId: 'chat-1',
-            groupId: null,
-        },
-        status: {
-            jobId: 'job-1',
-            state: 'completed',
-        },
-    };
-
-    const normalized = normalizePendingVisibleRender(original);
-
-    assert.deepEqual(normalized, {
-        type: 'accepted_output',
-        payload: {
-            kind: 'accepted_output',
-            chatIdentity: {
-                kind: 'character',
-                chatId: 'chat-1',
-                groupId: null,
-            },
-            status: {
-                jobId: 'job-1',
-                state: 'completed',
-            },
-        },
-    });
-    assert.notStrictEqual(normalized.payload, original);
-    assert.equal(Object.prototype.hasOwnProperty.call(normalized.payload, 'terminalOutcome'), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(normalized.payload, 'outcome'), false);
-});
-
-test('normalizePendingVisibleRender leaves normal accepted-output patches on the incremental path', () => {
-    const original = {
-        kind: 'accepted_output',
-        chatIdentity: {
-            kind: 'character',
-            chatId: 'chat-1',
-            groupId: null,
-        },
-        status: {
-            jobId: 'job-1',
-            state: 'running',
-            targetMessageVersion: 2,
-        },
-    };
-
-    const normalized = normalizePendingVisibleRender(original);
-
-    assert.deepEqual(normalized, {
-        type: 'accepted_output',
-        payload: {
-            kind: 'accepted_output',
-            chatIdentity: {
-                kind: 'character',
-                chatId: 'chat-1',
-                groupId: null,
-            },
-            status: {
-                jobId: 'job-1',
-                state: 'running',
-                targetMessageVersion: 2,
-            },
-        },
-    });
-    assert.notStrictEqual(normalized.payload, original);
-});
+import { createStPort } from './st-adapter.js';
 
 test('clearGeneratingIndicator restores the currently viewed target chat', () => {
     const originalWindow = global.window;
@@ -176,80 +104,19 @@ test('clearGeneratingIndicator does not touch a different visible chat', () => {
     }
 });
 
-test('interaction guard is silent (tap hijack owns user warnings)', () => {
-    const originalWindow = global.window;
-    const originalDocument = global.document;
-
-    const calls = [];
-    const handlers = new Map();
-    const context = {
-        eventTypes: {
-            CHAT_COMPLETION_SETTINGS_READY: 'CHAT_COMPLETION_SETTINGS_READY',
-        },
-        eventSource: {
-            on(name, handler) {
-                handlers.set(name, handler);
-            },
-            off(name) {
-                handlers.delete(name);
-            },
-        },
-        getCurrentChatId() {
-            return 'chat-visible';
-        },
-    };
-
-    global.window = {
-        toastr: {
-            warning(message, title) {
-                calls.push(['toastr.warning', title, message]);
-            },
-        },
-        SillyTavern: {
-            getContext() {
-                return context;
-            },
-        },
-    };
-    global.document = {
-        visibilityState: 'visible',
-        hasFocus() {
-            return true;
-        },
-    };
-
-    try {
-        const stPort = createStPort();
-        stPort.enableInteractionGuard();
-        const handler = handlers.get('CHAT_COMPLETION_SETTINGS_READY');
-        assert.ok(handler, 'expected guard to subscribe to CHAT_COMPLETION_SETTINGS_READY');
-        handler({ dryRun: false, type: 'swipe' });
-
-        assert.equal(calls.length, 0);
-    } finally {
-        global.window = originalWindow;
-        global.document = originalDocument;
-    }
-});
-
-test('tap hijack blocks send clicks and shows interactionBlocked toast', () => {
+test('setLockdown blocks all configured click selectors and Enter send', () => {
     const originalWindow = global.window;
     const originalDocument = global.document;
 
     const calls = [];
     let clickHandler = null;
-
+    let keydownHandler = null;
+    let mutationCallback = null;
     const context = {
         getCurrentChatId() {
             return 'chat-visible';
         },
     };
-
-    const makeElement = (matchesSelector) => ({
-        closest(selector) {
-            return matchesSelector(selector) ? this : null;
-        },
-    });
 
     global.window = {
         toastr: {
@@ -266,46 +133,95 @@ test('tap hijack blocks send clicks and shows interactionBlocked toast', () => {
     global.document = {
         visibilityState: 'visible',
         addEventListener(name, handler, capture) {
-            if (name === 'click' && capture === true) {
+            if (capture !== true) {
+                return;
+            }
+            if (name === 'click') {
                 clickHandler = handler;
+            }
+            if (name === 'keydown') {
+                keydownHandler = handler;
             }
         },
         removeEventListener() {},
-        hasFocus() {
-            return true;
+        body: {},
+        getElementById(id) {
+            if (id !== 'send_but') {
+                return null;
+            }
+            return {
+                classList: {
+                    _set: new Set(['fa-solid', 'fa-paper-plane']),
+                    add(name) { this._set.add(name); },
+                    remove(name) { this._set.delete(name); },
+                    [Symbol.iterator]() { return this._set[Symbol.iterator](); },
+                },
+            };
         },
     };
+    global.MutationObserver = class {
+        constructor(callback) {
+            mutationCallback = callback;
+        }
+        observe() {}
+        disconnect() {}
+    };
+
+    const selectors = [
+        '#send_but',
+        '.last_mes .swipe_right',
+        '.last_mes .swipe_left',
+        '#option_regenerate',
+        '#option_continue',
+        '#mes_continue',
+        '#mes_impersonate',
+    ];
 
     try {
         const stPort = createStPort();
-        stPort.enableTapHijack();
+        stPort.setLockdown(true);
         assert.ok(clickHandler, 'expected tap hijack to register capture click handler');
+        assert.ok(keydownHandler, 'expected tap hijack to register capture keydown handler');
+        assert.ok(mutationCallback, 'expected lockdown to register mutation observer');
 
-        const event = {
-            target: makeElement((selector) => selector === '#send_but'),
-            preventDefault() {
-                calls.push('preventDefault');
-            },
-            stopImmediatePropagation() {
-                calls.push('stopImmediatePropagation');
-            },
-            stopPropagation() {
-                calls.push('stopPropagation');
-            },
-        };
-        clickHandler(event);
+        for (const selector of selectors) {
+            const event = {
+                target: {
+                    closest(candidate) {
+                        return candidate === selector ? this : null;
+                    },
+                },
+                preventDefault() { calls.push('preventDefault'); },
+                stopImmediatePropagation() { calls.push('stopImmediatePropagation'); },
+                stopPropagation() { calls.push('stopPropagation'); },
+            };
+            clickHandler(event);
+        }
 
-        assert.equal(calls.includes('preventDefault'), true);
-        assert.equal(calls.includes('stopImmediatePropagation'), true);
-        assert.equal(calls.includes('stopPropagation'), true);
+        keydownHandler({
+            key: 'Enter',
+            shiftKey: false,
+            target: {
+                closest(candidate) {
+                    return candidate === '#send_textarea' ? this : null;
+                },
+            },
+            preventDefault() { calls.push('preventDefault'); },
+            stopImmediatePropagation() { calls.push('stopImmediatePropagation'); },
+            stopPropagation() { calls.push('stopPropagation'); },
+        });
+        mutationCallback?.([]);
+
+        assert.equal(calls.filter((entry) => entry === 'preventDefault').length >= 8, true);
         assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'toastr.warning'), true);
     } finally {
         global.window = originalWindow;
         global.document = originalDocument;
+        delete global.MutationObserver;
     }
 });
 
-test('setSendBusy swaps send icon to spinner and restores', () => {
+test('setLockdown toggles send icon to spinner and restores on disable', () => {
     const originalWindow = global.window;
     const originalDocument = global.document;
 
@@ -344,26 +260,31 @@ test('setSendBusy swaps send icon to spinner and restores', () => {
     };
     global.document = {
         visibilityState: 'visible',
+        addEventListener() {},
+        removeEventListener() {},
+        body: {},
         getElementById(id) {
             return id === 'send_but' ? sendBut : null;
         },
-        hasFocus() {
-            return true;
-        },
+    };
+    global.MutationObserver = class {
+        observe() {}
+        disconnect() {}
     };
 
     try {
         const stPort = createStPort();
-        assert.equal(stPort.setSendBusy(true), true);
+        assert.equal(stPort.setLockdown(true), true);
         assert.equal(sendBut._classes().includes('fa-spinner'), true);
         assert.equal(sendBut._classes().includes('fa-spin'), true);
 
-        assert.equal(stPort.setSendBusy(false), true);
+        assert.equal(stPort.setLockdown(false), true);
         assert.equal(sendBut._classes().includes('fa-paper-plane'), true);
         assert.equal(sendBut._classes().includes('fa-spinner'), false);
     } finally {
         global.window = originalWindow;
         global.document = originalDocument;
+        delete global.MutationObserver;
     }
 });
 

@@ -2,7 +2,7 @@ import { fetchCapabilities, fetchChatState, getStructuredErrorFromApi } from './
 import { sendFrontendLogEvent } from './logs/retry-log.js';
 import { createStructuredError } from './retry-error.js';
 import { writeSettings, readSettings } from './settings.js';
-import { getChatIdentity, getContext, showToast } from './st-context.js';
+import { getChatIdentity, getContext, getEventTypes, showToast, subscribeEvent } from './st-context.js';
 import { PROTOCOL_VERSION } from './constants.js';
 import { createRuntime } from './core/runtime.js';
 import { isRunningLikeState } from './core/run-state.js';
@@ -15,7 +15,7 @@ import { createRetryFsm, RetryState } from './retry-fsm.js';
 import { createStPort } from './st-adapter.js';
 import { createBackendPort } from './backend-client.js';
 import { createAppPorts } from './app-ports.js';
-import { syncRuntimeFromFsm } from './app-runtime-sync.js';
+import { syncRuntimeFromFsm, updateRuntimeActiveJob } from './app-runtime-sync.js';
 import { chooseOperationalChatIdentity, resolveExpectedPreviousGeneration } from './start-payload.js';
 import { initializeI18n, setLanguage, t } from './i18n.js';
 import { shouldToastPluginOff, shouldToastPluginOn } from './plugin-toggle-toast.js';
@@ -249,11 +249,15 @@ export async function bootRetryMobile() {
         retryFsm,
         intentPort,
         baseBackendPort,
+        stPort,
         updateActiveJob,
         render,
         syncRuntimeFromFsm: (fsm) => syncRuntimeFromFsm(runtime, fsm),
         getCurrentChatIdentity: () => getChatIdentity(getContext()),
         toStructuredError,
+        subscribeEvent,
+        eventTypes: getEventTypes(getContext()),
+        logEvent: (event, summary, detail) => window.__rmLogEvent?.(event, summary, detail),
     });
 
     window.__rmTeardown?.();
@@ -268,6 +272,7 @@ export async function bootRetryMobile() {
             clearInterval(runtime.hostObserver);
             runtime.hostObserver = 0;
         }
+        restoreController.unsubscribeChatChangedRestore?.();
         unbindPageObservers(runtime);
     };
     window.__rmDispatch = (type, payload) => {
@@ -278,6 +283,7 @@ export async function bootRetryMobile() {
     ensurePanelMounted();
     bindHostObserver(ensurePanelMounted);
     bindPageObservers(runtime);
+    restoreController.subscribeChatChangedRestore();
     systemController.registerCommands();
 
     void systemController.refreshDiagnostics();
@@ -306,7 +312,9 @@ export async function bootRetryMobile() {
         render();
     });
     render();
-    void restoreController.restoreControlState();
+    if (getChatIdentity(getContext())?.chatId) {
+        void restoreController.restoreControlState();
+    }
 
     async function handleNativeReady(result) {
         const context = retryFsm.getContext();
@@ -408,19 +416,7 @@ export async function bootRetryMobile() {
     }
 
     function updateActiveJob(status, fallbackJobId = '') {
-        if (status) {
-            const statusChanged = buildActiveJobStatusRenderKey(runtime.activeJobStatus)
-                !== buildActiveJobStatusRenderKey(status);
-            runtime.activeJobStatus = status;
-            runtime.activeJobId = status.jobId || fallbackJobId || runtime.activeJobId || null;
-            runtime.activeJobStatusObservedAt = status.updatedAt || new Date().toISOString();
-            return statusChanged;
-        }
-
-        if (fallbackJobId) {
-            runtime.activeJobId = fallbackJobId;
-        }
-        return false;
+        return updateRuntimeActiveJob(runtime, status, fallbackJobId);
     }
 
     async function buildStartPayload(payload) {
@@ -617,29 +613,6 @@ export function unbindPageObservers(runtime) {
     handles.windowRef.removeEventListener('online', handles.onOnline);
     runtime.pageObserverHandles = null;
     return true;
-}
-
-function buildActiveJobStatusRenderKey(status) {
-    if (!status) {
-        return '';
-    }
-
-    return JSON.stringify({
-        jobId: String(status.jobId || ''),
-        runId: String(status.runId || ''),
-        state: String(status.state || ''),
-        acceptedCount: Number(status.acceptedCount || 0),
-        attemptCount: Number(status.attemptCount || 0),
-        targetMessageVersion: Number(status.targetMessageVersion || 0),
-        targetMessageIndex: Number(status.targetMessageIndex ?? -1),
-        structuredError: status.structuredError
-            ? {
-                code: String(status.structuredError.code || ''),
-                message: String(status.structuredError.message || ''),
-                detail: String(status.structuredError.detail || ''),
-            }
-            : null,
-    });
 }
 
 function cloneValue(value) {
