@@ -176,7 +176,7 @@ test('clearGeneratingIndicator does not touch a different visible chat', () => {
     }
 });
 
-test('interaction guard stops native generation attempts and fires a warning toast', () => {
+test('interaction guard is silent (tap hijack owns user warnings)', () => {
     const originalWindow = global.window;
     const originalDocument = global.document;
 
@@ -193,9 +193,6 @@ test('interaction guard stops native generation attempts and fires a warning toa
             off(name) {
                 handlers.delete(name);
             },
-        },
-        stopGeneration() {
-            calls.push('stopGeneration');
         },
         getCurrentChatId() {
             return 'chat-visible';
@@ -228,8 +225,142 @@ test('interaction guard stops native generation attempts and fires a warning toa
         assert.ok(handler, 'expected guard to subscribe to CHAT_COMPLETION_SETTINGS_READY');
         handler({ dryRun: false, type: 'swipe' });
 
-        assert.equal(calls.includes('stopGeneration'), true);
+        assert.equal(calls.length, 0);
+    } finally {
+        global.window = originalWindow;
+        global.document = originalDocument;
+    }
+});
+
+test('tap hijack blocks send clicks and shows interactionBlocked toast', () => {
+    const originalWindow = global.window;
+    const originalDocument = global.document;
+
+    const calls = [];
+    let clickHandler = null;
+
+    const context = {
+        getCurrentChatId() {
+            return 'chat-visible';
+        },
+    };
+
+    const makeElement = (matchesSelector) => ({
+        closest(selector) {
+            return matchesSelector(selector) ? this : null;
+        },
+    });
+
+    global.window = {
+        toastr: {
+            warning(message, title) {
+                calls.push(['toastr.warning', title, message]);
+            },
+        },
+        SillyTavern: {
+            getContext() {
+                return context;
+            },
+        },
+    };
+    global.document = {
+        visibilityState: 'visible',
+        addEventListener(name, handler, capture) {
+            if (name === 'click' && capture === true) {
+                clickHandler = handler;
+            }
+        },
+        removeEventListener() {},
+        hasFocus() {
+            return true;
+        },
+    };
+
+    try {
+        const stPort = createStPort();
+        stPort.enableTapHijack();
+        assert.ok(clickHandler, 'expected tap hijack to register capture click handler');
+
+        const event = {
+            target: makeElement((selector) => selector === '#send_but'),
+            preventDefault() {
+                calls.push('preventDefault');
+            },
+            stopImmediatePropagation() {
+                calls.push('stopImmediatePropagation');
+            },
+            stopPropagation() {
+                calls.push('stopPropagation');
+            },
+        };
+        clickHandler(event);
+
+        assert.equal(calls.includes('preventDefault'), true);
+        assert.equal(calls.includes('stopImmediatePropagation'), true);
+        assert.equal(calls.includes('stopPropagation'), true);
         assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'toastr.warning'), true);
+    } finally {
+        global.window = originalWindow;
+        global.document = originalDocument;
+    }
+});
+
+test('setSendBusy swaps send icon to spinner and restores', () => {
+    const originalWindow = global.window;
+    const originalDocument = global.document;
+
+    const makeEl = (classes) => {
+        const set = new Set(classes);
+        return {
+            classList: {
+                add(name) {
+                    set.add(name);
+                },
+                remove(name) {
+                    set.delete(name);
+                },
+                [Symbol.iterator]() {
+                    return set[Symbol.iterator]();
+                },
+            },
+            _classes() {
+                return Array.from(set).sort();
+            },
+        };
+    };
+
+    const sendBut = makeEl(['fa-solid', 'fa-paper-plane', 'interactable']);
+
+    global.window = {
+        SillyTavern: {
+            getContext() {
+                return {
+                    getCurrentChatId() {
+                        return 'chat-visible';
+                    },
+                };
+            },
+        },
+    };
+    global.document = {
+        visibilityState: 'visible',
+        getElementById(id) {
+            return id === 'send_but' ? sendBut : null;
+        },
+        hasFocus() {
+            return true;
+        },
+    };
+
+    try {
+        const stPort = createStPort();
+        assert.equal(stPort.setSendBusy(true), true);
+        assert.equal(sendBut._classes().includes('fa-spinner'), true);
+        assert.equal(sendBut._classes().includes('fa-spin'), true);
+
+        assert.equal(stPort.setSendBusy(false), true);
+        assert.equal(sendBut._classes().includes('fa-paper-plane'), true);
+        assert.equal(sendBut._classes().includes('fa-spinner'), false);
     } finally {
         global.window = originalWindow;
         global.document = originalDocument;

@@ -35,7 +35,9 @@ export function createStPort({
     let captureSession = null;
     let nativeController = null;
     let interactionGuard = null;
+    let tapHijack = null;
     let lastInteractionToastAt = 0;
+    let sendBusyOriginalIconClasses = null;
 
     return {
         getChatIdentity() {
@@ -53,6 +55,16 @@ export function createStPort({
         },
         disableInteractionGuard() {
             stopInteractionGuard();
+        },
+        enableTapHijack() {
+            stopTapHijack();
+            tapHijack = startTapHijackSession();
+        },
+        disableTapHijack() {
+            stopTapHijack();
+        },
+        setSendBusy(busy) {
+            return setSendButtonBusyVisual(Boolean(busy));
         },
         subscribeCapture(payload = {}) {
             stopCaptureSession();
@@ -131,17 +143,8 @@ export function createStPort({
         }
 
         const onBlocked = () => {
-            // Best effort: stop any conflicting native generation quickly.
-            try {
-                context.stopGeneration?.();
-            } catch {}
-
-            const now = Date.now();
-            if (now - lastInteractionToastAt < 1800) {
-                return;
-            }
-            lastInteractionToastAt = now;
-            showToast('warning', t('toasts.title'), t('toasts.interactionBlocked'));
+            // Interaction guard is best-effort and event-driven; keep it silent.
+            // User-facing warnings are emitted by the explicit tap hijack.
         };
 
         const maybeRegister = (name) => {
@@ -171,6 +174,78 @@ export function createStPort({
                 });
             },
         };
+    }
+
+    function startTapHijackSession() {
+        const handler = (event) => {
+            const target = event?.target;
+            const element = target && typeof target === 'object' && 'closest' in target
+                ? target
+                : null;
+            if (!element) {
+                return;
+            }
+
+            const hitSend = element.closest?.('#send_but');
+            const hitSwipeRight = element.closest?.('.last_mes .swipe_right');
+            if (!hitSend && !hitSwipeRight) {
+                return;
+            }
+
+            // Block the native click handlers (jQuery delegates in ST).
+            try {
+                event.preventDefault?.();
+                event.stopImmediatePropagation?.();
+                event.stopPropagation?.();
+            } catch {}
+
+            // Throttle warnings to avoid spam on repeated taps.
+            const now = Date.now();
+            if (now - lastInteractionToastAt < 1800) {
+                return;
+            }
+            lastInteractionToastAt = now;
+            showToast('warning', t('toasts.title'), t('toasts.interactionBlocked'));
+        };
+
+        document.addEventListener?.('click', handler, true);
+        return {
+            stop() {
+                document.removeEventListener?.('click', handler, true);
+            },
+        };
+    }
+
+    function setSendButtonBusyVisual(busy) {
+        if (!document?.getElementById) {
+            return false;
+        }
+        const el = document.getElementById('send_but');
+        if (!el?.classList) {
+            return false;
+        }
+
+        if (busy) {
+            if (!sendBusyOriginalIconClasses) {
+                sendBusyOriginalIconClasses = detectFaIconNameClasses(el);
+                if (sendBusyOriginalIconClasses.length === 0) {
+                    sendBusyOriginalIconClasses = ['fa-paper-plane'];
+                }
+            }
+
+            detectFaIconNameClasses(el).forEach((name) => el.classList.remove(name));
+            el.classList.add('fa-solid');
+            el.classList.add('fa-spinner');
+            el.classList.add('fa-spin');
+            return true;
+        }
+
+        el.classList.remove('fa-spinner');
+        el.classList.remove('fa-spin');
+        detectFaIconNameClasses(el).forEach((name) => el.classList.remove(name));
+        (sendBusyOriginalIconClasses || []).forEach((name) => el.classList.add(name));
+        sendBusyOriginalIconClasses = null;
+        return true;
     }
 
     async function observeNative(payload, signal) {
@@ -225,12 +300,39 @@ export function createStPort({
         nativeController = null;
     }
 
+    function stopTapHijack() {
+        if (tapHijack?.stop) {
+            tapHijack.stop();
+        }
+        tapHijack = null;
+    }
+
     function stopInteractionGuard() {
         if (interactionGuard?.stop) {
             interactionGuard.stop();
         }
         interactionGuard = null;
     }
+}
+
+function detectFaIconNameClasses(element) {
+    const classes = element?.classList ? Array.from(element.classList) : [];
+    return classes.filter((name) => (
+        name.startsWith('fa-')
+        && name !== 'fa-solid'
+        && name !== 'fa-regular'
+        && name !== 'fa-brands'
+        && name !== 'fa-spin'
+        && name !== 'fa-spinner'
+        && name !== 'fa-lg'
+        && name !== 'fa-fw'
+        && name !== 'fa-xs'
+        && name !== 'fa-sm'
+        && name !== 'fa-xl'
+        && name !== 'fa-2xl'
+        && name !== 'fa-pull-left'
+        && name !== 'fa-pull-right'
+    ));
 }
 
 function cloneValue(value) {

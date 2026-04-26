@@ -575,6 +575,8 @@ export function createRetryFsm({
         });
 
         stPort.enableInteractionGuard?.();
+        stPort.enableTapHijack?.();
+        stPort.setSendBusy?.(true);
         stPort.setGeneratingIndicator?.(clonePlain(resolveTargetChatIdentity(nextContext)));
         return {
             pollingToken: stringOrNull(pollingToken),
@@ -589,6 +591,8 @@ export function createRetryFsm({
             backendPort.stopPolling?.(previous.pollingToken);
         }
         stPort.disableInteractionGuard?.();
+        stPort.disableTapHijack?.();
+        stPort.setSendBusy?.(false);
         stPort.unsubscribeNativeObserver?.({
             runId: previous.runId,
             chatIdentity: clonePlain(previous.chatIdentity),
