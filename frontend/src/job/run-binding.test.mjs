@@ -75,6 +75,63 @@ test('recoverBoundStatus prefers same-session active runs before generic chat fa
     }]);
 });
 
+test('recoverBoundStatus treats /active 404 (plugin not yet mounted) as "no active run" instead of an unhandled rejection', async () => {
+    // Simulates the brief boot window after a SillyTavern restart where the
+    // plugin route table is not yet mounted. /active responds with the outer
+    // ST 404 instead of {} — without the 404-tolerant guard, this rejection
+    // would propagate up the recovery path and surface as a fatal panel
+    // error, even though the correct interpretation is "no active run".
+    const result = await recoverBoundStatus({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-404',
+            groupId: null,
+        },
+        sessionId: 'session-404',
+        readBinding() {
+            return null;
+        },
+        clearBinding() {},
+        async fetchStatus() {
+            throw new Error('fetchStatus should not run when no binding exists');
+        },
+        async fetchActive() {
+            const error = new Error('Not found');
+            error.status = 404;
+            throw error;
+        },
+    });
+
+    assert.equal(result.status, null);
+    assert.equal(result.source, 'none');
+});
+
+test('recoverBoundStatus still surfaces non-404 fetchActive errors so genuine failures are not silently swallowed', async () => {
+    await assert.rejects(
+        recoverBoundStatus({
+            chatIdentity: {
+                kind: 'character',
+                chatId: 'chat-500',
+                groupId: null,
+            },
+            sessionId: 'session-500',
+            readBinding() {
+                return null;
+            },
+            clearBinding() {},
+            async fetchStatus() {
+                throw new Error('not used');
+            },
+            async fetchActive() {
+                const error = new Error('Internal Server Error');
+                error.status = 500;
+                throw error;
+            },
+        }),
+        /Internal Server Error/,
+    );
+});
+
 test('findLatestActiveRunBinding returns the newest binding for the current browser session', () => {
     const storage = createStorage({
         'retry-mobile:active-run:chat-1': JSON.stringify({

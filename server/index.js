@@ -61,10 +61,30 @@ const ALLOWED_NATIVE_FAILURE_REASONS = new Set([
 const bootState = {
     ready: false,
     promise: null,
+    lastError: '',
 };
 
+// init() MUST register routes unconditionally. SillyTavern's plugin loader
+// awaits this call and only mounts the router under
+// `/api/plugins/<id>` if init resolves; if init rejects the entire plugin
+// disappears from the URL space and every request — including innocuous ones
+// like `/active` and `/i18n-catalog` — falls through to ST's outer 404 handler
+// (HTML "Not found" body, not JSON). That is exactly the failure shape we saw
+// in the panel screenshot and is the reason the frontend rendered raw i18n
+// keys: the catalog endpoint never existed, so `fetchI18nCatalog` rejected and
+// the FALLBACK_CATALOG (empty) won.
+//
+// Boot-time recovery (persisted job replay, ST runtime probe) MUST be allowed
+// to fail without taking the route table down with it. We surface the failure
+// through `/capabilities.backendBootError` so it is observable from the
+// frontend / system tab, but routes always come up.
 async function init(router) {
-    await ensureBackendReady();
+    try {
+        await ensureBackendReady();
+    } catch (error) {
+        bootState.lastError = error instanceof Error ? error.message : String(error);
+        console.error('[retry-mobile:backend] Boot recovery failed; continuing with degraded boot state so plugin routes still register:', error);
+    }
 
     router.get('/capabilities', (_request, response) => {
         const termux = getTermuxStatus();
@@ -83,6 +103,8 @@ async function init(router) {
             termuxCheckedAt: termux.checkedAt,
             uiLanguage: normalizeLanguage(installSource.uiLanguage || ''),
             supportedUiLanguages: getSupportedLanguages(),
+            backendBootError: bootState.lastError || '',
+            backendReady: bootState.ready === true,
         });
     });
 
@@ -649,6 +671,7 @@ async function ensureBackendReady() {
     }
 
     bootState.promise = (async () => {
+        bootState.lastError = '';
         const compatibility = await initializeStRuntime();
         configureJobStore({
             getUserDirectories,
@@ -656,7 +679,18 @@ async function ensureBackendReady() {
         });
         setPersistenceHandler(writeJobSnapshot);
         if (compatibility.userDirectoryScanSupport) {
-            await restorePersistedJobs();
+            // restorePersistedJobs() iterates persisted snapshots written by
+            // previous boots. A single corrupt or schema-incompatible snapshot
+            // historically rejected the whole boot promise, which (because
+            // init() awaited this) tore down plugin registration. Treat the
+            // restore as best-effort: the in-memory job store stays empty for
+            // failed snapshots, and routes still come up.
+            try {
+                await restorePersistedJobs();
+            } catch (error) {
+                bootState.lastError = error instanceof Error ? error.message : String(error);
+                console.error('[retry-mobile:backend] Persisted-job restore failed; plugin routes stay online with an empty in-memory store:', error);
+            }
         } else {
             console.warn('[retry-mobile:backend] Persisted-job restore scanning is unavailable:', compatibility.detail);
         }
@@ -664,54 +698,76 @@ async function ensureBackendReady() {
         bootState.promise = null;
     })();
 
-    await bootState.promise;
+    try {
+        await bootState.promise;
+    } catch (error) {
+        // Reset the cached promise so a future call can re-attempt boot
+        // instead of permanently re-throwing the cached rejection. The
+        // top-level init() try/catch ensures we don't tear down plugin
+        // registration regardless.
+        bootState.promise = null;
+        throw error;
+    }
 }
 
 async function restorePersistedJobs() {
     const snapshots = await loadPersistedJobSnapshots();
     for (const snapshot of snapshots) {
-        const job = createJob({
-            ...snapshot,
-            skipPersist: true,
-        });
-        ensureJobLog(job);
-
-        if (job.state !== 'running') {
-            continue;
+        // Per-snapshot try/catch: one corrupt or schema-incompatible snapshot
+        // must not abort the whole restore. The bad snapshot is logged and
+        // skipped; the remaining snapshots still get rehydrated and the
+        // outer boot promise still resolves — keeping plugin routes online.
+        try {
+            restoreSinglePersistedJob(snapshot);
+        } catch (error) {
+            const jobIdentity = String(snapshot?.jobId || snapshot?.runId || 'unknown');
+            console.error(`[retry-mobile:backend] Skipping unrestorable persisted job ${jobIdentity}:`, error);
         }
-
-        const recovery = inspectRecoverySnapshot(job);
-        const completed = recovery.reason === 'completed_on_recovery';
-        const structuredError = completed
-            ? null
-            : toStructuredError(createStructuredError(
-                recovery.reason,
-                getRecoveryMessage(recovery.reason),
-                recovery.detail,
-            ));
-
-        touchJob(job, {
-            state: completed ? 'completed' : 'failed',
-            phase: recovery.reason,
-            acceptedCount: Number.isFinite(Number(recovery.acceptedCount))
-                ? Number(recovery.acceptedCount)
-                : job.acceptedCount,
-            lastError: completed ? '' : structuredError.message,
-            structuredError,
-        });
-        appendJobLog(job, {
-            source: 'backend',
-            event: 'restored_after_restart',
-            summary: completed
-                ? 'Retry Mobile restored this job as completed after backend restart.'
-                : 'Retry Mobile restored this job as failed after backend restart.',
-            detail: {
-                recoveryReason: recovery.reason,
-                detail: recovery.detail,
-            },
-        });
-        pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
     }
+}
+
+function restoreSinglePersistedJob(snapshot) {
+    const job = createJob({
+        ...snapshot,
+        skipPersist: true,
+    });
+    ensureJobLog(job);
+
+    if (job.state !== 'running') {
+        return;
+    }
+
+    const recovery = inspectRecoverySnapshot(job);
+    const completed = recovery.reason === 'completed_on_recovery';
+    const structuredError = completed
+        ? null
+        : toStructuredError(createStructuredError(
+            recovery.reason,
+            getRecoveryMessage(recovery.reason),
+            recovery.detail,
+        ));
+
+    touchJob(job, {
+        state: completed ? 'completed' : 'failed',
+        phase: recovery.reason,
+        acceptedCount: Number.isFinite(Number(recovery.acceptedCount))
+            ? Number(recovery.acceptedCount)
+            : job.acceptedCount,
+        lastError: completed ? '' : structuredError.message,
+        structuredError,
+    });
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'restored_after_restart',
+        summary: completed
+            ? 'Retry Mobile restored this job as completed after backend restart.'
+            : 'Retry Mobile restored this job as failed after backend restart.',
+        detail: {
+            recoveryReason: recovery.reason,
+            detail: recovery.detail,
+        },
+    });
+    pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
 }
 
 function getRecoveryMessage(reason) {
@@ -938,5 +994,24 @@ module.exports = {
     _test: {
         extractReplayAuthContext,
         isAllowedNativeFailureReason,
+        restoreSinglePersistedJob,
+        restorePersistedJobsWith,
+        bootState,
     },
 };
+
+// Test-only helper: lets the unit test inject both a snapshot loader and a
+// per-snapshot processor so the resilience contract (one throw must not
+// abort the whole loop) can be verified in isolation, without touching the
+// real filesystem-backed job store.
+async function restorePersistedJobsWith(loadSnapshots, processSnapshot = restoreSinglePersistedJob) {
+    const snapshots = await loadSnapshots();
+    for (const snapshot of snapshots) {
+        try {
+            processSnapshot(snapshot);
+        } catch (error) {
+            const jobIdentity = String(snapshot?.jobId || snapshot?.runId || 'unknown');
+            console.error(`[retry-mobile:backend] Skipping unrestorable persisted job ${jobIdentity}:`, error);
+        }
+    }
+}

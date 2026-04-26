@@ -59,3 +59,75 @@ test('server allowlist covers every failure code the frontend can emit', () => {
         );
     }
 });
+
+test('init() registers all plugin routes even when boot recovery throws — otherwise SillyTavern returns its outer 404 for every endpoint', async () => {
+    // Build a fake express-style router that just records every registration.
+    const registrations = [];
+    const router = {
+        get(path) {
+            registrations.push({ method: 'GET', path });
+        },
+        post(path) {
+            registrations.push({ method: 'POST', path });
+        },
+        delete(path) {
+            registrations.push({ method: 'DELETE', path });
+        },
+    };
+
+    // Force a clean boot path: clear the cached state so this test exercises
+    // the init() try/catch wiring, not a previously-resolved boot.
+    plugin._test.bootState.ready = false;
+    plugin._test.bootState.promise = null;
+    plugin._test.bootState.lastError = '';
+
+    // init() should resolve without throwing even when ensureBackendReady
+    // throws internally (which it will here because there is no SillyTavern
+    // src/users.js next to the test process). The contract under test:
+    //   route registration MUST happen unconditionally.
+    await assert.doesNotReject(() => plugin.init(router));
+
+    const registeredPaths = registrations.map((r) => `${r.method} ${r.path}`);
+    const expectedRoutes = [
+        'GET /capabilities',
+        'GET /i18n-catalog',
+        'GET /active',
+        'GET /status/:jobId',
+    ];
+    for (const expected of expectedRoutes) {
+        assert.ok(
+            registeredPaths.includes(expected),
+            `expected route "${expected}" to be registered, got: ${JSON.stringify(registeredPaths)}`,
+        );
+    }
+});
+
+test('restorePersistedJobsWith() skips a corrupt snapshot and still processes the remaining ones — one bad snapshot must not kill the whole boot', async () => {
+    const processed = [];
+    const snapshots = [
+        { jobId: 'good-1' },
+        { jobId: 'poison', boom: true },
+        { jobId: 'good-2' },
+    ];
+
+    const processSnapshot = (snapshot) => {
+        if (snapshot?.boom) {
+            throw new Error('simulated unrestorable snapshot');
+        }
+        processed.push(snapshot.jobId);
+    };
+
+    const originalConsoleError = console.error;
+    console.error = () => {};
+    try {
+        await assert.doesNotReject(() => plugin._test.restorePersistedJobsWith(
+            async () => snapshots,
+            processSnapshot,
+        ));
+    } finally {
+        console.error = originalConsoleError;
+    }
+
+    assert.deepEqual(processed, ['good-1', 'good-2'],
+        'restore loop must continue past the poison snapshot and still rehydrate the survivors');
+});

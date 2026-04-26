@@ -149,29 +149,47 @@ export async function recoverBoundStatus({
     }
 
     if (sessionId) {
-        const sameSessionActive = await fetchActive(chatIdentity, {
-            sessionId,
-            sameSessionOnly: true,
-        });
-        if (isRunningStatus(sameSessionActive) && isStatusForChat(sameSessionActive, chatIdentity)) {
-            return {
-                status: sameSessionActive,
-                source: 'same_session_active',
-                binding: null,
-            };
+        try {
+            const sameSessionActive = await fetchActive(chatIdentity, {
+                sessionId,
+                sameSessionOnly: true,
+            });
+            if (isRunningStatus(sameSessionActive) && isStatusForChat(sameSessionActive, chatIdentity)) {
+                return {
+                    status: sameSessionActive,
+                    source: 'same_session_active',
+                    binding: null,
+                };
+            }
+        } catch (error) {
+            // A 404 here means the plugin route is not (yet) mounted — most
+            // commonly during a brief boot window before SillyTavern finishes
+            // registering the plugin, or after an install/restart. Treat it
+            // exactly like "no active run found" instead of letting the error
+            // propagate as a fatal recovery failure that would surface in the
+            // panel error box and block subsequent flows.
+            if (Number(error?.status) !== 404) {
+                throw error;
+            }
         }
     }
 
-    const active = await fetchActive(chatIdentity, {
-        sessionId,
-        sameSessionOnly: false,
-    });
-    if (isRunningStatus(active) && isStatusForChat(active, chatIdentity)) {
-        return {
-            status: active,
-            source: 'active',
-            binding: null,
-        };
+    try {
+        const active = await fetchActive(chatIdentity, {
+            sessionId,
+            sameSessionOnly: false,
+        });
+        if (isRunningStatus(active) && isStatusForChat(active, chatIdentity)) {
+            return {
+                status: active,
+                source: 'active',
+                binding: null,
+            };
+        }
+    } catch (error) {
+        if (Number(error?.status) !== 404) {
+            throw error;
+        }
     }
 
     return {
