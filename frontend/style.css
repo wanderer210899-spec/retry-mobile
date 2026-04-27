@@ -1,3 +1,16 @@
+/*
+ * Reserve scrollbar gutter on the chat container so message DOM patching
+ * (updateMessageBlock + swipe.refresh in retry-mobile/st-operations.js)
+ * cannot toggle the scrollbar's visibility per-frame, which previously
+ * shifted #chat width and reflowed message text every retry attempt.
+ *
+ * `stable` keeps the gutter reserved even when the content fits, which is
+ * the only way to keep width constant while content height oscillates.
+ */
+#chat {
+    scrollbar-gutter: stable;
+}
+
 /* ── Token map ─────────────────────────────────────────────────── */
 #retry-mobile-panel {
     /* Keep only theme-forward tokens (avoid building our own “surface”). */

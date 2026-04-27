@@ -1,7 +1,9 @@
+// Only block controls that *trigger generation*. `.last_mes .swipe_left`
+// merely navigates between existing swipes (no API call), so blocking it
+// also blocks the user's "back" gesture during retry without justification.
 const BLOCKED_CLICK_SELECTORS = [
     '#send_but',
     '.last_mes .swipe_right',
-    '.last_mes .swipe_left',
     '#option_regenerate',
     '#option_continue',
     '#mes_continue',
@@ -85,9 +87,6 @@ export function createSessionLockdown({
             if (!blockedSelector) {
                 return;
             }
-            // #region agent log
-            fetch('http://127.0.0.1:7536/ingest/05a89a81-df92-43ea-a660-ce4e4687905f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22a0c7'},body:JSON.stringify({sessionId:'22a0c7',runId:'pre-fix',hypothesisId:'A',location:'frontend/src/ui/session-lockdown.js:clickHandler',message:'Lockdown blocked click',data:{blockedSelector,tag:String(element.tagName||''),id:String(element.id||''),className:String(element.className||''),closestLastMes:Boolean(element.closest?.('.last_mes')),closestSwipeLeft:Boolean(element.closest?.('.swipe_left')),closestSwipeRight:Boolean(element.closest?.('.swipe_right'))},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
             blockEvent(event);
             if (shouldToastForBlockedSelector(blockedSelector)) {
                 emitBlockedToast({
@@ -105,9 +104,6 @@ export function createSessionLockdown({
 
             // Block enter submit from the chat textarea.
             if (event?.key === 'Enter' && !event?.shiftKey && matchesAnySelector(element, ENTER_BLOCK_SELECTORS)) {
-                // #region agent log
-                fetch('http://127.0.0.1:7536/ingest/05a89a81-df92-43ea-a660-ce4e4687905f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22a0c7'},body:JSON.stringify({sessionId:'22a0c7',runId:'pre-fix',hypothesisId:'B',location:'frontend/src/ui/session-lockdown.js:keydownHandler',message:'Lockdown blocked Enter submit',data:{key:String(event?.key||''),shiftKey:Boolean(event?.shiftKey),tag:String(element.tagName||''),id:String(element.id||''),className:String(element.className||'')},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
                 blockEvent(event);
                 emitBlockedToast({
                     source: 'blocked_send',
@@ -116,12 +112,13 @@ export function createSessionLockdown({
                 return;
             }
 
-            // Block common generation shortcuts while retry owns the run.
+            // Block only generation shortcuts (Ctrl/Cmd/Alt + ArrowRight regen,
+            // Ctrl/Cmd/Alt + ArrowLeft is back-navigation in some themes but is
+            // never a generation trigger in stock SillyTavern). We keep both
+            // keys here because BLOCKED_SHORTCUT_KEYS guards modifier+arrow
+            // shortcuts that map to regenerate/swipe in user-installed themes.
             const hasShortcutModifier = Boolean(event?.ctrlKey || event?.metaKey || event?.altKey);
             if (hasShortcutModifier && BLOCKED_SHORTCUT_KEYS.has(String(event?.key || ''))) {
-                // #region agent log
-                fetch('http://127.0.0.1:7536/ingest/05a89a81-df92-43ea-a660-ce4e4687905f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22a0c7'},body:JSON.stringify({sessionId:'22a0c7',runId:'pre-fix',hypothesisId:'B',location:'frontend/src/ui/session-lockdown.js:keydownHandler',message:'Lockdown blocked shortcut',data:{key:String(event?.key||''),ctrlKey:Boolean(event?.ctrlKey),metaKey:Boolean(event?.metaKey),altKey:Boolean(event?.altKey)},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
                 blockEvent(event);
             }
         };
@@ -164,15 +161,19 @@ export function createSessionLockdown({
             if (!startedOnLastMessage) {
                 return;
             }
-
-            // #region agent log
-            fetch('http://127.0.0.1:7536/ingest/05a89a81-df92-43ea-a660-ce4e4687905f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22a0c7'},body:JSON.stringify({sessionId:'22a0c7',runId:'pre-fix',hypothesisId:'C',location:'frontend/src/ui/session-lockdown.js:touchEndHandler',message:'Lockdown blocked regen swipe gesture (touch)',data:{deltaX,deltaY,absX,absY,targetTag:String(element.tagName||''),targetId:String(element.id||''),startedOnLastMessage},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
+            // Right-to-left finger movement (deltaX < 0) is the SillyTavern
+            // "next swipe" gesture which generates a new message on the last
+            // message. Left-to-right (deltaX > 0) just navigates back through
+            // existing swipes, which never triggers generation, so leave it
+            // alone — that gesture is the user's "swipe back" and must work.
+            if (deltaX >= 0) {
+                return;
+            }
 
             blockEvent(event);
             emitBlockedToast({
                 source: 'blocked_swipe',
-                swipeDirection: deltaX < 0 ? 'right_to_left' : 'left_to_right',
+                swipeDirection: 'right_to_left',
             });
         };
 
@@ -217,15 +218,17 @@ export function createSessionLockdown({
             if (!isHorizontalSwipe || !startedOnLastMessage) {
                 return;
             }
-
-            // #region agent log
-            fetch('http://127.0.0.1:7536/ingest/05a89a81-df92-43ea-a660-ce4e4687905f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22a0c7'},body:JSON.stringify({sessionId:'22a0c7',runId:'pre-fix',hypothesisId:'C',location:'frontend/src/ui/session-lockdown.js:pointerUpHandler',message:'Lockdown blocked regen swipe gesture (pointer)',data:{deltaX,deltaY,absX,absY,targetTag:String(element.tagName||''),targetId:String(element.id||''),startedOnLastMessage},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
+            // Same direction guard as the touch handler: only the "next swipe"
+            // gesture (deltaX < 0) actually triggers generation. Allow back
+            // navigation (deltaX >= 0) through unchanged.
+            if (deltaX >= 0) {
+                return;
+            }
 
             blockEvent(event);
             emitBlockedToast({
                 source: 'blocked_swipe',
-                swipeDirection: deltaX < 0 ? 'right_to_left' : 'left_to_right',
+                swipeDirection: 'right_to_left',
             });
         };
 
@@ -335,12 +338,7 @@ export function createSessionLockdown({
         const title = String(translate?.('toasts.title') || 'Retry Mobile');
         const message = String(translate?.('toasts.interactionBlocked') || 'Interaction is blocked while retry is running.');
         showToast?.('warning', title, message);
-
-        try {
-            // #region agent log
-            fetch('http://127.0.0.1:7536/ingest/05a89a81-df92-43ea-a660-ce4e4687905f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22a0c7'},body:JSON.stringify({sessionId:'22a0c7',runId:'pre-fix',hypothesisId:'D',location:'frontend/src/ui/session-lockdown.js:emitBlockedToast',message:'Lockdown emitted blocked toast',data:detail||{},timestamp:Date.now()})}).catch(()=>{});
-            // #endregion
-        } catch {}
+        void detail;
     }
 }
 
@@ -365,11 +363,11 @@ function shouldToastForBlockedSelector(selector) {
     }
     // Only toast for:
     // - sending while retry owns the session
-    // - any generation-triggering controls (regen/continue/impersonate/swipe arrows)
-    // Never toast for passive navigation (scrolling/swiping other messages is not blocked).
+    // - any generation-triggering controls (regen/continue/impersonate/right swipe)
+    // Never toast for passive navigation (scrolling, .swipe_left back-nav, or
+    // swiping other messages — those are not blocked).
     return selector === '#send_but'
         || selector === '.last_mes .swipe_right'
-        || selector === '.last_mes .swipe_left'
         || selector === '#option_regenerate'
         || selector === '#option_continue'
         || selector === '#mes_continue'

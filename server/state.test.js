@@ -4,6 +4,8 @@ const assert = require('node:assert/strict');
 const {
     buildChatKey,
     createJob,
+    getJobByChat,
+    getJobByChatSession,
     getLatestJobByChat,
     jobs,
 } = require('./state');
@@ -64,6 +66,61 @@ test('getLatestJobByChat returns the newest job for the same chat, including ter
 
     const latest = getLatestJobByChat(chatIdentity);
     assert.equal(latest?.jobId, 'job-new-completed');
+
+    jobs.clear();
+});
+
+test('getJobByChat ignores running jobs whose cancellation has been requested so a fresh /start can succeed', () => {
+    jobs.clear();
+
+    const chatIdentity = createIdentity('chat-stop-start');
+
+    createJob({
+        jobId: 'job-cancelling',
+        runId: 'run-cancelling',
+        state: 'running',
+        cancelRequested: true,
+        updatedAt: '2026-04-27T22:00:00.000Z',
+        chatIdentity,
+        chatKey: buildChatKey(chatIdentity),
+        ownerSessionId: 'session-A',
+        userContext: { handle: 'default-user', directories: {} },
+        skipPersist: true,
+    });
+
+    assert.equal(
+        getJobByChat(chatIdentity),
+        null,
+        'a cancelling job must NOT block a new start on the same chat',
+    );
+    assert.equal(
+        getJobByChatSession(chatIdentity, 'session-A'),
+        null,
+        'a cancelling job must NOT be reported as the active session job either',
+    );
+
+    createJob({
+        jobId: 'job-fresh-running',
+        runId: 'run-fresh-running',
+        state: 'running',
+        cancelRequested: false,
+        updatedAt: '2026-04-27T22:00:01.000Z',
+        chatIdentity,
+        chatKey: buildChatKey(chatIdentity),
+        ownerSessionId: 'session-A',
+        userContext: { handle: 'default-user', directories: {} },
+        skipPersist: true,
+    });
+
+    assert.equal(
+        getJobByChat(chatIdentity)?.jobId,
+        'job-fresh-running',
+        'the fresh non-cancelling running job must surface as the active job',
+    );
+    assert.equal(
+        getJobByChatSession(chatIdentity, 'session-A')?.jobId,
+        'job-fresh-running',
+    );
 
     jobs.clear();
 });

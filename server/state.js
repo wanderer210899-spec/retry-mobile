@@ -93,7 +93,12 @@ function getJob(jobId) {
 function getJobByChat(chatIdentity) {
     const chatKey = buildChatKey(chatIdentity);
     for (const job of jobs.values()) {
-        if (job.chatKey === chatKey && job.state === 'running') {
+        // A job whose cancellation has been requested is winding down and
+        // must not block a fresh /start from the same chat. The cancelling
+        // job continues to its own terminal state (`cancelled`) on its own
+        // anchors; the new job uses fresh anchor IDs so the two cannot
+        // collide on the chat file.
+        if (job.chatKey === chatKey && job.state === 'running' && !job.cancelRequested) {
             return job;
         }
     }
@@ -129,7 +134,12 @@ function getJobByChatSession(chatIdentity, ownerSessionId) {
     }
 
     for (const job of jobs.values()) {
-        if (job.chatKey === chatKey && job.state === 'running' && String(job.ownerSessionId || '') === sessionId) {
+        if (
+            job.chatKey === chatKey
+            && job.state === 'running'
+            && !job.cancelRequested
+            && String(job.ownerSessionId || '') === sessionId
+        ) {
             return job;
         }
     }

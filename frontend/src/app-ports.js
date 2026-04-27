@@ -120,10 +120,15 @@ export function handleStartJobFailure({
     const attachedStatus = getAttachedJobStatusFromStartError(error);
     if (attachedStatus?.jobId) {
         const current = retryFsm.getContext();
+        // Compare against the conflicting job's runId (from the 409 payload),
+        // not against payload.runId — those are the SAME value and the guard
+        // would always pass, allowing us to re-attach to a cancelling job from
+        // a previous Stop. With attachedStatus.runId we only attach when the
+        // running conflict really belongs to this capture run.
         if (shouldAttachRunningConflict(
             retryFsm.getState(),
             current.runId,
-            payload.runId,
+            attachedStatus.runId,
         )) {
             updateActiveJob(attachedStatus, attachedStatus.jobId);
             retryFsm.restoreRunning({

@@ -167,14 +167,20 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
         disconnect() {}
     };
 
-    const selectors = [
+    // Generation-triggering controls — must be blocked while retry owns the
+    // session.
+    const blockedSelectors = [
         '#send_but',
         '.last_mes .swipe_right',
-        '.last_mes .swipe_left',
         '#option_regenerate',
         '#option_continue',
         '#mes_continue',
         '#mes_impersonate',
+    ];
+    // Pure-navigation controls — must NOT be blocked, otherwise the user can't
+    // step back through existing swipes during a retry.
+    const unblockedSelectors = [
+        '.last_mes .swipe_left',
     ];
 
     try {
@@ -184,16 +190,30 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
         assert.ok(keydownHandler, 'expected tap hijack to register capture keydown handler');
         assert.ok(mutationCallback, 'expected lockdown to register mutation observer');
 
-        for (const selector of selectors) {
+        for (const selector of blockedSelectors) {
             const event = {
                 target: {
                     closest(candidate) {
                         return candidate === selector ? this : null;
                     },
                 },
-                preventDefault() { calls.push('preventDefault'); },
-                stopImmediatePropagation() { calls.push('stopImmediatePropagation'); },
-                stopPropagation() { calls.push('stopPropagation'); },
+                preventDefault() { calls.push(['preventDefault', selector]); },
+                stopImmediatePropagation() { calls.push(['stopImmediatePropagation', selector]); },
+                stopPropagation() { calls.push(['stopPropagation', selector]); },
+            };
+            clickHandler(event);
+        }
+
+        for (const selector of unblockedSelectors) {
+            const event = {
+                target: {
+                    closest(candidate) {
+                        return candidate === selector ? this : null;
+                    },
+                },
+                preventDefault() { calls.push(['preventDefault', selector]); },
+                stopImmediatePropagation() { calls.push(['stopImmediatePropagation', selector]); },
+                stopPropagation() { calls.push(['stopPropagation', selector]); },
             };
             clickHandler(event);
         }
@@ -206,13 +226,29 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
                     return candidate === '#send_textarea' ? this : null;
                 },
             },
-            preventDefault() { calls.push('preventDefault'); },
-            stopImmediatePropagation() { calls.push('stopImmediatePropagation'); },
-            stopPropagation() { calls.push('stopPropagation'); },
+            preventDefault() { calls.push(['preventDefault', 'enter_submit']); },
+            stopImmediatePropagation() { calls.push(['stopImmediatePropagation', 'enter_submit']); },
+            stopPropagation() { calls.push(['stopPropagation', 'enter_submit']); },
         });
         mutationCallback?.([]);
 
-        assert.equal(calls.filter((entry) => entry === 'preventDefault').length >= 8, true);
+        const blockedHits = calls.filter((entry) => Array.isArray(entry)
+            && entry[0] === 'preventDefault'
+            && (blockedSelectors.includes(entry[1]) || entry[1] === 'enter_submit'));
+        assert.equal(
+            blockedHits.length,
+            blockedSelectors.length + 1,
+            'every generation-triggering selector and the textarea Enter must be blocked',
+        );
+
+        const swipeLeftHits = calls.filter((entry) => Array.isArray(entry)
+            && entry[1] === '.last_mes .swipe_left');
+        assert.equal(
+            swipeLeftHits.length,
+            0,
+            'swipe_left back-navigation must not be blocked or it cannot be used during retry',
+        );
+
         assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'toastr.warning'), true);
     } finally {
         global.window = originalWindow;
