@@ -109,6 +109,10 @@ export function createSessionLockdown({
                 fetch('http://127.0.0.1:7536/ingest/05a89a81-df92-43ea-a660-ce4e4687905f',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'22a0c7'},body:JSON.stringify({sessionId:'22a0c7',runId:'pre-fix',hypothesisId:'B',location:'frontend/src/ui/session-lockdown.js:keydownHandler',message:'Lockdown blocked Enter submit',data:{key:String(event?.key||''),shiftKey:Boolean(event?.shiftKey),tag:String(element.tagName||''),id:String(element.id||''),className:String(element.className||'')},timestamp:Date.now()})}).catch(()=>{});
                 // #endregion
                 blockEvent(event);
+                emitBlockedToast({
+                    source: 'blocked_send',
+                    kind: 'enter_submit',
+                });
                 return;
             }
 
@@ -359,9 +363,17 @@ function shouldToastForBlockedSelector(selector) {
     if (!selector) {
         return false;
     }
-    return selector === '.last_mes .swipe_right'
+    // Only toast for:
+    // - sending while retry owns the session
+    // - any generation-triggering controls (regen/continue/impersonate/swipe arrows)
+    // Never toast for passive navigation (scrolling/swiping other messages is not blocked).
+    return selector === '#send_but'
+        || selector === '.last_mes .swipe_right'
         || selector === '.last_mes .swipe_left'
-        || selector === '#option_regenerate';
+        || selector === '#option_regenerate'
+        || selector === '#option_continue'
+        || selector === '#mes_continue'
+        || selector === '#mes_impersonate';
 }
 
 function matchesAnySelector(element, selectors) {
