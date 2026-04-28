@@ -2,6 +2,7 @@ import {
     cancelBackendJob,
     confirmNativeJob,
     fetchActiveJob,
+    fetchLatestJob as fetchLatestJobApi,
     fetchJobStatus,
     reportFrontendPresence as postFrontendPresence,
     reportNativeFailure as postNativeFailure,
@@ -26,6 +27,7 @@ export function createBackendPort() {
         stopPolling,
         cancelJob,
         fetchActiveJob,
+        fetchLatestJob,
     };
 
     async function startJob(payload) {
@@ -46,6 +48,10 @@ export function createBackendPort() {
 
     async function pollStatus(jobId) {
         return fetchJobStatus(jobId);
+    }
+
+    async function fetchLatestJob(identity) {
+        return fetchLatestJobApi(identity);
     }
 
     function startPolling(jobId, onStatus, onError, selectCadence = null) {

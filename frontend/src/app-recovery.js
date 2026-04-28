@@ -219,6 +219,32 @@ export function createRestoreController({
                     }
                     return;
                 }
+
+                // If the browser was suspended while the backend finished writing accepted
+                // swipes, the in-memory chat can be stale even though the run is already
+                // terminal. In that case, reconcile against the latest backend snapshot for
+                // the *current* chat to avoid requiring a full page refresh.
+                if (sameChat(chatIdentity, currentChatIdentity) && baseBackendPort?.fetchLatestJob && stPort?.reconciler?.reconcileAfterRestore) {
+                    try {
+                        const latest = await baseBackendPort.fetchLatestJob(chatIdentity);
+                        const latestState = String(latest?.state || '');
+                        if (latest?.jobId
+                            && latestState
+                            && latestState !== 'running'
+                            && Number(latest?.targetMessageVersion) > 0) {
+                            void stPort.reconciler.reconcileAfterRestore({
+                                kind: 'accepted_output',
+                                chatIdentity: latest.chatIdentity || chatIdentity,
+                                status: latest,
+                            });
+                            return;
+                        }
+                    } catch (error) {
+                        if (Number(error?.status) !== 404) {
+                            throw error;
+                        }
+                    }
+                }
             }
 
             if (intent?.engaged
