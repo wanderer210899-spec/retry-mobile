@@ -34,6 +34,7 @@ function createHarness({
     let runCounter = 0;
     let pollStatusHandler = null;
     let pollErrorHandler = null;
+    let pollStatusResult = null;
     let visible = true;
     let applyAcceptedOutputResult = { ok: true };
     let applyAcceptedOutputError = null;
@@ -165,6 +166,10 @@ function createHarness({
         startJob(payload) {
             calls.push({ port: 'backend', method: 'startJob', args: [payload] });
         },
+        pollStatus(jobId) {
+            calls.push({ port: 'backend', method: 'pollStatus', args: [jobId] });
+            return Promise.resolve(pollStatusResult);
+        },
         startPolling(jobId, onStatus, onError, selectCadence) {
             pollStatusHandler = onStatus;
             pollErrorHandler = onError;
@@ -230,6 +235,9 @@ function createHarness({
         },
         setFlushPendingVisibleRenderError(nextError) {
             flushPendingVisibleRenderError = nextError;
+        },
+        setPollStatusResult(nextResult) {
+            pollStatusResult = nextResult;
         },
     };
 }
@@ -950,6 +958,131 @@ test('resume keeps pending renders queued while the tab is still hidden', () => 
         targetVersion: 4,
     });
     assert.equal(calls.some((entry) => entry.method === 'flushPendingVisibleRender'), false);
+});
+
+test('resume triggers immediate pollStatus when visible and no pendingVisibleRender is queued', async () => {
+    const { fsm, calls, setPollStatusResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hello'] }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setPollStatusResult({ state: 'running', jobId: 'job-1', targetMessageVersion: 0 });
+
+    fsm.resume({
+        reason: 'page.visible',
+        isVisible: true,
+        pendingVisibleRender: null,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.ok(
+        calls.some((entry) => entry.port === 'backend' && entry.method === 'pollStatus' && entry.args[0] === 'job-1'),
+        'should immediately poll the backend on page.visible with no pending render',
+    );
+});
+
+test('resume does NOT trigger immediate pollStatus when pendingVisibleRender is already set', async () => {
+    const { fsm, calls, setPollStatusResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    const pendingVisibleRender = {
+        kind: 'accepted_output',
+        chatIdentity,
+        status: { jobId: 'job-1', state: 'running', targetMessageVersion: 2 },
+    };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hello'] }, target });
+    fsm.jobStarted({ jobId: 'job-1', target, pendingVisibleRender });
+
+    setPollStatusResult({ state: 'completed', jobId: 'job-1', targetMessageVersion: 2 });
+
+    fsm.resume({
+        reason: 'page.visible',
+        isVisible: true,
+        pendingVisibleRender,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(
+        calls.filter((entry) => entry.port === 'backend' && entry.method === 'pollStatus').length,
+        0,
+        'should not fire an extra immediate poll when a pending render is already queued',
+    );
+});
+
+test('resume does NOT trigger immediate pollStatus when not visible', async () => {
+    const { fsm, calls, setPollStatusResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hello'] }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setPollStatusResult({ state: 'running', jobId: 'job-1', targetMessageVersion: 0 });
+
+    fsm.resume({
+        reason: 'network.online',
+        isVisible: false,
+        pendingVisibleRender: null,
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(
+        calls.filter((entry) => entry.port === 'backend' && entry.method === 'pollStatus').length,
+        0,
+        'should not fire an immediate poll when the page is still hidden',
+    );
+});
+
+test('resume immediate poll drives jobCompleted when backend returns completed', async () => {
+    const { fsm, calls, setPollStatusResult, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hello'] }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setApplyAcceptedOutputResult({ ok: true });
+    setPollStatusResult({
+        state: 'completed',
+        jobId: 'job-1',
+        targetMessageVersion: 1,
+        targetMessageIndex: 1,
+        targetAssistantAnchorId: 'anchor-1',
+        targetMessage: {
+            mes: 'reply',
+            extra: { retryMobileAssistantAnchorId: 'anchor-1' },
+        },
+    });
+
+    fsm.resume({
+        reason: 'page.visible',
+        isVisible: true,
+        pendingVisibleRender: null,
+    });
+
+    // Let the immediate-poll promise chain resolve fully.
+    for (let i = 0; i < 6; i++) {
+        await Promise.resolve();
+    }
+
+    assert.ok(
+        calls.some((entry) => entry.port === 'backend' && entry.method === 'pollStatus'),
+        'immediate poll should have fired',
+    );
+    assert.notEqual(fsm.getState(), RetryState.RUNNING, 'FSM should have left RUNNING after completed poll');
 });
 
 test('jobCompleted re-arms toggle mode without a same-chat restriction', () => {

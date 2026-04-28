@@ -447,6 +447,26 @@ export function createRetryFsm({
                 });
         }
 
+        // When the page becomes visible but no pending render was queued, the
+        // polling loop may have been suspended by the mobile browser while in
+        // background and hasn't yet picked up the completed job status. The
+        // slow cadence (or a paused timer) means the user could wait a long
+        // time before the message appears. A single immediate poll here catches
+        // any terminal or intermediate status without disrupting the regular
+        // polling loop.
+        if (payload.isVisible === true && !context.pendingVisibleRender && context.jobId) {
+            Promise.resolve(backendPort.pollStatus?.(context.jobId))
+                .then((fresh) => {
+                    if (!fresh || !isState(context, RetryState.RUNNING)) {
+                        return;
+                    }
+                    return handlePollingStatus(fresh);
+                })
+                .catch(() => {
+                    // Non-fatal; the regular polling loop will catch up.
+                });
+        }
+
         if (context.jobId) {
             backendPort.reportFrontendPresence?.(context.jobId, {
                 reason: String(payload.reason || 'resume'),
