@@ -14,6 +14,7 @@ export function createAppPorts({
     render,
     buildStartPayload,
     flushPendingNativeOutcome,
+    onStatusPolled,
 }) {
     return {
         ...baseBackendPort,
@@ -66,6 +67,7 @@ export function createAppPorts({
                         retryFsm: getRetryFsm(),
                         render,
                     });
+                    await onStatusPolled?.(status);
                 },
                 async (error) => {
                     await onError?.(toStructuredError(error, 'Retry Mobile backend polling failed.'));
