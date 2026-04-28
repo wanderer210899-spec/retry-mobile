@@ -111,11 +111,15 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
     const calls = [];
     let clickHandler = null;
     let keydownHandler = null;
-    let mutationCallback = null;
     const context = {
         getCurrentChatId() {
             return 'chat-visible';
         },
+        chat: [
+            { is_user: true, mes: 'u' },
+            { is_user: false, is_system: false, swipe_id: 0, swipes: ['a', 'b'], mes: 'a' },
+        ],
+        chatMetadata: { tainted: true },
     };
 
     global.window = {
@@ -154,24 +158,16 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
                     _set: new Set(['fa-solid', 'fa-paper-plane']),
                     add(name) { this._set.add(name); },
                     remove(name) { this._set.delete(name); },
+                    contains(name) { return this._set.has(name); },
                     [Symbol.iterator]() { return this._set[Symbol.iterator](); },
                 },
             };
         },
     };
-    global.MutationObserver = class {
-        constructor(callback) {
-            mutationCallback = callback;
-        }
-        observe() {}
-        disconnect() {}
-    };
-
     // Generation-triggering controls — must be blocked while retry owns the
     // session.
     const blockedSelectors = [
         '#send_but',
-        '.last_mes .swipe_right',
         '#option_regenerate',
         '#option_continue',
         '#mes_continue',
@@ -181,6 +177,9 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
     // step back through existing swipes during a retry.
     const unblockedSelectors = [
         '.last_mes .swipe_left',
+        // Last row but not on the newest candidate — right chevron still exists
+        // for stepping forward without regenerate; must not match lockdown.
+        '.last_mes .swipe_right',
     ];
 
     try {
@@ -188,7 +187,6 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
         stPort.setLockdown(true);
         assert.ok(clickHandler, 'expected tap hijack to register capture click handler');
         assert.ok(keydownHandler, 'expected tap hijack to register capture keydown handler');
-        assert.ok(mutationCallback, 'expected lockdown to register mutation observer');
 
         for (const selector of blockedSelectors) {
             const event = {
@@ -230,8 +228,6 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
             stopImmediatePropagation() { calls.push(['stopImmediatePropagation', 'enter_submit']); },
             stopPropagation() { calls.push(['stopPropagation', 'enter_submit']); },
         });
-        mutationCallback?.([]);
-
         const blockedHits = calls.filter((entry) => Array.isArray(entry)
             && entry[0] === 'preventDefault'
             && (blockedSelectors.includes(entry[1]) || entry[1] === 'enter_submit'));
@@ -239,6 +235,25 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
             blockedHits.length,
             blockedSelectors.length + 1,
             'every generation-triggering selector and the textarea Enter must be blocked',
+        );
+
+        context.chat = [
+            { is_user: true, mes: 'u' },
+            { is_user: false, is_system: false, swipe_id: 0, swipes: ['one'], mes: 'one' },
+        ];
+        clickHandler({
+            target: {
+                closest(candidate) {
+                    return candidate === '.last_mes .swipe_right' ? this : null;
+                },
+            },
+            preventDefault() { calls.push(['preventDefault', 'swipe_right_gen']); },
+            stopImmediatePropagation() { calls.push(['stopImmediatePropagation', 'swipe_right_gen']); },
+            stopPropagation() { calls.push(['stopPropagation', 'swipe_right_gen']); },
+        });
+        assert.ok(
+            calls.some((entry) => Array.isArray(entry) && entry[0] === 'preventDefault' && entry[1] === 'swipe_right_gen'),
+            'last-message right swipe that would regenerate must be blocked',
         );
 
         const swipeLeftHits = calls.filter((entry) => Array.isArray(entry)
@@ -253,11 +268,10 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
     } finally {
         global.window = originalWindow;
         global.document = originalDocument;
-        delete global.MutationObserver;
     }
 });
 
-test('setLockdown toggles send icon to spinner and restores on disable', () => {
+test('setLockdown does not mutate send button icon classes', () => {
     const originalWindow = global.window;
     const originalDocument = global.document;
 
@@ -270,6 +284,9 @@ test('setLockdown toggles send icon to spinner and restores on disable', () => {
                 },
                 remove(name) {
                     set.delete(name);
+                },
+                contains(name) {
+                    return set.has(name);
                 },
                 [Symbol.iterator]() {
                     return set[Symbol.iterator]();
@@ -303,24 +320,16 @@ test('setLockdown toggles send icon to spinner and restores on disable', () => {
             return id === 'send_but' ? sendBut : null;
         },
     };
-    global.MutationObserver = class {
-        observe() {}
-        disconnect() {}
-    };
-
     try {
         const stPort = createStPort();
         assert.equal(stPort.setLockdown(true), true);
-        assert.equal(sendBut._classes().includes('fa-spinner'), true);
-        assert.equal(sendBut._classes().includes('fa-spin'), true);
+        assert.deepEqual(sendBut._classes().sort(), ['fa-paper-plane', 'fa-solid', 'interactable'].sort());
 
         assert.equal(stPort.setLockdown(false), true);
-        assert.equal(sendBut._classes().includes('fa-paper-plane'), true);
-        assert.equal(sendBut._classes().includes('fa-spinner'), false);
+        assert.deepEqual(sendBut._classes().sort(), ['fa-paper-plane', 'fa-solid', 'interactable'].sort());
     } finally {
         global.window = originalWindow;
         global.document = originalDocument;
-        delete global.MutationObserver;
     }
 });
 

@@ -1,12 +1,18 @@
 /*
- * Reserve scrollbar gutter on the chat container so message DOM patching
- * (updateMessageBlock + swipe.refresh in retry-mobile/st-operations.js)
- * cannot toggle the scrollbar's visibility per-frame, which previously
- * shifted #chat width and reflowed message text every retry attempt.
+ * Scrollbar gutter on #sheld and #chat stops layout feedback where a
+ * vertical scrollbar appears/disappears when scrollHeight hovers within
+ * ~1px of clientHeight. That used to narrow #sheld.clientWidth (e.g.
+ * 390↔379), reflow the whole chat column, change #chat scrollHeight, and
+ * repeat — visible as “scrollbar flicker” during Retry Mobile frontend busy.
  *
- * `stable` keeps the gutter reserved even when the content fits, which is
- * the only way to keep width constant while content height oscillates.
+ * The outer #sheld gutter is the critical fix: #chat-only gutter could not
+ * keep the flex column width stable while the parent’s scrollbar toggled.
  */
+#sheld {
+    /* Themes may set gutter on inner scrollers; keep the shell stable anyway. */
+    scrollbar-gutter: stable !important;
+}
+
 #chat {
     scrollbar-gutter: stable;
 }

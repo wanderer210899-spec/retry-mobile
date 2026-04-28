@@ -1,9 +1,17 @@
-// Only block controls that *trigger generation*. `.last_mes .swipe_left`
-// merely navigates between existing swipes (no API call), so blocking it
-// also blocks the user's "back" gesture during retry without justification.
+// Mirrors SillyTavern `OVERSWIPE_BEHAVIOR` string values from `scripts/constants.js`.
+const OVERSWIPE = {
+    NONE: 'none',
+    LOOP: 'loop',
+    PRISTINE_GREETING: 'pristine_greeting',
+    EDIT_GENERATE: 'edit_generate',
+    REGENERATE: 'regenerate',
+};
+
+/** @internal Used only for toast gating — not a DOM selector. */
+const BLOCKED_LAST_SWIPE_RIGHT_GEN = 'blocked:last-swipe-right-gen';
+
 const BLOCKED_CLICK_SELECTORS = [
     '#send_but',
-    '.last_mes .swipe_right',
     '#option_regenerate',
     '#option_continue',
     '#mes_continue',
@@ -14,12 +22,6 @@ const ENTER_BLOCK_SELECTORS = [
     '#send_textarea',
 ];
 
-const BLOCKED_SHORTCUT_KEYS = new Set([
-    'ArrowLeft',
-    'ArrowRight',
-    'F5',
-]);
-
 const TOAST_THROTTLE_MS = 1800;
 const REGEN_SWIPE_MIN_DISTANCE_PX = 56;
 const REGEN_SWIPE_MAX_VERTICAL_DRIFT_PX = 80;
@@ -29,7 +31,6 @@ export function createSessionLockdown({
     showToast,
     translate,
     documentRef = document,
-    observerFactory = (handler) => new MutationObserver(handler),
     now = () => Date.now(),
 } = {}) {
     let active = false;
@@ -39,10 +40,7 @@ export function createSessionLockdown({
     let touchEndHandler = null;
     let pointerDownHandler = null;
     let pointerUpHandler = null;
-    let observer = null;
     let lastToastAt = 0;
-    let sendBusyOriginalIconClasses = null;
-    let pendingBusyRefresh = false;
     const gesture = {
         active: false,
         startX: 0,
@@ -54,22 +52,18 @@ export function createSessionLockdown({
     return {
         enable() {
             if (active) {
-                refreshBusyVisual();
                 return true;
             }
             active = true;
             bindListeners();
-            refreshBusyVisual();
             return true;
         },
         disable() {
             if (!active) {
-                restoreSendButton();
                 return true;
             }
             active = false;
             unbindListeners();
-            restoreSendButton();
             return true;
         },
         isActive() {
@@ -81,6 +75,14 @@ export function createSessionLockdown({
         clickHandler = (event) => {
             const element = toElement(event?.target);
             if (!element) {
+                return;
+            }
+            if (element.closest?.('.last_mes .swipe_right') && wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
+                blockEvent(event);
+                emitBlockedToast({
+                    source: 'blocked_click',
+                    blockedSelector: BLOCKED_LAST_SWIPE_RIGHT_GEN,
+                });
                 return;
             }
             const blockedSelector = resolveBlockedClickSelector(element);
@@ -102,7 +104,6 @@ export function createSessionLockdown({
                 return;
             }
 
-            // Block enter submit from the chat textarea.
             if (event?.key === 'Enter' && !event?.shiftKey && matchesAnySelector(element, ENTER_BLOCK_SELECTORS)) {
                 blockEvent(event);
                 emitBlockedToast({
@@ -112,14 +113,18 @@ export function createSessionLockdown({
                 return;
             }
 
-            // Block only generation shortcuts (Ctrl/Cmd/Alt + ArrowRight regen,
-            // Ctrl/Cmd/Alt + ArrowLeft is back-navigation in some themes but is
-            // never a generation trigger in stock SillyTavern). We keep both
-            // keys here because BLOCKED_SHORTCUT_KEYS guards modifier+arrow
-            // shortcuts that map to regenerate/swipe in user-installed themes.
-            const hasShortcutModifier = Boolean(event?.ctrlKey || event?.metaKey || event?.altKey);
-            if (hasShortcutModifier && BLOCKED_SHORTCUT_KEYS.has(String(event?.key || ''))) {
+            // Stock SillyTavern (RossAscends): unmodified ArrowRight with empty
+            // send bar triggers `$('.swipe_right:last').click()` — block only
+            // when that would overswipe into generation on the last message.
+            if (event?.key === 'ArrowRight'
+                && !keyboardEventHasModifier(event)
+                && sendTextareaIsEmptyForSwipeHotkey(documentRef)
+                && wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
                 blockEvent(event);
+                emitBlockedToast({
+                    source: 'blocked_keyboard_swipe',
+                    blockedSelector: BLOCKED_LAST_SWIPE_RIGHT_GEN,
+                });
             }
         };
 
@@ -155,21 +160,15 @@ export function createSessionLockdown({
             const absX = Math.abs(deltaX);
             const absY = Math.abs(deltaY);
             const isHorizontalSwipe = absX >= REGEN_SWIPE_MIN_DISTANCE_PX && absY <= REGEN_SWIPE_MAX_VERTICAL_DRIFT_PX;
-            if (!isHorizontalSwipe) {
+            if (!isHorizontalSwipe || !startedOnLastMessage) {
                 return;
             }
-            if (!startedOnLastMessage) {
-                return;
-            }
-            // Right-to-left finger movement (deltaX < 0) is the SillyTavern
-            // "next swipe" gesture which generates a new message on the last
-            // message. Left-to-right (deltaX > 0) just navigates back through
-            // existing swipes, which never triggers generation, so leave it
-            // alone — that gesture is the user's "swipe back" and must work.
             if (deltaX >= 0) {
                 return;
             }
-
+            if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
+                return;
+            }
             blockEvent(event);
             emitBlockedToast({
                 source: 'blocked_swipe',
@@ -218,13 +217,12 @@ export function createSessionLockdown({
             if (!isHorizontalSwipe || !startedOnLastMessage) {
                 return;
             }
-            // Same direction guard as the touch handler: only the "next swipe"
-            // gesture (deltaX < 0) actually triggers generation. Allow back
-            // navigation (deltaX >= 0) through unchanged.
             if (deltaX >= 0) {
                 return;
             }
-
+            if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
+                return;
+            }
             blockEvent(event);
             emitBlockedToast({
                 source: 'blocked_swipe',
@@ -238,30 +236,6 @@ export function createSessionLockdown({
         documentRef.addEventListener?.('touchend', touchEndHandler, { capture: true, passive: false });
         documentRef.addEventListener?.('pointerdown', pointerDownHandler, { capture: true, passive: false });
         documentRef.addEventListener?.('pointerup', pointerUpHandler, { capture: true, passive: false });
-
-        observer = observerFactory(() => {
-            if (!active) {
-                return;
-            }
-            if (pendingBusyRefresh) {
-                return;
-            }
-            pendingBusyRefresh = true;
-            queueMicrotask(() => {
-                pendingBusyRefresh = false;
-                if (active) {
-                    refreshBusyVisual();
-                }
-            });
-        });
-        try {
-            observer.observe?.(documentRef.body || documentRef.documentElement, {
-                childList: true,
-                subtree: true,
-            });
-        } catch {
-            observer = null;
-        }
     }
 
     function unbindListeners() {
@@ -289,44 +263,6 @@ export function createSessionLockdown({
         touchEndHandler = null;
         pointerDownHandler = null;
         pointerUpHandler = null;
-        if (observer) {
-            observer.disconnect?.();
-        }
-        observer = null;
-    }
-
-    function refreshBusyVisual() {
-        const sendButton = documentRef.getElementById?.('send_but');
-        if (!sendButton?.classList) {
-            return false;
-        }
-        if (!sendBusyOriginalIconClasses) {
-            sendBusyOriginalIconClasses = detectFaIconNameClasses(sendButton);
-            if (sendBusyOriginalIconClasses.length === 0) {
-                sendBusyOriginalIconClasses = ['fa-paper-plane'];
-            }
-        }
-
-        detectFaIconNameClasses(sendButton).forEach((name) => sendButton.classList.remove(name));
-        sendButton.classList.add('fa-solid');
-        sendButton.classList.add('fa-spinner');
-        sendButton.classList.add('fa-spin');
-        return true;
-    }
-
-    function restoreSendButton() {
-        const sendButton = documentRef.getElementById?.('send_but');
-        if (!sendButton?.classList) {
-            sendBusyOriginalIconClasses = null;
-            return false;
-        }
-
-        sendButton.classList.remove('fa-spinner');
-        sendButton.classList.remove('fa-spin');
-        detectFaIconNameClasses(sendButton).forEach((name) => sendButton.classList.remove(name));
-        (sendBusyOriginalIconClasses || []).forEach((name) => sendButton.classList.add(name));
-        sendBusyOriginalIconClasses = null;
-        return true;
     }
 
     function emitBlockedToast(detail) {
@@ -342,8 +278,81 @@ export function createSessionLockdown({
     }
 }
 
-function matchesBlockedClick(element) {
-    return matchesAnySelector(element, BLOCKED_CLICK_SELECTORS);
+/**
+ * True when the next SillyTavern SWIPE_DIRECTION.RIGHT on the last chat
+ * message would enter overswipe with REGENERATE or EDIT_GENERATE (actual
+ * generation), not when it only reveals another stored candidate.
+ */
+export function wouldLastMessageRightSwipeCauseGeneration(context) {
+    if (!context || typeof context !== 'object') {
+        return false;
+    }
+    const chat = context.chat;
+    if (!Array.isArray(chat) || chat.length === 0) {
+        return false;
+    }
+    const mesId = chat.length - 1;
+    const message = chat[mesId];
+    if (!isAssistantSwipeableMessage(message)) {
+        return false;
+    }
+    const swipeId = Number(message.swipe_id ?? 0);
+    const swipesLen = Math.max(1, Array.isArray(message.swipes) ? message.swipes.length : 1);
+    const nextSwipeId = swipeId + 1;
+    if (nextSwipeId < swipesLen) {
+        return false;
+    }
+    const chatMetadata = context.chatMetadata ?? context.chat_metadata;
+    const overswipe = resolveOverswipeBehavior(mesId, message, chatMetadata);
+    return overswipe === OVERSWIPE.REGENERATE || overswipe === OVERSWIPE.EDIT_GENERATE;
+}
+
+function resolveOverswipeBehavior(messageId, message, chatMetadata) {
+    if (typeof message?.extra?.overswipe_behavior === 'string') {
+        return message.extra.overswipe_behavior;
+    }
+    if (message?.extra?.swipeable === false) {
+        return OVERSWIPE.NONE;
+    }
+    if (message?.extra?.isSmallSys) {
+        return OVERSWIPE.NONE;
+    }
+    const isPristine = !chatMetadata?.tainted;
+    if (messageId === 0 && isPristine) {
+        return OVERSWIPE.PRISTINE_GREETING;
+    }
+    if (!message?.is_user && !message?.is_system) {
+        return OVERSWIPE.REGENERATE;
+    }
+    return OVERSWIPE.LOOP;
+}
+
+function isAssistantSwipeableMessage(message) {
+    if (!message || typeof message !== 'object') {
+        return false;
+    }
+    if (message.extra?.isSmallSys) {
+        return false;
+    }
+    if (message.extra?.swipeable === false) {
+        return false;
+    }
+    if (message.is_user) {
+        return false;
+    }
+    return true;
+}
+
+function sendTextareaIsEmptyForSwipeHotkey(documentRef) {
+    const ta = documentRef.getElementById?.('send_textarea');
+    if (!ta || typeof ta.value !== 'string') {
+        return true;
+    }
+    return ta.value === '';
+}
+
+function keyboardEventHasModifier(event) {
+    return Boolean(event?.ctrlKey || event?.metaKey || event?.altKey || event?.shiftKey);
 }
 
 function resolveBlockedClickSelector(element) {
@@ -361,13 +370,8 @@ function shouldToastForBlockedSelector(selector) {
     if (!selector) {
         return false;
     }
-    // Only toast for:
-    // - sending while retry owns the session
-    // - any generation-triggering controls (regen/continue/impersonate/right swipe)
-    // Never toast for passive navigation (scrolling, .swipe_left back-nav, or
-    // swiping other messages — those are not blocked).
     return selector === '#send_but'
-        || selector === '.last_mes .swipe_right'
+        || selector === BLOCKED_LAST_SWIPE_RIGHT_GEN
         || selector === '#option_regenerate'
         || selector === '#option_continue'
         || selector === '#mes_continue'
@@ -402,24 +406,4 @@ function getEventPoint(event) {
         return { x: event.clientX, y: event.clientY };
     }
     return null;
-}
-
-function detectFaIconNameClasses(element) {
-    const classes = element?.classList ? Array.from(element.classList) : [];
-    return classes.filter((name) => (
-        name.startsWith('fa-')
-        && name !== 'fa-solid'
-        && name !== 'fa-regular'
-        && name !== 'fa-brands'
-        && name !== 'fa-spin'
-        && name !== 'fa-spinner'
-        && name !== 'fa-lg'
-        && name !== 'fa-fw'
-        && name !== 'fa-xs'
-        && name !== 'fa-sm'
-        && name !== 'fa-xl'
-        && name !== 'fa-2xl'
-        && name !== 'fa-pull-left'
-        && name !== 'fa-pull-right'
-    ));
 }
