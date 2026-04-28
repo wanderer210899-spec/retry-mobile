@@ -42,6 +42,7 @@ export async function bootRetryMobile() {
     let backendPort = null;
     let stPort = null;
     let retryFsm = null;
+    let resumeSignalHandle = 0;
 
     const persistSettings = () => {
         writeSettings(getContext(), runtime.settings);
@@ -284,6 +285,10 @@ export async function bootRetryMobile() {
         }
         restoreController.unsubscribeChatChangedRestore?.();
         unbindPageObservers(runtime);
+        if (resumeSignalHandle) {
+            clearTimeout(resumeSignalHandle);
+            resumeSignalHandle = 0;
+        }
     };
     window.__rmDispatch = (type, payload) => {
         handleExternalSignal(type, payload);
@@ -403,6 +408,12 @@ export async function bootRetryMobile() {
             // Remount immediately rather than waiting for the periodic host observer tick.
             ensurePanelMounted();
             if (state === RetryState.RUNNING) {
+                // page.visible, window.focused, and network.online all fire within ~400ms of
+                // each other on mobile browser resume. Only the first triggers resume + poll.
+                if (resumeSignalHandle) {
+                    return;
+                }
+                resumeSignalHandle = window.setTimeout(() => { resumeSignalHandle = 0; }, 500);
                 const context = retryFsm.getContext();
                 retryFsm.resume({
                     reason: type,

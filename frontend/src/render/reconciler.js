@@ -29,11 +29,7 @@ export function createChatReconciler({
             return applyAcceptedOutputFn?.(cloneValue(renderPayload));
         },
         async applyTerminal(renderPayload) {
-            const result = await applyAcceptedOutputFn?.(cloneValue(renderPayload));
-            if (result?.ok === false) {
-                await reloadSessionUiFn?.();
-            }
-            return result;
+            return applyAcceptedOutputFn?.(cloneValue(renderPayload));
         },
         async reconcileAfterRestore(renderPayload) {
             if (!renderPayload) {

@@ -404,8 +404,17 @@ export function createRetryFsm({
                         } catch {}
                         context = createContextForState({
                             ...context,
+                            lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
                             pendingVisibleRender: null,
                         });
+                        if (context.jobId && isState(context, RetryState.RUNNING)) {
+                            Promise.resolve(backendPort.pollStatus?.(context.jobId))
+                                .then((fresh) => {
+                                    if (!fresh || !isState(context, RetryState.RUNNING)) return;
+                                    return handlePollingStatus(fresh);
+                                })
+                                .catch(() => {});
+                        }
                         return;
                     }
                     context = createContextForState({
@@ -434,15 +443,18 @@ export function createRetryFsm({
                     try {
                         await stPort.guardedReload?.();
                     } catch {}
-                    if (String(pendingRender?.status?.state || '').trim() === 'completed' && isState(context, RetryState.RUNNING)) {
-                        try {
-                            const fresh = await backendPort.pollStatus?.(context.jobId);
-                            if (fresh?.state === 'completed') {
-                                jobCompleted({ status: fresh });
-                            }
-                        } catch {
-                            // Defer to the ongoing polling loop.
-                        }
+                    context = createContextForState({
+                        ...context,
+                        lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
+                        pendingVisibleRender: null,
+                    });
+                    if (context.jobId && isState(context, RetryState.RUNNING)) {
+                        Promise.resolve(backendPort.pollStatus?.(context.jobId))
+                            .then((fresh) => {
+                                if (!fresh || !isState(context, RetryState.RUNNING)) return;
+                                return handlePollingStatus(fresh);
+                            })
+                            .catch(() => {});
                     }
                 });
         }

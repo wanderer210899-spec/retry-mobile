@@ -3,6 +3,8 @@ import { t } from '../i18n.js';
 const STATE_LABELS = Object.freeze({
     armed: 'runState.armed',
     armed_after_completed: 'runState.armedAfterCompleted',
+    armed_after_failed: 'runState.armedAfterFailed',
+    armed_after_cancelled: 'runState.armedAfterCancelled',
     capturing: 'runState.capturing',
     reserving: 'runState.reserving',
     waiting_native: 'runState.waiting_native',

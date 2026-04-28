@@ -50,20 +50,30 @@ export function deriveUiState(context, runtime) {
 }
 
 function resolveStatusPillState(phase, context) {
-    // Keep the underlying FSM phase as the behavioral truth, but project
-    // terminal outcomes on idle/armed so users get a clear green/red signal
-    // after completion (requested behavior).
     if (phase !== 'idle' && phase !== 'armed') {
         return phase;
     }
 
     const terminal = context?.lastTerminalResult || null;
     const outcome = String(terminal?.outcome || '').trim();
+    const terminalState = String(terminal?.status?.state || '').trim();
+
+    if (phase === 'armed') {
+        // In ARMED state, only project 'completed' (green) from the last run so
+        // the color reads as "success + ready for more". Failed/cancelled outcomes
+        // keep the pill at 'armed' (yellow) — the pill reflects the *current*
+        // ready-to-capture state, not a past failure. The status label carries the
+        // "last run failed / was cancelled" distinction instead.
+        if (outcome === 'completed' || terminalState === 'completed') {
+            return 'completed';
+        }
+        return phase;
+    }
+
+    // IDLE: project the terminal outcome directly.
     if (outcome === 'completed' || outcome === 'failed' || outcome === 'cancelled') {
         return outcome;
     }
-
-    const terminalState = String(terminal?.status?.state || '').trim();
     if (terminalState === 'completed' || terminalState === 'failed' || terminalState === 'cancelled') {
         return terminalState;
     }
@@ -87,6 +97,12 @@ function resolveStatusLabel(phase, activeStatus, transport, context, runtime) {
         // the plugin is *still armed* and the last run completed successfully.
         if ((terminalOutcome === 'completed' || terminalState === 'completed') && terminalJobId) {
             return formatStateLabel('armed_after_completed');
+        }
+        if ((terminalOutcome === 'failed' || terminalState === 'failed') && terminalJobId) {
+            return formatStateLabel('armed_after_failed');
+        }
+        if ((terminalOutcome === 'cancelled' || terminalState === 'cancelled') && terminalJobId) {
+            return formatStateLabel('armed_after_cancelled');
         }
     }
     return formatVisibleStateLabel(phase, activeStatus, transport);
