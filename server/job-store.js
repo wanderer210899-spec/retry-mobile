@@ -3,7 +3,9 @@ const path = require('node:path');
 const { deleteJobLog } = require('./job-log-store');
 
 const SNAPSHOT_SCHEMA_VERSION = 1;
-const TERMINAL_JOB_RETENTION = 50;
+// Max terminal job files kept on disk per user. Per-chat-key pruning (keep newest
+// per key) runs first; oldest-first eviction handles any remaining overflow.
+const TERMINAL_JOB_RETENTION = 10;
 const UNKNOWN_SCHEMA_REASON = 'unknown_schema_version';
 
 let resolveUserDirectories = null;
@@ -102,7 +104,7 @@ function pruneTerminalJobUnits(handle, directories) {
         return;
     }
 
-    const units = listJobUnits(paths.jobsDir)
+    const terminalUnits = listJobUnits(paths.jobsDir)
         .map((unit) => {
             const primary = readJsonIfExists(path.join(paths.jobsDir, `${unit.baseName}.json`));
             const recovery = readJsonIfExists(path.join(paths.jobsDir, `${unit.baseName}.recovery.json`));
@@ -110,26 +112,59 @@ function pruneTerminalJobUnits(handle, directories) {
             return {
                 ...unit,
                 state: String(effective?.state || ''),
+                chatKey: String(effective?.chatKey || ''),
                 updatedAt: effective?.updatedAt || effective?.recoveredAt || primary?.updatedAt || null,
+                timestamp: Date.parse(effective?.updatedAt || effective?.recoveredAt || primary?.updatedAt || '') || 0,
             };
         })
-        .filter((unit) => isTerminalState(unit.state))
-        .sort((left, right) => {
-            const leftTime = Date.parse(left.updatedAt || '') || 0;
-            const rightTime = Date.parse(right.updatedAt || '') || 0;
-            return rightTime - leftTime;
-        });
+        .filter((unit) => isTerminalState(unit.state));
 
-    const toDelete = units.slice(TERMINAL_JOB_RETENTION);
-    for (const unit of toDelete) {
-        try {
-            fs.rmSync(path.join(paths.jobsDir, `${unit.baseName}.json`), { force: true });
-        } catch {}
-        try {
-            fs.rmSync(path.join(paths.jobsDir, `${unit.baseName}.recovery.json`), { force: true });
-        } catch {}
-        deleteJobLog(unit.baseName, handle, directories);
+    if (terminalUnits.length <= TERMINAL_JOB_RETENTION) {
+        return;
     }
+
+    // First pass: within each chat key keep only the most recent terminal job on disk.
+    // The frontend always restores by chat key, so older jobs for the same chat are
+    // redundant and waste disk space.
+    const byChatKey = new Map();
+    for (const unit of terminalUnits) {
+        const key = unit.chatKey || '';
+        const existing = byChatKey.get(key);
+        if (!existing || unit.timestamp > existing.timestamp) {
+            byChatKey.set(key, unit);
+        }
+    }
+
+    const toDelete = terminalUnits.filter((unit) => {
+        const key = unit.chatKey || '';
+        return byChatKey.get(key) !== unit;
+    });
+
+    for (const unit of toDelete) {
+        deleteJobUnit(paths.jobsDir, unit.baseName, handle, directories);
+    }
+
+    // Second pass: if still over the global cap, evict oldest-first across all keys.
+    const survivors = terminalUnits.filter((unit) => !toDelete.includes(unit));
+    if (survivors.length <= TERMINAL_JOB_RETENTION) {
+        return;
+    }
+
+    survivors.sort((a, b) => a.timestamp - b.timestamp); // oldest first
+    const overflow = survivors.slice(0, survivors.length - TERMINAL_JOB_RETENTION);
+    for (const unit of overflow) {
+        deleteJobUnit(paths.jobsDir, unit.baseName, handle, directories);
+    }
+}
+
+function deleteJobUnit(jobsDir, baseName, handle, directories) {
+    try {
+        fs.rmSync(path.join(jobsDir, `${baseName}.json`), { force: true });
+    } catch {}
+    try {
+        fs.rmSync(path.join(jobsDir, `${baseName}.recovery.json`), { force: true });
+    } catch {}
+    deleteJobLog(baseName, handle, directories);
 }
 
 function getCurrentGeneration(handle, directories, chatKey) {

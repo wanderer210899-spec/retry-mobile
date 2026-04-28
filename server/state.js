@@ -3,7 +3,9 @@ const { normalizeLanguage, translate } = require('./i18n-catalog');
 const ATTEMPT_LOG_LIMIT = 24;
 const ORPHAN_PREVIEW_LIMIT = 3;
 const ORPHAN_PREVIEW_TEXT_LIMIT = 240;
-const MEMORY_TERMINAL_LIMIT = 100;
+// Max terminal jobs kept in memory. Per-chat-key pruning (keep newest per key)
+// runs first, then oldest-first eviction if still over limit.
+const MEMORY_TERMINAL_LIMIT = 10;
 
 let persistJobSnapshotHandler = null;
 
@@ -375,21 +377,56 @@ function persistJobSnapshot(job) {
 }
 
 function pruneTerminalJobsFromMemory() {
-    const terminal = [];
+    // Collect terminal jobs grouped by chat key.
+    const byChatKey = new Map();
+    let totalTerminal = 0;
+
     for (const [jobId, job] of jobs) {
         const state = String(job?.state || '').trim();
-        if (state === 'completed' || state === 'failed' || state === 'cancelled') {
-            terminal.push([jobId, getJobTimestamp(job)]);
+        if (state !== 'completed' && state !== 'failed' && state !== 'cancelled') {
+            continue;
         }
+        totalTerminal++;
+        const key = job.chatKey || '';
+        if (!byChatKey.has(key)) {
+            byChatKey.set(key, []);
+        }
+        byChatKey.get(key).push([jobId, getJobTimestamp(job)]);
     }
 
-    if (terminal.length <= MEMORY_TERMINAL_LIMIT) {
+    if (totalTerminal <= MEMORY_TERMINAL_LIMIT) {
         return;
     }
 
-    terminal.sort((a, b) => a[1] - b[1]);
-    const toDelete = terminal.slice(0, terminal.length - MEMORY_TERMINAL_LIMIT);
-    for (const [jobId] of toDelete) {
+    // First pass: within each chat key keep only the most recent terminal job.
+    // Older jobs from the same chat are useless for recovery — the frontend always
+    // restores by chat key and only cares about the newest result.
+    for (const entries of byChatKey.values()) {
+        if (entries.length <= 1) {
+            continue;
+        }
+        entries.sort((a, b) => b[1] - a[1]); // newest first
+        for (let i = 1; i < entries.length; i++) {
+            jobs.delete(entries[i][0]);
+        }
+    }
+
+    // Second pass: if still over the global cap, evict by age across all keys.
+    const remaining = [];
+    for (const [jobId, job] of jobs) {
+        const state = String(job?.state || '').trim();
+        if (state === 'completed' || state === 'failed' || state === 'cancelled') {
+            remaining.push([jobId, getJobTimestamp(job)]);
+        }
+    }
+
+    if (remaining.length <= MEMORY_TERMINAL_LIMIT) {
+        return;
+    }
+
+    remaining.sort((a, b) => a[1] - b[1]); // oldest first
+    const overflow = remaining.slice(0, remaining.length - MEMORY_TERMINAL_LIMIT);
+    for (const [jobId] of overflow) {
         jobs.delete(jobId);
     }
 }

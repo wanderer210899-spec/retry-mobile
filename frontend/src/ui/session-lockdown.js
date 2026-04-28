@@ -232,9 +232,15 @@ export function createSessionLockdown({
 
         documentRef.addEventListener?.('click', clickHandler, true);
         documentRef.addEventListener?.('keydown', keydownHandler, true);
-        documentRef.addEventListener?.('touchstart', touchStartHandler, { capture: true, passive: false });
+        // passive: true — these handlers only record gesture state, never call preventDefault().
+        // Passive listeners let the browser start scrolling/responding immediately without
+        // waiting for the JS handler, which eliminates per-keypress/touch latency on mobile.
+        documentRef.addEventListener?.('touchstart', touchStartHandler, { capture: true, passive: true });
+        // passive: false required — touchend/pointerup call preventDefault() to cancel overswipe generation.
         documentRef.addEventListener?.('touchend', touchEndHandler, { capture: true, passive: false });
-        documentRef.addEventListener?.('pointerdown', pointerDownHandler, { capture: true, passive: false });
+        // passive: true — same reasoning as touchstart; pointerdown only records start coords.
+        documentRef.addEventListener?.('pointerdown', pointerDownHandler, { capture: true, passive: true });
+        // passive: false required — pointerup calls preventDefault() to cancel overswipe generation.
         documentRef.addEventListener?.('pointerup', pointerUpHandler, { capture: true, passive: false });
     }
 
