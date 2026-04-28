@@ -13,6 +13,7 @@ export function createRenderer({ runtime }) {
         const context = runtime.retryFsm?.getContext?.() || null;
         const snapshot = deriveUiState(context, runtime);
         const state = snapshot.phase;
+        const statusPillState = snapshot.statusPillState || state;
         const activeStatus = snapshot.activeStatus;
         const errorText = snapshot.errorVisible ? snapshot.errorText : '';
 
@@ -24,14 +25,23 @@ export function createRenderer({ runtime }) {
         }
 
         runtime.ui.statusText.textContent = snapshot.statusLabel || formatVisibleStateLabel(state, activeStatus, snapshot.transport);
-        runtime.ui.statusText.dataset.state = state;
+        runtime.ui.statusText.dataset.state = statusPillState;
 
-        runtime.ui.stats.innerHTML = [
-            renderStat(t('render.statAccepted'), activeStatus?.acceptedCount ?? 0),
-            renderStat(t('render.statAttempts'), activeStatus?.attemptCount ?? 0),
-            renderStat(t('render.statTarget'), runtime.settings.targetAcceptedCount),
-            renderStat(t('render.statTimeout'), `${runtime.settings.attemptTimeoutSeconds}s`),
-        ].join('');
+        const statsKey = [
+            activeStatus?.acceptedCount ?? 0,
+            activeStatus?.attemptCount ?? 0,
+            runtime.settings.targetAcceptedCount,
+            runtime.settings.attemptTimeoutSeconds,
+        ].join('|');
+        if (runtime.ui.statsRenderKey !== statsKey) {
+            runtime.ui.statsRenderKey = statsKey;
+            runtime.ui.stats.innerHTML = [
+                renderStat(t('render.statAccepted'), activeStatus?.acceptedCount ?? 0),
+                renderStat(t('render.statAttempts'), activeStatus?.attemptCount ?? 0),
+                renderStat(t('render.statTarget'), runtime.settings.targetAcceptedCount),
+                renderStat(t('render.statTimeout'), `${runtime.settings.attemptTimeoutSeconds}s`),
+            ].join('');
+        }
 
         runtime.ui.errorBox.hidden = !snapshot.errorVisible;
         runtime.ui.errorBox.textContent = errorText;

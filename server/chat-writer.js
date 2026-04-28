@@ -219,7 +219,7 @@ async function readCurrentChat(job) {
     const delayMs = 300;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const liveChat = readChatJsonl(saveTarget.filePath);
+        const liveChat = await readChatJsonlAsync(saveTarget.filePath);
         if (Array.isArray(liveChat) && liveChat.length > 0) {
             const integrityState = getIntegrityState(job, liveChat);
             if (integrityState === 'mismatch') {
@@ -767,6 +767,29 @@ function readChatJsonl(filePath) {
     let raw = '';
     try {
         raw = _fs.readFileSync(filePath, 'utf8');
+    } catch (error) {
+        throw createStructuredError(
+            'backend_file_unreadable',
+            'Retry Mobile could not read the chat file at the expected path.',
+            error instanceof Error ? error.message : String(error),
+        );
+    }
+
+    const lines = raw.split('\n').filter((line) => line.trim());
+    const parsed = [];
+    for (const line of lines) {
+        try {
+            parsed.push(JSON.parse(line));
+        } catch {
+        }
+    }
+    return parsed;
+}
+
+async function readChatJsonlAsync(filePath) {
+    let raw = '';
+    try {
+        raw = await _fs.promises.readFile(filePath, 'utf8');
     } catch (error) {
         throw createStructuredError(
             'backend_file_unreadable',

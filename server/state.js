@@ -3,6 +3,7 @@ const { normalizeLanguage, translate } = require('./i18n-catalog');
 const ATTEMPT_LOG_LIMIT = 24;
 const ORPHAN_PREVIEW_LIMIT = 3;
 const ORPHAN_PREVIEW_TEXT_LIMIT = 240;
+const MEMORY_TERMINAL_LIMIT = 100;
 
 let persistJobSnapshotHandler = null;
 
@@ -368,6 +369,28 @@ function persistJobSnapshot(job) {
         persistJobSnapshotHandler(snapshotJobForPersistence(job));
     } catch (error) {
         console.error('[retry-mobile:state] Failed to persist job snapshot:', error);
+    }
+
+    pruneTerminalJobsFromMemory();
+}
+
+function pruneTerminalJobsFromMemory() {
+    const terminal = [];
+    for (const [jobId, job] of jobs) {
+        const state = String(job?.state || '').trim();
+        if (state === 'completed' || state === 'failed' || state === 'cancelled') {
+            terminal.push([jobId, getJobTimestamp(job)]);
+        }
+    }
+
+    if (terminal.length <= MEMORY_TERMINAL_LIMIT) {
+        return;
+    }
+
+    terminal.sort((a, b) => a[1] - b[1]);
+    const toDelete = terminal.slice(0, terminal.length - MEMORY_TERMINAL_LIMIT);
+    for (const [jobId] of toDelete) {
+        jobs.delete(jobId);
     }
 }
 

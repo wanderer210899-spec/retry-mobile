@@ -102,6 +102,7 @@ test('deriveUiState emits stable shape with declared keys only', () => {
         'nextToastScope',
         'phase',
         'statusLabel',
+        'statusPillState',
         'toastsToFire',
         'transport',
     ].sort());

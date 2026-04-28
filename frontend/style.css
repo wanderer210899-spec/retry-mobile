@@ -282,8 +282,7 @@
 
 .rm-status-pill[data-state="idle"]                { --rm-status-color: #8b949e; }
 .rm-status-pill[data-state="armed"]               { --rm-status-color: #d6ab4c; }
-.rm-status-pill[data-state="waiting_for_native"]  { --rm-status-color: #67a7e5; }
-.rm-status-pill[data-state="handing_off"]         { --rm-status-color: #7f9be7; }
+.rm-status-pill[data-state="capturing"]           { --rm-status-color: #7f9be7; }
 .rm-status-pill[data-state="running"]             { --rm-status-color: #67a7e5; }
 .rm-status-pill[data-state="completed"]           { --rm-status-color: #68ba72; }
 .rm-status-pill[data-state="failed"],

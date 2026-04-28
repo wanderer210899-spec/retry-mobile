@@ -31,8 +31,11 @@ export function deriveUiState(context, runtime) {
 
     const errorText = selectedError ? formatStructuredError(selectedError) : '';
 
+    const statusPillState = resolveStatusPillState(phase, context);
+
     const uiState = {
         phase,
+        statusPillState,
         activeStatus,
         transport,
         statusLabel: resolveStatusLabel(phase, activeStatus, transport, context, runtime),
@@ -44,6 +47,28 @@ export function deriveUiState(context, runtime) {
     };
     assertNoRawKeys(uiState);
     return Object.freeze(uiState);
+}
+
+function resolveStatusPillState(phase, context) {
+    // Keep the underlying FSM phase as the behavioral truth, but project
+    // terminal outcomes on idle/armed so users get a clear green/red signal
+    // after completion (requested behavior).
+    if (phase !== 'idle' && phase !== 'armed') {
+        return phase;
+    }
+
+    const terminal = context?.lastTerminalResult || null;
+    const outcome = String(terminal?.outcome || '').trim();
+    if (outcome === 'completed' || outcome === 'failed' || outcome === 'cancelled') {
+        return outcome;
+    }
+
+    const terminalState = String(terminal?.status?.state || '').trim();
+    if (terminalState === 'completed' || terminalState === 'failed' || terminalState === 'cancelled') {
+        return terminalState;
+    }
+
+    return phase;
 }
 
 function resolveStatusLabel(phase, activeStatus, transport, context, runtime) {
