@@ -167,6 +167,7 @@ export async function bootRetryMobile() {
                 console.error('[retry-mobile:fsm]', detail);
             },
         },
+        logEvent: (event, summary, detail) => window.__rmLogEvent?.(event, summary, detail),
     });
     runtime.retryFsm = retryFsm;
     const syncRuntime = () => syncRuntimeFromFsm(runtime, retryFsm);

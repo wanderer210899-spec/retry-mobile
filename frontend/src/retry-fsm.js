@@ -54,6 +54,7 @@ export function createRetryFsm({
     createRunId = defaultCreateRunId,
     now = defaultNow,
     logger = null,
+    logEvent = null,
 } = {}) {
     const abortedCaptureRuns = new Map();
     let context = createInitialRetryContext({
@@ -396,19 +397,23 @@ export function createRetryFsm({
         if (context.pendingVisibleRender && payload.isVisible === true) {
             const pendingRender = clonePlain(context.pendingVisibleRender);
             const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
+            logEvent?.('reconcile_flush_started', `Flushing pending render version ${pendingVersion} on page visible.`, { targetMessageVersion: pendingVersion });
             Promise.resolve(stPort.reconciler?.flushPending?.(pendingRender))
                 .then(async (result) => {
                     if (!isState(context, RetryState.RUNNING)) {
                         return;
                     }
                     if (result?.ok === false) {
-                        if (!context.reloadAttempted) {
+                        const willReload = !context.reloadAttempted;
+                        logEvent?.('reconcile_flush_failed', `Flush failed [${result?.error?.code || 'unknown'}]${willReload ? ' — triggering chat reload' : ''}.`, { errorCode: result?.error?.code, targetMessageVersion: pendingVersion });
+                        if (willReload) {
                             context = createContextForState({
                                 ...context,
                                 reloadAttempted: true,
                             });
                             try {
                                 await stPort.guardedReload?.();
+                                logEvent?.('chat_reload_completed', 'Chat reload after flush failure completed.', null);
                             } catch {}
                         }
                         context = createContextForState({
@@ -426,6 +431,7 @@ export function createRetryFsm({
                         }
                         return;
                     }
+                    logEvent?.('reconcile_flush_succeeded', `Flush succeeded for version ${pendingVersion}.`, { targetMessageVersion: pendingVersion });
                     context = createContextForState({
                         ...context,
                         lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
@@ -449,6 +455,7 @@ export function createRetryFsm({
                     if (!isState(context, RetryState.RUNNING)) {
                         return;
                     }
+                    logEvent?.('reconcile_flush_failed', `Flush threw an exception${!context.reloadAttempted ? ' — triggering chat reload' : ''}.`, { targetMessageVersion: pendingVersion });
                     if (!context.reloadAttempted) {
                         context = createContextForState({
                             ...context,
@@ -456,6 +463,7 @@ export function createRetryFsm({
                         });
                         try {
                             await stPort.guardedReload?.();
+                            logEvent?.('chat_reload_completed', 'Chat reload after flush exception completed.', null);
                         } catch {}
                     }
                     context = createContextForState({
@@ -779,6 +787,13 @@ export function createRetryFsm({
             return;
         }
 
+        // resume() may already be processing pendingVisibleRender via flushPending.
+        // Skip applyStatus to avoid a concurrent duplicate attempt that would race
+        // the flush, both fail (stale in-memory chat), and cycle runError in the panel.
+        if (context.pendingVisibleRender) {
+            return;
+        }
+
         const renderPayload = {
             kind: 'accepted_output',
             chatIdentity: clonePlain(context.chatIdentity),
@@ -794,6 +809,7 @@ export function createRetryFsm({
             return;
         }
 
+        logEvent?.('reconcile_apply_started', `Applying accepted output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
         Promise.resolve(stPort.reconciler?.applyStatus?.(renderPayload))
             .then((result) => {
                 if (!isState(context, RetryState.RUNNING)) {
@@ -806,8 +822,12 @@ export function createRetryFsm({
                             ...context,
                             reloadAttempted: true,
                         });
+                        logEvent?.('reconcile_apply_failed', `Apply failed [${result?.error?.code || 'unknown'}] — triggering chat reload.`, { errorCode: result?.error?.code, targetMessageVersion: nextVersion });
                         Promise.resolve(stPort.guardedReload?.())
-                            .then(() => backendPort.pollStatus?.(jobId))
+                            .then(() => {
+                                logEvent?.('chat_reload_completed', 'Chat reload after apply failure completed.', null);
+                                return backendPort.pollStatus?.(jobId);
+                            })
                             .then((fresh) => {
                                 if (!fresh || !isState(context, RetryState.RUNNING)) {
                                     return;
@@ -817,9 +837,11 @@ export function createRetryFsm({
                             .catch(() => {});
                         return;
                     }
+                    logEvent?.('reconcile_apply_failed', `Apply failed [${result?.error?.code || 'unknown'}] — run error set.`, { errorCode: result?.error?.code, targetMessageVersion: nextVersion });
                     handleVisibleApplyFailure(result?.error);
                     return;
                 }
+                logEvent?.('reconcile_apply_succeeded', `Applied accepted output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
                 context = createContextForState({
                     ...context,
                     lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
@@ -829,6 +851,7 @@ export function createRetryFsm({
                 });
             })
             .catch((error) => {
+                logEvent?.('reconcile_apply_failed', `Apply threw an exception — run error set.`, { errorCode: error?.code, targetMessageVersion: nextVersion });
                 handleVisibleApplyFailure(error);
             });
     }
@@ -855,15 +878,18 @@ export function createRetryFsm({
             return;
         }
 
+        logEvent?.('reconcile_terminal_started', `Applying terminal output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
         try {
             const result = await stPort.reconciler?.applyTerminal?.(renderPayload);
             if (!isState(context, RetryState.RUNNING)) {
                 return;
             }
             if (result?.ok === false) {
+                logEvent?.('reconcile_terminal_failed', `Terminal apply failed [${result?.error?.code || 'unknown'}] — triggering best-effort reload.`, { errorCode: result?.error?.code, targetMessageVersion: nextVersion });
                 await completeAfterBestEffortReload(status);
                 return;
             }
+            logEvent?.('reconcile_terminal_succeeded', `Applied terminal output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
             context = createContextForState({
                 ...context,
                 lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
@@ -871,6 +897,7 @@ export function createRetryFsm({
             });
             jobCompleted({ status });
         } catch {
+            logEvent?.('reconcile_terminal_failed', 'Terminal apply threw an exception — triggering best-effort reload.', { targetMessageVersion: nextVersion });
             await completeAfterBestEffortReload(status);
         }
     }
