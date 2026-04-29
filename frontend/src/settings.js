@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, RUN_MODE, SETTINGS_KEY, VALIDATION_MODE } from './constants.js';
+import { COUNTER_MODE, DEFAULT_SETTINGS, RUN_MODE, SETTINGS_KEY, VALIDATION_MODE } from './constants.js';
 
 export function readSettings(context) {
     const source = context?.extensionSettings?.[SETTINGS_KEY];
@@ -40,9 +40,14 @@ function normalizeSettings(source) {
         ? RUN_MODE.TOGGLE
         : RUN_MODE.SINGLE;
     settings.validationMode = normalizeValidationMode(source, settings);
+    settings.counterMode = normalizeCounterMode(source?.counterMode);
     settings.minCharacters = normalizeWholeNumber(
-        source?.minCharacters ?? source?.minWords,
+        source?.minCharacters,
         DEFAULT_SETTINGS.minCharacters,
+    );
+    settings.minWords = normalizeWholeNumber(
+        source?.minWords,
+        DEFAULT_SETTINGS.minWords,
     );
     settings.minTokens = normalizeWholeNumber(settings.minTokens, DEFAULT_SETTINGS.minTokens);
     settings.targetAcceptedCount = Math.max(1, normalizeWholeNumber(settings.targetAcceptedCount, DEFAULT_SETTINGS.targetAcceptedCount));
@@ -66,7 +71,14 @@ function normalizeValidationMode(source, settings) {
         return VALIDATION_MODE.TOKENS;
     }
 
-    if (explicit === VALIDATION_MODE.CHARACTERS || explicit === 'words') {
+    // 'words' is also part of the "counter" branch on the main panel — it survives
+    // round-trips so legacy settings that wrote 'words' here still resolve to the
+    // counter side rather than tokens.
+    if (
+        explicit === VALIDATION_MODE.CHARACTERS
+        || explicit === VALIDATION_MODE.WORDS
+        || explicit === 'words'
+    ) {
         return VALIDATION_MODE.CHARACTERS;
     }
 
@@ -75,6 +87,13 @@ function normalizeValidationMode(source, settings) {
     }
 
     return VALIDATION_MODE.CHARACTERS;
+}
+
+function normalizeCounterMode(value) {
+    if (value === COUNTER_MODE.WORDS || value === COUNTER_MODE.CHARACTERS) {
+        return value;
+    }
+    return COUNTER_MODE.AUTO;
 }
 
 function normalizeWholeNumber(value, fallback) {

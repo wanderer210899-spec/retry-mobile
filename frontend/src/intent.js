@@ -1,5 +1,28 @@
-import { RUN_MODE, SETTINGS_KEY } from './constants.js';
+import { COUNTER_MODE, RUN_MODE, SETTINGS_KEY, VALIDATION_MODE, resolveCounterMode } from './constants.js';
 import { readSettings, writeSettings } from './settings.js';
+
+// The persisted `validationMode` is binary on the panel ('characters' = counter side, 'tokens').
+// When the counter side is selected, `counterMode` decides whether to count words or characters.
+// The backend wants the effective ternary mode ('characters' | 'words' | 'tokens'),
+// so we resolve it here and stamp the resolved value into the intent's settings clone.
+function deriveEffectiveSettings(settings) {
+    if (settings.validationMode !== VALIDATION_MODE.CHARACTERS) {
+        return settings;
+    }
+
+    const resolved = resolveCounterMode(settings.counterMode, settings.uiLanguage);
+    if (resolved === COUNTER_MODE.WORDS) {
+        return {
+            ...settings,
+            validationMode: VALIDATION_MODE.WORDS,
+        };
+    }
+
+    return {
+        ...settings,
+        validationMode: VALIDATION_MODE.CHARACTERS,
+    };
+}
 
 export function createIntentPort({ getContext }) {
     return {
@@ -14,7 +37,7 @@ export function createIntentPort({ getContext }) {
 
     function readIntent() {
         const context = getContext?.() ?? null;
-        const settings = readSettings(context);
+        const settings = deriveEffectiveSettings(readSettings(context));
         const source = readIntentSource(context);
         return {
             mode: settings.runMode === RUN_MODE.TOGGLE ? 'toggle' : 'single',

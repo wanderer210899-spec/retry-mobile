@@ -86,6 +86,32 @@ test('character validation keeps token metrics explicitly non-blocking', async (
     assert.equal(validation.metrics.tokenCountSource, TOKEN_COUNT_SOURCE.HEURISTIC_NONBLOCKING);
 });
 
+test('words validation accepts when word count meets the threshold', async () => {
+    const validation = await validateAcceptedText('this reply has six words total', {
+        validationMode: VALIDATION_MODE.WORDS,
+        minWords: 6,
+        attemptTimeoutSeconds: 30,
+    });
+
+    assert.equal(validation.accepted, true);
+    assert.equal(validation.reason, 'accepted');
+    assert.equal(validation.metrics.wordCount, 6);
+    assert.equal(validation.validationMode, VALIDATION_MODE.WORDS);
+});
+
+test('words validation rejects when word count is below the threshold', async () => {
+    const validation = await validateAcceptedText('only three words here', {
+        validationMode: VALIDATION_MODE.WORDS,
+        minWords: 5,
+        attemptTimeoutSeconds: 30,
+    });
+
+    assert.equal(validation.accepted, false);
+    assert.equal(validation.reason, 'below_min_words');
+    assert.equal(validation.metrics.wordCount, 4);
+    assert.equal(validation.threshold, 5);
+});
+
 test('run config fails closed when maximum attempts is lower than the accepted outputs goal', () => {
     const validation = validateRunConfig({
         targetAcceptedCount: 3,

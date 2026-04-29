@@ -912,14 +912,24 @@ function validateProtocol(clientProtocolVersion) {
 }
 
 function normalizeRunConfig(runConfig = {}) {
+    let validationMode;
+    if (runConfig.validationMode === 'tokens') {
+        validationMode = 'tokens';
+    } else if (runConfig.validationMode === 'words') {
+        validationMode = 'words';
+    } else {
+        validationMode = 'characters';
+    }
+
     return {
         runMode: runConfig.runMode === 'toggle' ? 'toggle' : 'single',
         targetAcceptedCount: Math.max(1, Number(runConfig.targetAcceptedCount) || 1),
         maxAttempts: Math.max(1, Number(runConfig.maxAttempts) || 1),
         attemptTimeoutSeconds: Math.max(1, Number(runConfig.attemptTimeoutSeconds) || 1),
-        validationMode: runConfig.validationMode === 'tokens' ? 'tokens' : 'characters',
+        validationMode,
         minTokens: Math.max(0, Number(runConfig.minTokens) || 0),
         minCharacters: Math.max(0, Number(runConfig.minCharacters) || 0),
+        minWords: Math.max(0, Number(runConfig.minWords) || 0),
         notifyOnSuccess: runConfig.notifyOnSuccess === true,
         notifyOnComplete: runConfig.notifyOnComplete === true,
         vibrateOnSuccess: runConfig.vibrateOnSuccess === true,

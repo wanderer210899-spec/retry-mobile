@@ -49,6 +49,9 @@ test('writeIntent updates durable run mode and target without dropping settings'
         runMode: 'single',
         targetAcceptedCount: 3,
         maxAttempts: 5,
+        // Explicit character counter so the intent.read derivation is a no-op
+        // (default 'auto' + 'en' would derive to validationMode='words').
+        counterMode: 'characters',
     });
     const port = createIntentPort({
         getContext() {

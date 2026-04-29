@@ -168,6 +168,7 @@ function appendAttemptLog(job, entry = {}) {
         message: typeof entry.message === 'string' ? entry.message : '',
         phase: typeof entry.phase === 'string' ? entry.phase : '',
         characterCount: Number.isFinite(Number(entry.characterCount)) ? Number(entry.characterCount) : null,
+        wordCount: Number.isFinite(Number(entry.wordCount)) ? Number(entry.wordCount) : null,
         tokenCount: Number.isFinite(Number(entry.tokenCount)) ? Number(entry.tokenCount) : null,
         tokenCountSource: typeof entry.tokenCountSource === 'string' ? entry.tokenCountSource : '',
         tokenCountModel: typeof entry.tokenCountModel === 'string' ? entry.tokenCountModel : '',

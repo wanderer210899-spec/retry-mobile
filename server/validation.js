@@ -7,6 +7,7 @@ function normalizeText(text) {
 const VALIDATION_MODE = Object.freeze({
     CHARACTERS: 'characters',
     TOKENS: 'tokens',
+    WORDS: 'words',
 });
 
 const TOKEN_COUNT_SOURCE = Object.freeze({
@@ -25,6 +26,15 @@ function countCharacters(text) {
     return Array.from(normalized.replace(/\s+/gu, '')).length;
 }
 
+function countWords(text) {
+    const normalized = normalizeText(text);
+    if (!normalized) {
+        return 0;
+    }
+
+    return normalized.split(/\s+/u).filter(Boolean).length;
+}
+
 function countTokensHeuristic(text) {
     const normalized = normalizeText(text);
     if (!normalized) {
@@ -40,14 +50,23 @@ function normalizeValidationMode(runConfig = {}) {
         return VALIDATION_MODE.TOKENS;
     }
 
+    if (runConfig.validationMode === VALIDATION_MODE.WORDS) {
+        return VALIDATION_MODE.WORDS;
+    }
+
     return VALIDATION_MODE.CHARACTERS;
 }
 
 function getValidationThreshold(runConfig = {}) {
     const mode = normalizeValidationMode(runConfig);
-    const threshold = mode === VALIDATION_MODE.TOKENS
-        ? Math.max(0, Number(runConfig.minTokens) || 0)
-        : Math.max(0, Number(runConfig.minCharacters ?? runConfig.minWords) || 0);
+    let threshold;
+    if (mode === VALIDATION_MODE.TOKENS) {
+        threshold = Math.max(0, Number(runConfig.minTokens) || 0);
+    } else if (mode === VALIDATION_MODE.WORDS) {
+        threshold = Math.max(0, Number(runConfig.minWords) || 0);
+    } else {
+        threshold = Math.max(0, Number(runConfig.minCharacters) || 0);
+    }
 
     return {
         mode,
@@ -205,14 +224,21 @@ function validateRunConfig(runConfig = {}) {
         };
     }
 
+    let message;
+    if (validation.mode === VALIDATION_MODE.TOKENS) {
+        message = 'Minimum tokens must be greater than 0 when token-count blocking is active.';
+    } else if (validation.mode === VALIDATION_MODE.WORDS) {
+        message = 'Minimum words must be greater than 0 when word-count blocking is active.';
+    } else {
+        message = 'Minimum characters must be greater than 0 when character-count blocking is active.';
+    }
+
     return {
         ok: false,
         ...validation,
         attemptTimeoutSeconds,
         code: 'validation_config_invalid',
-        message: validation.mode === VALIDATION_MODE.TOKENS
-            ? 'Minimum tokens must be greater than 0 when token-count blocking is active.'
-            : 'Minimum characters must be greater than 0 when character-count blocking is active.',
+        message,
     };
 }
 
@@ -223,6 +249,7 @@ async function validateAcceptedText(text, runConfig = {}, options = {}) {
     const metrics = {
         text: normalized,
         characterCount: countCharacters(normalized),
+        wordCount: countWords(normalized),
         tokenCount: tokenMetrics.tokenCount,
         tokenCountSource: tokenMetrics.tokenCountSource,
         tokenizerModel: tokenMetrics.tokenizerModel,
@@ -260,6 +287,16 @@ async function validateAcceptedText(text, runConfig = {}, options = {}) {
         };
     }
 
+    if (validation.mode === VALIDATION_MODE.WORDS && validation.threshold > 0 && metrics.wordCount < validation.threshold) {
+        return {
+            accepted: false,
+            reason: 'below_min_words',
+            metrics,
+            validationMode: validation.mode,
+            threshold: validation.threshold,
+        };
+    }
+
     if (validation.mode === VALIDATION_MODE.TOKENS && validation.threshold > 0 && metrics.tokenCount < validation.threshold) {
         return {
             accepted: false,
@@ -283,6 +320,8 @@ module.exports = {
     TOKEN_COUNT_SOURCE,
     VALIDATION_MODE,
     countTokensHeuristic,
+    countWords,
+    countCharacters,
     validateRunConfig,
     validateAcceptedText,
 };

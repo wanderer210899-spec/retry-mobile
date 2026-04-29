@@ -186,6 +186,7 @@ async function runJob(job, environment) {
                     message: formatValidationRejection(validation),
                     phase: 'validation_rejected',
                     characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                     tokenCount: validation.metrics.tokenCount,
                     tokenCountSource: validation.metrics.tokenCountSource,
                     tokenCountModel: validation.metrics.tokenizerModel,
@@ -202,6 +203,7 @@ async function runJob(job, environment) {
                         attemptNumber: job.attemptCount,
                         reason: validation.reason,
                         characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                         tokenCount: validation.metrics.tokenCount,
                         tokenCountSource: validation.metrics.tokenCountSource,
                         tokenCountModel: validation.metrics.tokenizerModel,
@@ -239,6 +241,7 @@ async function runJob(job, environment) {
                         message: structuredError.message,
                         phase: 'awaiting_native_confirmation',
                         characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                         tokenCount: validation.metrics.tokenCount,
                     });
                     await awaitNativeOutcome(job);
@@ -255,6 +258,7 @@ async function runJob(job, environment) {
                         message: structuredError.message,
                         phase: 'native_confirming_persisted',
                         characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                         tokenCount: validation.metrics.tokenCount,
                     });
                     await recoverConfirmedAssistantGap(job);
@@ -270,6 +274,7 @@ async function runJob(job, environment) {
                     job.orphanedAcceptedResults.push({
                         text: validation.metrics.text,
                         characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                         tokenCount: validation.metrics.tokenCount,
                         tokenCountSource: validation.metrics.tokenCountSource,
                         tokenizerModel: validation.metrics.tokenizerModel,
@@ -285,6 +290,7 @@ async function runJob(job, environment) {
                         message: structuredError.message,
                         phase: 'writing_chat',
                         characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                         tokenCount: validation.metrics.tokenCount,
                         tokenCountSource: validation.metrics.tokenCountSource,
                         tokenCountModel: validation.metrics.tokenizerModel,
@@ -298,6 +304,7 @@ async function runJob(job, environment) {
                             attemptNumber: job.attemptCount,
                             code: structuredError.code,
                             characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                             tokenCount: validation.metrics.tokenCount,
                             tokenCountSource: validation.metrics.tokenCountSource,
                             tokenCountModel: validation.metrics.tokenizerModel,
@@ -311,6 +318,7 @@ async function runJob(job, environment) {
             job.acceptedResults.push({
                 text: validation.metrics.text,
                 characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                 tokenCount: validation.metrics.tokenCount,
                 tokenCountSource: validation.metrics.tokenCountSource,
                 tokenizerModel: validation.metrics.tokenizerModel,
@@ -332,6 +340,7 @@ async function runJob(job, environment) {
                 message: `Accepted and wrote swipe ${job.acceptedCount}/${job.targetAcceptedCount}.`,
                 phase: 'awaiting_retry_results',
                 characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                 tokenCount: validation.metrics.tokenCount,
                 tokenCountSource: validation.metrics.tokenCountSource,
                 tokenCountModel: validation.metrics.tokenizerModel,
@@ -346,6 +355,7 @@ async function runJob(job, environment) {
                 detail: {
                     attemptNumber: job.attemptCount,
                     characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                     tokenCount: validation.metrics.tokenCount,
                     tokenCountSource: validation.metrics.tokenCountSource,
                     tokenCountModel: validation.metrics.tokenizerModel,
@@ -360,6 +370,7 @@ async function runJob(job, environment) {
                 targetAcceptedCount: job.targetAcceptedCount,
                 attemptCount: job.attemptCount,
                 characterCount: validation.metrics.characterCount,
+                    wordCount: validation.metrics.wordCount,
                 tokenCount: validation.metrics.tokenCount,
             });
         }
@@ -1238,6 +1249,10 @@ function formatValidationRejection(validation) {
 
     if (validation.reason === 'below_min_characters') {
         return `The response only had ${validation.metrics.characterCount} characters, below the required ${validation.threshold}.`;
+    }
+
+    if (validation.reason === 'below_min_words') {
+        return `The response only had ${validation.metrics.wordCount} words, below the required ${validation.threshold}.`;
     }
 
     if (validation.reason === 'below_min_tokens') {

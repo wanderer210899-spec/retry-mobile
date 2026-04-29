@@ -1,8 +1,10 @@
 import {
+    COUNTER_MODE,
     EXTENSION_ID,
     PANEL_ID,
     RUN_MODE,
     VALIDATION_MODE,
+    resolveCounterMode,
 } from '../constants.js';
 import { buildPanelTemplate } from './panel-template.js';
 import { setLanguage } from '../i18n.js';
@@ -40,7 +42,10 @@ export function mountPanel(runtime, {
     const drawer = document.createElement('div');
     drawer.id = PANEL_ID;
     drawer.className = 'inline-drawer';
-    drawer.innerHTML = buildPanelTemplate();
+    drawer.innerHTML = buildPanelTemplate({
+        counterMode: runtime.settings.counterMode,
+        uiLanguage: runtime.settings.uiLanguage,
+    });
 
     host.prepend(drawer);
     cachePanelElements(runtime, drawer);
@@ -59,10 +64,10 @@ export function syncValidationControls(runtime, settings) {
         return;
     }
 
-    const charactersInput = runtime.ui.charactersInput;
+    const counterInput = runtime.ui.counterInput;
     const tokensInput = runtime.ui.tokensInput;
-    if (charactersInput) {
-        charactersInput.disabled = settings.validationMode !== VALIDATION_MODE.CHARACTERS;
+    if (counterInput) {
+        counterInput.disabled = settings.validationMode !== VALIDATION_MODE.CHARACTERS;
     }
     if (tokensInput) {
         tokensInput.disabled = settings.validationMode !== VALIDATION_MODE.TOKENS;
@@ -85,8 +90,9 @@ function cachePanelElements(runtime, drawer) {
     runtime.ui.tabButtons = Array.from(drawer.querySelectorAll('.rm-tab'));
     runtime.ui.toggleLogButton = drawer.querySelector('[data-action="toggle-log"]');
     runtime.ui.syncStatusButton = drawer.querySelector('[data-action="sync-status"]');
-    runtime.ui.charactersInput = drawer.querySelector(`#${EXTENSION_ID}-characters`);
+    runtime.ui.counterInput = drawer.querySelector('[data-role="counter-input"]');
     runtime.ui.tokensInput = drawer.querySelector(`#${EXTENSION_ID}-tokens`);
+    runtime.ui.counterModeSelect = drawer.querySelector(`#${EXTENSION_ID}-counter-mode`);
 }
 
 function bindPanelEvents(drawer, runtime, {
@@ -151,13 +157,17 @@ function bindPanelEvents(drawer, runtime, {
 
     drawer.addEventListener('change', (event) => {
         const languageChanged = event.target?.id === `${EXTENSION_ID}-ui-language`;
+        const counterModeChanged = event.target?.id === `${EXTENSION_ID}-counter-mode`;
         const changed = updateSettingsFromChange(event.target, runtime.settings);
         if (!changed) {
             return;
         }
 
         persistSettings();
-        if (languageChanged) {
+        // Both language and counter-mode changes affect the rendered counter
+        // label/input on the main panel — rebuild the template so the right
+        // labels, ids and helper bindings are present.
+        if (languageChanged || counterModeChanged) {
             remountLocalizedPanel(drawer, runtime, {
                 render,
                 persistSettings,
@@ -179,10 +189,18 @@ function hydrateForm(runtime) {
     drawer.querySelector(`#${EXTENSION_ID}-attempts`).value = String(runtime.settings.maxAttempts);
     drawer.querySelector(`#${EXTENSION_ID}-timeout`).value = String(runtime.settings.attemptTimeoutSeconds);
     drawer.querySelector(`#${EXTENSION_ID}-native-grace`).value = String(runtime.settings.nativeGraceSeconds);
-    drawer.querySelector(`#${EXTENSION_ID}-characters`).value = String(runtime.settings.minCharacters);
+    const counterInput = runtime.ui.counterInput;
+    if (counterInput) {
+        const isWordsInput = counterInput.dataset.counterMode === COUNTER_MODE.WORDS;
+        counterInput.value = String(isWordsInput ? runtime.settings.minWords : runtime.settings.minCharacters);
+    }
     drawer.querySelector(`#${EXTENSION_ID}-tokens`).value = String(runtime.settings.minTokens);
     drawer.querySelector(`#${EXTENSION_ID}-notification-template`).value = runtime.settings.notificationMessageTemplate || '';
     drawer.querySelector(`#${EXTENSION_ID}-ui-language`).value = String(runtime.settings.uiLanguage || 'en');
+    const counterModeSelect = runtime.ui.counterModeSelect;
+    if (counterModeSelect) {
+        counterModeSelect.value = String(runtime.settings.counterMode || COUNTER_MODE.AUTO);
+    }
     drawer.querySelectorAll(`input[name="${EXTENSION_ID}-run-mode"]`).forEach((element) => {
         element.checked = element.value === runtime.settings.runMode;
     });
@@ -240,13 +258,32 @@ function updateSettingsFromChange(target, settings) {
         return true;
     }
 
-    if (target?.id === `${EXTENSION_ID}-characters`) {
-        settings.minCharacters = clampWholeNumber(target.value, 0, settings.minCharacters);
+    // The counter input id varies by counter mode (-characters or -words).
+    // Read the data-counter-mode attribute we stamped onto the element.
+    if (target?.dataset?.role === 'counter-input') {
+        const subMode = target.dataset.counterMode === COUNTER_MODE.WORDS
+            ? COUNTER_MODE.WORDS
+            : COUNTER_MODE.CHARACTERS;
+        if (subMode === COUNTER_MODE.WORDS) {
+            settings.minWords = clampWholeNumber(target.value, 0, settings.minWords);
+        } else {
+            settings.minCharacters = clampWholeNumber(target.value, 0, settings.minCharacters);
+        }
         return true;
     }
 
     if (target?.id === `${EXTENSION_ID}-tokens`) {
         settings.minTokens = clampWholeNumber(target.value, 0, settings.minTokens);
+        return true;
+    }
+
+    if (target?.id === `${EXTENSION_ID}-counter-mode`) {
+        const value = String(target.value || '').trim().toLowerCase();
+        if (value === COUNTER_MODE.WORDS || value === COUNTER_MODE.CHARACTERS) {
+            settings.counterMode = value;
+        } else {
+            settings.counterMode = COUNTER_MODE.AUTO;
+        }
         return true;
     }
 
@@ -275,7 +312,10 @@ function clampWholeNumber(value, minimum, fallback) {
 
 function remountLocalizedPanel(drawer, runtime, options) {
     drawer.dataset.rmBound = '';
-    drawer.innerHTML = buildPanelTemplate();
+    drawer.innerHTML = buildPanelTemplate({
+        counterMode: runtime.settings.counterMode,
+        uiLanguage: runtime.settings.uiLanguage,
+    });
     cachePanelElements(runtime, drawer);
     bindPanelEvents(drawer, runtime, options);
     hydrateForm(runtime);

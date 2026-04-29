@@ -16,6 +16,16 @@ export const RUN_MODE = Object.freeze({
 export const VALIDATION_MODE = Object.freeze({
     CHARACTERS: 'characters',
     TOKENS: 'tokens',
+    WORDS: 'words',
+});
+
+// Sub-mode of the "counter" path on the main panel: either count words
+// (English-style) or characters (Chinese-style 字数). The 'auto' value defers
+// to the active UI language: en → words, zh → characters.
+export const COUNTER_MODE = Object.freeze({
+    AUTO: 'auto',
+    WORDS: 'words',
+    CHARACTERS: 'characters',
 });
 
 export const DEFAULT_SETTINGS = Object.freeze({
@@ -25,9 +35,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
     maxAttempts: 30,
     attemptTimeoutSeconds: 90,
     nativeGraceSeconds: 30,
+    // 'characters' here means the binary counter side of the toggle (vs. 'tokens').
+    // Whether that's word-counted or character-counted is decided by counterMode.
     validationMode: VALIDATION_MODE.CHARACTERS,
+    counterMode: COUNTER_MODE.AUTO,
     minTokens: 0,
     minCharacters: 300,
+    minWords: 60,
     notifyOnSuccess: false,
     notifyOnComplete: true,
     vibrateOnSuccess: false,
@@ -35,6 +49,16 @@ export const DEFAULT_SETTINGS = Object.freeze({
     notificationMessageTemplate: '',
     allowHeuristicTokenFallback: false,
 });
+
+// Resolves the AUTO sentinel against the current uiLanguage. en → words; zh → characters.
+export function resolveCounterMode(counterMode, uiLanguage) {
+    if (counterMode === COUNTER_MODE.WORDS || counterMode === COUNTER_MODE.CHARACTERS) {
+        return counterMode;
+    }
+    return String(uiLanguage || '').toLowerCase() === 'zh'
+        ? COUNTER_MODE.CHARACTERS
+        : COUNTER_MODE.WORDS;
+}
 
 export const REQUIRED_EVENT_NAMES = Object.freeze([
     'CHAT_CHANGED',

@@ -3,7 +3,7 @@ import { sendFrontendLogEvent, syncRetryLogForStatus } from './logs/retry-log.js
 import { createStructuredError } from './retry-error.js';
 import { writeSettings, readSettings } from './settings.js';
 import { getChatIdentity, getContext, getEventTypes, showToast, subscribeEvent } from './st-context.js';
-import { PROTOCOL_VERSION } from './constants.js';
+import { COUNTER_MODE, PROTOCOL_VERSION, VALIDATION_MODE, resolveCounterMode } from './constants.js';
 import { createRuntime } from './core/runtime.js';
 import { isRunningLikeState } from './core/run-state.js';
 import { createRenderer } from './ui/render.js';
@@ -603,20 +603,28 @@ function getArmValidationError(runtime) {
         );
     }
 
-    const minimum = runtime.settings?.validationMode === 'tokens'
-        ? Number(runtime.settings?.minTokens) || 0
-        : Number(runtime.settings?.minCharacters) || 0;
+    const settings = runtime.settings || {};
+    let minimum;
+    let invalidMessage;
+    if (settings.validationMode === VALIDATION_MODE.TOKENS) {
+        minimum = Number(settings.minTokens) || 0;
+        invalidMessage = 'Minimum tokens must be greater than 0 when token-count blocking is active.';
+    } else {
+        const counter = resolveCounterMode(settings.counterMode, settings.uiLanguage);
+        if (counter === COUNTER_MODE.WORDS) {
+            minimum = Number(settings.minWords) || 0;
+            invalidMessage = 'Minimum words must be greater than 0 when word-count blocking is active.';
+        } else {
+            minimum = Number(settings.minCharacters) || 0;
+            invalidMessage = 'Minimum characters must be greater than 0 when character-count blocking is active.';
+        }
+    }
 
     if (minimum > 0) {
         return null;
     }
 
-    return createStructuredError(
-        'validation_config_invalid',
-        runtime.settings?.validationMode === 'tokens'
-            ? 'Minimum tokens must be greater than 0 when token-count blocking is active.'
-            : 'Minimum characters must be greater than 0 when character-count blocking is active.',
-    );
+    return createStructuredError('validation_config_invalid', invalidMessage);
 }
 
 function formatDiagnosticsBlock(diagnostics) {

@@ -1,13 +1,24 @@
 import {
+    COUNTER_MODE,
     EXTENSION_ID,
     EXTENSION_NAME,
     REPOSITORY_URL,
     RUN_MODE,
     VALIDATION_MODE,
+    resolveCounterMode,
 } from '../constants.js';
-import { t } from '../i18n.js';
+import { getLanguage, t } from '../i18n.js';
 
-export function buildPanelTemplate() {
+export function buildPanelTemplate(options = {}) {
+    const counterMode = resolveCounterMode(options.counterMode, options.uiLanguage || getLanguage());
+    const isWords = counterMode === COUNTER_MODE.WORDS;
+    // The radio label is the localized name for the non-tokenizer counter — always
+    // "Word counter" in English and "字数" in Chinese, regardless of which sub-unit
+    // (words vs characters) is currently selected. The min-input label below is
+    // what changes to clarify the actual unit.
+    const counterLabel = t('panel.wordCounterLabel');
+    const counterMinLabel = isWords ? t('panel.minimumWordsLabel') : t('panel.minimumCharactersLabel');
+    const counterInputId = isWords ? `${EXTENSION_ID}-words` : `${EXTENSION_ID}-characters`;
     return `
         <div class="inline-drawer-toggle inline-drawer-header">
             <b>${EXTENSION_NAME}</b>
@@ -69,8 +80,8 @@ export function buildPanelTemplate() {
                             <label class="rm-field__label">${escapeHtml(t('panel.minLengthBlockLabel'))}</label>
                             <div class="rm-block-grid" role="radiogroup" aria-label="${escapeHtml(t('panel.minLengthBlockLabel'))}">
                                 <label class="rm-block-option">
-                                    <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.CHARACTERS}" />
-                                    <span>${escapeHtml(t('panel.charactersLabel'))}</span>
+                                    <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.CHARACTERS}" data-role="counter-radio" />
+                                    <span data-role="counter-radio-label">${escapeHtml(counterLabel)}</span>
                                 </label>
                                 <label class="rm-block-option">
                                     <input type="radio" name="${EXTENSION_ID}-validation-mode" value="${VALIDATION_MODE.TOKENS}" />
@@ -78,9 +89,9 @@ export function buildPanelTemplate() {
                                 </label>
                             </div>
                             <div class="rm-number-rows">
-                                <div class="rm-inline-row">
-                                    <label class="rm-inline-row__label" for="${EXTENSION_ID}-characters">${escapeHtml(t('panel.minimumCharactersLabel'))}</label>
-                                    <input id="${EXTENSION_ID}-characters" class="rm-number-input" type="number" min="0" step="1" />
+                                <div class="rm-inline-row" data-role="counter-input-row">
+                                    <label class="rm-inline-row__label" data-role="counter-input-label" for="${counterInputId}">${escapeHtml(counterMinLabel)}</label>
+                                    <input id="${counterInputId}" data-role="counter-input" data-counter-mode="${isWords ? COUNTER_MODE.WORDS : COUNTER_MODE.CHARACTERS}" class="rm-number-input" type="number" min="0" step="1" />
                                 </div>
                                 <div class="rm-inline-row">
                                     <label class="rm-inline-row__label" for="${EXTENSION_ID}-tokens">${escapeHtml(t('panel.minimumTokensLabel'))}</label>
@@ -147,6 +158,15 @@ export function buildPanelTemplate() {
                                 <option value="zh">${escapeHtml(t('panel.languageChinese'))}</option>
                             </select>
                         </div>
+                        <div class="rm-inline-row rm-inline-row--controls">
+                            <label class="rm-inline-row__label" for="${EXTENSION_ID}-counter-mode">${escapeHtml(t('panel.counterModeLabel'))}</label>
+                            <select id="${EXTENSION_ID}-counter-mode" class="rm-number-input rm-select-language">
+                                <option value="${COUNTER_MODE.AUTO}">${escapeHtml(t('panel.counterModeAuto'))}</option>
+                                <option value="${COUNTER_MODE.WORDS}">${escapeHtml(t('panel.counterModeWords'))}</option>
+                                <option value="${COUNTER_MODE.CHARACTERS}">${escapeHtml(t('panel.counterModeCharacters'))}</option>
+                            </select>
+                        </div>
+                        <div class="rm-helptext" style="font-size: 12px; opacity: 0.75; margin-top: 4px;">${escapeHtml(t('panel.counterModeHelpAuto'))}</div>
                     </section>
 
                     <section class="rm-fieldset">
