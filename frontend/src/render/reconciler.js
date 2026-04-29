@@ -1,10 +1,7 @@
-import { RENDER_MESSAGE_RETRY_WAIT_MS } from '../constants.js';
-import { applyAcceptedOutput, reloadSessionUi } from './st-operations.js';
+import { applyAcceptedOutput } from './st-operations.js';
 
 export function createChatReconciler({
     applyAcceptedOutputFn = applyAcceptedOutput,
-    reloadSessionUiFn = reloadSessionUi,
-    waitMs = RENDER_MESSAGE_RETRY_WAIT_MS,
 } = {}) {
     let active = false;
 
@@ -36,17 +33,27 @@ export function createChatReconciler({
                 return { ok: false };
             }
 
-            const first = await applyAcceptedOutputFn?.(cloneValue(renderPayload));
-            if (first?.ok !== false) {
-                return first;
+            // ST can fire several rapid CHAT_CHANGED events and take a few hundred
+            // milliseconds to fully rebuild the in-memory chat array after a reload.
+            // Retry with increasing delays so we patch once the chat has settled,
+            // rather than after a single short wait or a forced reload.
+            const retryDelaysMs = [0, 350, 750, 1400];
+            let lastResult = null;
+            for (const delayMs of retryDelaysMs) {
+                if (delayMs > 0) {
+                    await sleep(delayMs);
+                }
+                const result = await applyAcceptedOutputFn?.(cloneValue(renderPayload));
+                lastResult = result;
+                if (result?.ok !== false) {
+                    return result;
+                }
+                // recoveryRequired === false means the user switched chat; stop retrying.
+                if (result?.recoveryRequired === false) {
+                    break;
+                }
             }
-
-            await sleep(waitMs);
-            const second = await applyAcceptedOutputFn?.(cloneValue(renderPayload));
-            if (second?.ok === false) {
-                await reloadSessionUiFn?.();
-            }
-            return second;
+            return lastResult ?? { ok: false };
         },
     };
 }

@@ -265,7 +265,8 @@
     "download": { "en": "Download", "zh": "下载" },
     "languageLabel": { "en": "Language", "zh": "语言" },
     "languageEnglish": { "en": "English", "zh": "English" },
-    "languageChinese": { "en": "中文", "zh": "中文" }
+    "languageChinese": { "en": "中文", "zh": "中文" },
+    "syncStatus": { "en": "Sync", "zh": "同步" }
   },
 
   "toasts": {

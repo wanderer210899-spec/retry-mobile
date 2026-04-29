@@ -130,7 +130,10 @@ export function buildPanelTemplate() {
                         <div class="rm-qr-status" data-role="qr-status"></div>
                     </section>
 
-                    <button class="menu_button rm-button--primary rm-button--full" data-action="toggle-run">${escapeHtml(t('panel.start'))}</button>
+                    <div class="rm-run-row">
+                        <button class="menu_button rm-button--primary" data-action="toggle-run">${escapeHtml(t('panel.start'))}</button>
+                        <button class="menu_button rm-button--inline rm-sync-button" data-action="sync-status" title="${escapeHtml(t('panel.syncStatus'))}">${escapeHtml(t('panel.syncStatus'))}</button>
+                    </div>
 
                     <div class="rm-error" data-role="error-box" hidden></div>
                 </div>

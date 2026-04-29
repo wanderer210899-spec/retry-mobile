@@ -546,6 +546,26 @@
     font-size: var(--rm-font-ui);
 }
 
+.rm-run-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.rm-run-row .rm-button--primary {
+    flex: 1 1 auto;
+    margin: 0;
+    border-radius: 8px;
+    min-height: 38px;
+    font-size: var(--rm-font-ui);
+}
+
+.rm-run-row .rm-sync-button {
+    flex-shrink: 0;
+    min-height: 38px;
+    border-radius: 8px;
+}
+
 .rm-button--primary {
     border-color: var(--rm-accent);
 }

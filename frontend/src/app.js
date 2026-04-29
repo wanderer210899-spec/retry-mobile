@@ -238,6 +238,9 @@ export async function bootRetryMobile() {
             onDownloadLog: async () => {
                 await systemController.downloadRetryLogFromUi();
             },
+            onSyncStatus: async () => {
+                await syncStatus();
+            },
         },
     });
 
@@ -407,53 +410,74 @@ export async function bootRetryMobile() {
             // Coming back from a hidden/suspended browser can detach the panel host.
             // Remount immediately rather than waiting for the periodic host observer tick.
             ensurePanelMounted();
-            if (state === RetryState.RUNNING) {
-                // page.visible, window.focused, and network.online all fire within ~400ms of
-                // each other on mobile browser resume. Only the first triggers resume + poll.
-                if (resumeSignalHandle) {
-                    return;
-                }
-                resumeSignalHandle = window.setTimeout(() => { resumeSignalHandle = 0; }, 500);
-                const context = retryFsm.getContext();
-                retryFsm.resume({
-                    reason: type,
-                    isVisible: Boolean(stPort.isVisible?.()),
-                    chatIdentity: resolveCaptureSubscriptionChatIdentity(
-                        context,
-                        getChatIdentity(getContext()),
-                    ),
-                    pendingVisibleRender: context.pendingVisibleRender,
-                });
-                syncRuntime();
-                render();
-
-                // resume()'s internal one-shot poll updates the FSM context and applies
-                // accepted output, but it calls handlePollingStatus (private) rather than
-                // going through updateActiveJob → render. That leaves runtime.activeJobStatus
-                // (and therefore the stats panel) at whatever the last regular poll reported,
-                // which can be up to 8 s stale after slow-cadence hidden-tab polling.
-                // Fire an explicit stats-only poll here so the panel reflects backend truth
-                // as soon as the user returns, without waiting for the next cadence tick.
-                const resumeJobId = context.jobId;
-                if (resumeJobId) {
-                    void backendPort.pollStatus?.(resumeJobId)
-                        .then((fresh) => {
-                            if (!fresh) return;
-                            if (retryFsm.getState() !== RetryState.RUNNING) return;
-                            if (retryFsm.getContext().jobId !== resumeJobId) return;
-                            updateActiveJob(fresh, resumeJobId);
-                            syncRuntime();
-                            render();
-                        })
-                        .catch(() => {});
-                }
+            if (state !== RetryState.RUNNING) {
+                // Non-RUNNING path: recovery is driven by CHAT_CHANGED events (which ST
+                // fires when it reloads the chat on browser return). The CHAT_CHANGED
+                // handler in restoreController is debounced so it waits for the chat to
+                // settle before reconciling. We do nothing here to avoid racing with those
+                // reloads — use the Sync button for a manual refresh if needed.
                 return;
             }
 
-            // If the browser was suspended long enough, we may have lost our in-memory
-            // mirror even though the backend job is still running. Re-run the boot
-            // recovery path opportunistically to reattach without requiring a full page refresh.
-            void restoreController.restoreControlState();
+            // RUNNING path: page.visible, window.focused, and network.online all fire
+            // within ~400ms of each other on mobile browser resume. Only the first
+            // triggers resume + poll.
+            if (resumeSignalHandle) {
+                return;
+            }
+            resumeSignalHandle = window.setTimeout(() => { resumeSignalHandle = 0; }, 500);
+            const context = retryFsm.getContext();
+            retryFsm.resume({
+                reason: type,
+                isVisible: Boolean(stPort.isVisible?.()),
+                chatIdentity: resolveCaptureSubscriptionChatIdentity(
+                    context,
+                    getChatIdentity(getContext()),
+                ),
+                pendingVisibleRender: context.pendingVisibleRender,
+            });
+            syncRuntime();
+            render();
+
+            // resume()'s internal one-shot poll updates the FSM context and applies
+            // accepted output, but it calls handlePollingStatus (private) rather than
+            // going through updateActiveJob → render. That leaves runtime.activeJobStatus
+            // (and therefore the stats panel) at whatever the last regular poll reported,
+            // which can be up to 8 s stale after slow-cadence hidden-tab polling.
+            // Fire an explicit stats-only poll here so the panel reflects backend truth
+            // as soon as the user returns, without waiting for the next cadence tick.
+            const resumeJobId = context.jobId;
+            if (resumeJobId) {
+                void backendPort.pollStatus?.(resumeJobId)
+                    .then((fresh) => {
+                        if (!fresh) return;
+                        if (retryFsm.getState() !== RetryState.RUNNING) return;
+                        if (retryFsm.getContext().jobId !== resumeJobId) return;
+                        updateActiveJob(fresh, resumeJobId);
+                        syncRuntime();
+                        render();
+                    })
+                    .catch(() => {});
+            }
+        }
+    }
+
+    async function syncStatus() {
+        const state = retryFsm.getState();
+        if (state === RetryState.RUNNING) {
+            const jobId = retryFsm.getContext().jobId;
+            if (jobId) {
+                const fresh = await backendPort.pollStatus?.(jobId).catch(() => null);
+                if (fresh && retryFsm.getState() === RetryState.RUNNING && retryFsm.getContext().jobId === jobId) {
+                    updateActiveJob(fresh, jobId);
+                    syncRuntime();
+                    render();
+                }
+            }
+            return;
+        }
+        if (state === RetryState.IDLE) {
+            await restoreController.restoreControlState();
         }
     }
 

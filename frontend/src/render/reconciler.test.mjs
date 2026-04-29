@@ -10,9 +10,6 @@ test('applyStatus forwards accepted-output payloads', async () => {
             calls.push(payload);
             return { ok: true, targetMessageVersion: 3 };
         },
-        async reloadSessionUiFn() {
-            throw new Error('reloadSessionUi should not be called on success');
-        },
     });
 
     const result = await reconciler.applyStatus({
@@ -29,7 +26,6 @@ test('flushPending returns not-ok for empty payloads', async () => {
         async applyAcceptedOutputFn() {
             return { ok: true };
         },
-        async reloadSessionUiFn() {},
     });
 
     const result = await reconciler.flushPending(null);
@@ -42,9 +38,6 @@ test('applyTerminal does not reload on failed apply (FSM owns last-resort reload
         async applyAcceptedOutputFn() {
             return { ok: false, error: { code: 'client_target_dom_missing' } };
         },
-        async reloadSessionUiFn() {
-            calls.push('reload');
-        },
     });
 
     const result = await reconciler.applyTerminal({
@@ -55,16 +48,13 @@ test('applyTerminal does not reload on failed apply (FSM owns last-resort reload
     assert.deepEqual(calls, []);
 });
 
-test('reconcileAfterRestore retries once then reloads on repeated failures', async () => {
+test('reconcileAfterRestore retries up to 4 times before giving up, never reloads', async () => {
     const calls = [];
     const reconciler = createChatReconciler({
-        waitMs: 0,
         async applyAcceptedOutputFn() {
             calls.push('apply');
-            return { ok: false, error: { code: 'client_target_dom_missing' } };
-        },
-        async reloadSessionUiFn() {
-            calls.push('reload');
+            // recoveryRequired: true means ST is still loading — keep retrying
+            return { ok: false, recoveryRequired: true, error: { code: 'client_target_dom_missing' } };
         },
     });
 
@@ -73,7 +63,47 @@ test('reconcileAfterRestore retries once then reloads on repeated failures', asy
         status: { state: 'running', targetMessageVersion: 5 },
     });
     assert.equal(result.ok, false);
-    assert.deepEqual(calls, ['apply', 'apply', 'reload']);
+    // 4 attempts: immediate + 3 delayed retries (350ms, 750ms, 1400ms)
+    assert.equal(calls.length, 4);
+    assert.ok(!calls.includes('reload'));
+});
+
+test('reconcileAfterRestore stops retrying when recoveryRequired is false (chat changed)', async () => {
+    const calls = [];
+    const reconciler = createChatReconciler({
+        async applyAcceptedOutputFn() {
+            calls.push('apply');
+            return { ok: false, recoveryRequired: false, error: { code: 'client_chat_changed' } };
+        },
+    });
+
+    const result = await reconciler.reconcileAfterRestore({
+        kind: 'accepted_output',
+        status: { state: 'completed', targetMessageVersion: 2 },
+    });
+    assert.equal(result.ok, false);
+    // Stops after first attempt because recoveryRequired === false
+    assert.equal(calls.length, 1);
+});
+
+test('reconcileAfterRestore succeeds on second attempt when chat settles', async () => {
+    let callCount = 0;
+    const reconciler = createChatReconciler({
+        async applyAcceptedOutputFn() {
+            callCount += 1;
+            if (callCount < 2) {
+                return { ok: false, recoveryRequired: true, error: { code: 'client_target_missing' } };
+            }
+            return { ok: true, targetMessageVersion: 1 };
+        },
+    });
+
+    const result = await reconciler.reconcileAfterRestore({
+        kind: 'accepted_output',
+        status: { state: 'completed', targetMessageVersion: 1 },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(callCount, 2);
 });
 
 test('reconciler active state toggles for FSM invariants', () => {
@@ -81,7 +111,6 @@ test('reconciler active state toggles for FSM invariants', () => {
         async applyAcceptedOutputFn() {
             return { ok: true };
         },
-        async reloadSessionUiFn() {},
     });
     assert.equal(reconciler.isActive(), false);
     reconciler.setActive(true);

@@ -171,6 +171,7 @@ export function createRestoreController({
 }) {
     let chatChangedStop = null;
     let restoreRetryCount = 0;
+    let chatChangedDebounceHandle = 0;
 
     async function restoreControlState() {
         if (retryFsm.getState() !== RetryState.IDLE) {
@@ -314,7 +315,16 @@ export function createRestoreController({
             if (retryFsm.getState() !== RetryState.IDLE) {
                 return;
             }
-            void restoreControlState();
+            // ST fires CHAT_CHANGED multiple times in quick succession during a chat
+            // reload (e.g. when the browser returns from a hidden state). Debounce so
+            // we only attempt restore once, after the chat has had a chance to settle.
+            if (chatChangedDebounceHandle) {
+                windowRef.clearTimeout(chatChangedDebounceHandle);
+            }
+            chatChangedDebounceHandle = windowRef.setTimeout(() => {
+                chatChangedDebounceHandle = 0;
+                void restoreControlState();
+            }, 400);
         });
     }
 
@@ -323,6 +333,10 @@ export function createRestoreController({
             chatChangedStop();
         }
         chatChangedStop = null;
+        if (chatChangedDebounceHandle) {
+            windowRef.clearTimeout(chatChangedDebounceHandle);
+            chatChangedDebounceHandle = 0;
+        }
     }
 
     return {

@@ -84,6 +84,7 @@ function cachePanelElements(runtime, drawer) {
     runtime.ui.systemPane = drawer.querySelector('[data-role="system-pane"]');
     runtime.ui.tabButtons = Array.from(drawer.querySelectorAll('.rm-tab'));
     runtime.ui.toggleLogButton = drawer.querySelector('[data-action="toggle-log"]');
+    runtime.ui.syncStatusButton = drawer.querySelector('[data-action="sync-status"]');
     runtime.ui.charactersInput = drawer.querySelector(`#${EXTENSION_ID}-characters`);
     runtime.ui.tokensInput = drawer.querySelector(`#${EXTENSION_ID}-tokens`);
 }
@@ -140,6 +141,11 @@ function bindPanelEvents(drawer, runtime, {
 
         if (action === 'download-log') {
             await actions.onDownloadLog?.();
+            return;
+        }
+
+        if (action === 'sync-status') {
+            await actions.onSyncStatus?.();
         }
     });
 
