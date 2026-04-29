@@ -40,6 +40,7 @@ export function createInitialRetryContext(overrides = {}) {
         lastKnownTargetMessageVersion: numberOrNull(overrides.lastKnownTargetMessageVersion) || 0,
         lastAppliedVersion: numberOrNull(overrides.lastAppliedVersion) || 0,
         pendingVisibleRender: clonePlain(overrides.pendingVisibleRender) || null,
+        reloadAttempted: Boolean(overrides.reloadAttempted),
         lastTerminalResult: clonePlain(overrides.lastTerminalResult) || null,
         runError: clonePlain(overrides.runError) || null,
         terminalError: clonePlain(overrides.terminalError) || null,
@@ -200,6 +201,7 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
+            reloadAttempted: false,
             // A new RUNNING phase must never inherit the previous job's terminal
             // snapshot. If we kept it, `deriveUiState` (which falls back to
             // `lastTerminalResult.status` when `activeJobStatus` is missing) and
@@ -360,6 +362,7 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: numberOrNull(payload.lastKnownTargetMessageVersion) || numberOrNull(status?.targetMessageVersion) || 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
+            reloadAttempted: false,
             lastTerminalResult: null,
             runError: null,
             terminalError: null,
@@ -399,9 +402,15 @@ export function createRetryFsm({
                         return;
                     }
                     if (result?.ok === false) {
-                        try {
-                            await stPort.guardedReload?.();
-                        } catch {}
+                        if (!context.reloadAttempted) {
+                            context = createContextForState({
+                                ...context,
+                                reloadAttempted: true,
+                            });
+                            try {
+                                await stPort.guardedReload?.();
+                            } catch {}
+                        }
                         context = createContextForState({
                             ...context,
                             lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
@@ -440,9 +449,15 @@ export function createRetryFsm({
                     if (!isState(context, RetryState.RUNNING)) {
                         return;
                     }
-                    try {
-                        await stPort.guardedReload?.();
-                    } catch {}
+                    if (!context.reloadAttempted) {
+                        context = createContextForState({
+                            ...context,
+                            reloadAttempted: true,
+                        });
+                        try {
+                            await stPort.guardedReload?.();
+                        } catch {}
+                    }
                     context = createContextForState({
                         ...context,
                         lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
@@ -785,6 +800,23 @@ export function createRetryFsm({
                     return;
                 }
                 if (result?.ok === false) {
+                    if (result?.recoveryRequired && context.jobId && !context.reloadAttempted) {
+                        const jobId = context.jobId;
+                        context = createContextForState({
+                            ...context,
+                            reloadAttempted: true,
+                        });
+                        Promise.resolve(stPort.guardedReload?.())
+                            .then(() => backendPort.pollStatus?.(jobId))
+                            .then((fresh) => {
+                                if (!fresh || !isState(context, RetryState.RUNNING)) {
+                                    return;
+                                }
+                                return handlePollingStatus(fresh);
+                            })
+                            .catch(() => {});
+                        return;
+                    }
                     handleVisibleApplyFailure(result?.error);
                     return;
                 }
@@ -844,20 +876,25 @@ export function createRetryFsm({
     }
 
     async function completeAfterBestEffortReload(status) {
-        try {
-            await stPort.guardedReload?.();
-        } finally {
-            if (isState(context, RetryState.RUNNING)) {
-                jobCompleted({ status });
-            }
+        if (isState(context, RetryState.RUNNING) && !context.reloadAttempted) {
+            context = createContextForState({
+                ...context,
+                reloadAttempted: true,
+            });
+            try {
+                await stPort.guardedReload?.();
+            } catch {}
+        }
+        if (isState(context, RetryState.RUNNING)) {
+            jobCompleted({ status });
         }
     }
 
     function handlePollingError(error) {
         const normalizedError = normalizeStructuredError(
             error,
-            'handoff_request_failed',
-            'Retry Mobile backend polling failed.',
+            'polling_transport_unavailable',
+            'Retry Mobile temporarily lost contact with the backend retry job.',
         );
         logDeveloperError(logger, {
             transition: 'pollingError',
@@ -865,8 +902,15 @@ export function createRetryFsm({
             jobId: context.jobId,
             error: normalizedError,
         });
+        // Product requirement: frontend lifecycle and transient transport failures
+        // must not be treated as terminal job failure. The backend is the truth
+        // source and continues independently. Degrade UI + keep running; a future
+        // successful poll will clear runError.
         if (isState(context, RetryState.RUNNING)) {
-            jobFailed({ error: normalizedError });
+            context = createContextForState({
+                ...context,
+                runError: normalizedError,
+            });
         }
     }
 
@@ -956,6 +1000,7 @@ function normalizeBaseContext(nextContext) {
         lastAppliedVersion: numberOrNull(nextContext.lastAppliedVersion) || 0,
         lastKnownTargetMessageVersion: numberOrNull(nextContext.lastKnownTargetMessageVersion) || 0,
         pendingVisibleRender: clonePlain(nextContext.pendingVisibleRender) || null,
+        reloadAttempted: Boolean(nextContext.reloadAttempted),
         lastTerminalResult: clonePlain(nextContext.lastTerminalResult) || null,
         toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
         runError: clonePlain(nextContext.runError) || null,
@@ -977,6 +1022,7 @@ export function createIdleContext(nextContext) {
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
+        reloadAttempted: false,
         toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
         terminalError: clonePlain(nextContext.terminalError) || null,
     });
@@ -994,6 +1040,7 @@ export function createArmedContext(nextContext) {
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
+        reloadAttempted: false,
         toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
         terminalError: clonePlain(nextContext.terminalError) || null,
     });
@@ -1009,6 +1056,7 @@ export function createCapturingContext(nextContext) {
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
+        reloadAttempted: false,
         toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
         terminalError: clonePlain(nextContext.terminalError) || null,
     });
@@ -1023,6 +1071,7 @@ export function createRunningContext(nextContext) {
         captureFingerprint: null,
         toastScope: normalizeToastScope(nextContext.toastScope, nextContext.jobId),
         runError: clonePlain(nextContext.runError) || null,
+        reloadAttempted: Boolean(nextContext.reloadAttempted),
     });
 }
 

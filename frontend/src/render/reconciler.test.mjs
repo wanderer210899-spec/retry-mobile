@@ -36,7 +36,7 @@ test('flushPending returns not-ok for empty payloads', async () => {
     assert.deepEqual(result, { ok: false });
 });
 
-test('applyTerminal performs fallback reload on failed apply', async () => {
+test('applyTerminal does not reload on failed apply (FSM owns last-resort reload)', async () => {
     const calls = [];
     const reconciler = createChatReconciler({
         async applyAcceptedOutputFn() {
@@ -52,7 +52,7 @@ test('applyTerminal performs fallback reload on failed apply', async () => {
         status: { state: 'completed' },
     });
     assert.equal(result.ok, false);
-    assert.deepEqual(calls, ['reload']);
+    assert.deepEqual(calls, []);
 });
 
 test('reconcileAfterRestore retries once then reloads on repeated failures', async () => {

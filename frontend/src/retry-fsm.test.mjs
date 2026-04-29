@@ -267,6 +267,7 @@ test('createInitialRetryContext exposes the explicit FSM context shape', () => {
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
+        reloadAttempted: false,
         lastTerminalResult: null,
         terminalError: null,
         toastScope: null,
@@ -715,6 +716,35 @@ test('running poll status does not advance applied version when applyAcceptedOut
     assert.equal(fsm.getContext().state, RetryState.RUNNING);
     assert.equal(fsm.getContext().runError?.code, 'render_apply_failed');
     assert.deepEqual(lastCall(calls, 'clearGeneratingIndicator')?.args[0], chatIdentity);
+});
+
+test('running poll status triggers a single guarded reload on recoveryRequired apply failure (browser-resume disk mismatch)', async () => {
+    const { fsm, calls, emitPolledStatus, setApplyAcceptedOutputResult, setPollStatusResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setApplyAcceptedOutputResult({ ok: false, recoveryRequired: true, error: { message: 'mismatch' } });
+    setPollStatusResult({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(calls.filter((entry) => entry.method === 'guardedReload').length, 1);
+
+    // A second failed apply in the same job should not trigger another reload.
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(calls.filter((entry) => entry.method === 'guardedReload').length, 1);
 });
 
 test('indicator stays cleared after render_apply_failed even if the next apply succeeds', async () => {

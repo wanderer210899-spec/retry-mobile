@@ -64,6 +64,7 @@ export function createBackendPort() {
         pollControllers.set(token, controller);
 
         void (async () => {
+            let consecutiveFailures = 0;
             while (!controller.signal.aborted) {
                 const intervalMs = cadenceToMs(resolveCadence(selectCadence));
                 if (intervalMs > 0) {
@@ -78,6 +79,7 @@ export function createBackendPort() {
                     if (controller.signal.aborted) {
                         return;
                     }
+                    consecutiveFailures = 0;
                     await onStatus?.(status);
                     if (isTerminalStatus(status)) {
                         stopPolling(token);
@@ -87,9 +89,12 @@ export function createBackendPort() {
                     if (controller.signal.aborted) {
                         return;
                     }
+                    consecutiveFailures += 1;
                     await onError?.(error);
-                    stopPolling(token);
-                    return;
+                    // Resilience requirement: the backend job must keep running even
+                    // if the frontend temporarily loses polling (mobile suspend/offline).
+                    // Keep polling with exponential backoff rather than failing closed.
+                    await delay(computeFailureBackoffMs(consecutiveFailures), controller.signal);
                 }
             }
         })();
@@ -119,6 +124,12 @@ function isTerminalStatus(status) {
         && (status.state === 'completed'
             || status.state === 'failed'
             || status.state === 'cancelled');
+}
+
+function computeFailureBackoffMs(consecutiveFailures) {
+    const failures = Math.max(1, Number(consecutiveFailures) || 1);
+    // 1s, 2s, 4s, 8s, 16s, 30s...
+    return Math.min(30_000, 1_000 * (2 ** Math.min(4, failures - 1)));
 }
 
 function cadenceToMs(cadence) {
