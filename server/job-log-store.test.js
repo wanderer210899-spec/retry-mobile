@@ -43,13 +43,14 @@ test('backend job logs are created with a human-readable title and rendered from
             directories,
         },
         captureMeta: {
+            clientTimezoneOffsetMinutes: -60,
             assistantName: '白肆昀',
         },
         skipPersist: true,
     });
 
     const cursor = ensureJobLog(job);
-    assert.match(cursor.title, /^2026-04-18 20-22-30 UTC - 白肆昀 - 9dbefa8a$/u);
+    assert.match(cursor.title, /^2026-04-18 21-22-30 UTC\+01:00 - 白肆昀 - 9dbefa8a$/u);
 
     appendJobLog(job, {
         source: 'backend',
@@ -76,10 +77,11 @@ test('backend job logs are created with a human-readable title and rendered from
         },
     });
 
-    assert.match(rendered, /^2026-04-18 20-22-30 UTC - 白肆昀 - 9dbefa8a/mu);
+    assert.match(rendered, /^2026-04-18 21-22-30 UTC\+01:00 - 白肆昀 - 9dbefa8a/mu);
     assert.match(rendered, /Attempt Summary:/u);
     assert.match(rendered, /Event Timeline:/u);
     assert.match(rendered, /attempt_started/u);
+    assert.match(rendered, /2026-04-18T21:23:00\+01:00 \| backend \| attempt_started/u);
 
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
 });

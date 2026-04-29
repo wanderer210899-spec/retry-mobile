@@ -217,8 +217,9 @@ function extractTitleFromEntries(entries) {
 }
 
 function buildLogEntry(job, entry = {}) {
+    const at = formatLogTimestamp(job, entry.at || new Date().toISOString());
     return {
-        at: entry.at || new Date().toISOString(),
+        at,
         source: String(entry.source || 'backend'),
         event: String(entry.event || 'event'),
         summary: String(entry.summary || ''),
@@ -264,19 +265,65 @@ function readJsonlFile(filePath) {
 }
 
 function buildJobLogTitle(job) {
-    const stamp = formatTitleTimestamp(job?.createdAt || new Date().toISOString());
+    const createdAt = job?.createdAt || new Date().toISOString();
+    const stamp = formatTitleTimestamp(createdAt, job);
+    const zoneLabel = formatTimestampZoneLabel(job, createdAt);
     const chatLabel = sanitizeTitlePart(buildChatLabel(job));
     const shortJobId = sanitizeTitlePart(String(job?.jobId || 'unknown').slice(0, 8));
-    return `${stamp} UTC - ${chatLabel} - ${shortJobId}`;
+    return `${stamp} ${zoneLabel} - ${chatLabel} - ${shortJobId}`;
 }
 
-function formatTitleTimestamp(value) {
+function formatTitleTimestamp(value, job = null) {
+    return formatTimestampParts(value, job).title;
+}
+
+function formatLogTimestamp(job, value) {
+    return formatTimestampParts(value, job).iso;
+}
+
+function formatTimestampParts(value, job = null) {
     const parsed = Date.parse(value || '');
-    const safeIso = Number.isFinite(parsed)
-        ? new Date(parsed).toISOString()
-        : new Date().toISOString();
-    const compact = safeIso.slice(0, 19).replace('T', ' ');
-    return compact.replaceAll(':', '-');
+    const utcDate = Number.isFinite(parsed)
+        ? new Date(parsed)
+        : new Date();
+    const offsetMinutes = resolveDisplayOffsetMinutes(job, utcDate);
+    const localDate = new Date(utcDate.getTime() - (offsetMinutes * 60_000));
+    const yyyy = String(localDate.getUTCFullYear()).padStart(4, '0');
+    const mm = String(localDate.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(localDate.getUTCDate()).padStart(2, '0');
+    const hh = String(localDate.getUTCHours()).padStart(2, '0');
+    const mi = String(localDate.getUTCMinutes()).padStart(2, '0');
+    const ss = String(localDate.getUTCSeconds()).padStart(2, '0');
+    return {
+        title: `${yyyy}-${mm}-${dd} ${hh}-${mi}-${ss}`,
+        iso: `${yyyy}-${mm}-${dd}T${hh}:${mi}:${ss}${formatOffsetSuffix(offsetMinutes)}`,
+    };
+}
+
+function formatTimestampZoneLabel(job, value) {
+    const parsed = Date.parse(value || '');
+    const utcDate = Number.isFinite(parsed)
+        ? new Date(parsed)
+        : new Date();
+    return `UTC${formatOffsetSuffix(resolveDisplayOffsetMinutes(job, utcDate))}`;
+}
+
+function resolveDisplayOffsetMinutes(job, date) {
+    const clientOffset = Number(job?.captureMeta?.clientTimezoneOffsetMinutes);
+    if (Number.isFinite(clientOffset) && Math.abs(clientOffset) <= 14 * 60) {
+        return Math.trunc(clientOffset);
+    }
+
+    return date.getTimezoneOffset();
+}
+
+function formatOffsetSuffix(offsetMinutes) {
+    const localOffsetMinutes = -Number(offsetMinutes || 0);
+    const sign = localOffsetMinutes >= 0 ? '+' : '-';
+    const absolute = Math.abs(localOffsetMinutes);
+    const hours = String(Math.trunc(absolute / 60)).padStart(2, '0');
+    const minutes = String(absolute % 60).padStart(2, '0');
+    return `${sign}${hours}:${minutes}`;
 }
 
 function buildChatLabel(job) {

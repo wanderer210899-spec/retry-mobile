@@ -32,6 +32,29 @@ test('extractReplayAuthContext returns null when the start request had no replay
     assert.equal(plugin._test.extractReplayAuthContext(request), null);
 });
 
+test('getRequestBaseUrl maps Android emulator host aliases to the backend-local SillyTavern origin', () => {
+    const request = {
+        protocol: 'http',
+        socket: { localPort: 8000 },
+        get(name) {
+            return String(name).toLowerCase() === 'host' ? '10.0.2.2:8000' : '';
+        },
+    };
+
+    assert.equal(plugin._test.getRequestBaseUrl(request), 'http://127.0.0.1:8000');
+});
+
+test('getRequestBaseUrl leaves ordinary browser hosts untouched', () => {
+    const request = {
+        protocol: 'http',
+        get(name) {
+            return String(name).toLowerCase() === 'host' ? '127.0.0.1:8000' : '';
+        },
+    };
+
+    assert.equal(plugin._test.getRequestBaseUrl(request), 'http://127.0.0.1:8000');
+});
+
 test('native_turn_mismatch is treated as an allowed native failure hint', () => {
     assert.equal(plugin._test.isAllowedNativeFailureReason('native_turn_mismatch'), true);
     assert.equal(plugin._test.isAllowedNativeFailureReason('native_wait_timeout'), true);

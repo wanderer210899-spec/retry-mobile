@@ -123,7 +123,8 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
 export function assistantTargetMatches(message, targetMessage, expectedAnchorId) {
     const liveAnchorId = getAssistantAnchorId(message);
     if (liveAnchorId) {
-        return liveAnchorId === expectedAnchorId;
+        return liveAnchorId === expectedAnchorId
+            || canAdoptPreviouslyAnchoredSeedTurn(message, targetMessage);
     }
 
     return canAdoptUnanchoredSeedTurn(message, targetMessage);
@@ -151,32 +152,82 @@ function canAdoptUnanchoredSeedTurn(message, targetMessage) {
         return true;
     }
 
-    const visibleText = normalizeText(message?.mes);
+    const visibleText = normalizeComparableText(message?.mes);
     if (!visibleText) {
         return true;
     }
 
-    if (visibleText === normalizeText(targetMessage?.mes)) {
+    if (visibleText === normalizeComparableText(targetMessage?.mes)) {
         return true;
     }
 
     const targetSwipes = Array.isArray(targetMessage?.swipes) ? targetMessage.swipes : [];
-    return targetSwipes.some((swipe) => normalizeText(swipe) === visibleText);
+    return targetSwipes.some((swipe) => normalizeComparableText(swipe) === visibleText);
+}
+
+function canAdoptPreviouslyAnchoredSeedTurn(message, targetMessage) {
+    if (!messageHasMeaningfulContent(message)) {
+        return true;
+    }
+
+    const liveSwipes = getMeaningfulSwipes(message);
+    const targetSwipes = getMeaningfulSwipes(targetMessage);
+    if (liveSwipes.length > 0) {
+        if (targetSwipes.length < liveSwipes.length) {
+            return false;
+        }
+
+        return liveSwipes.every((swipe, index) => swipe === targetSwipes[index]);
+    }
+
+    const visibleText = normalizeComparableText(message?.mes);
+    if (!visibleText) {
+        return true;
+    }
+
+    if (visibleText === normalizeComparableText(targetMessage?.mes)) {
+        return true;
+    }
+
+    return targetSwipes.some((swipe) => swipe === visibleText);
+}
+
+function getMeaningfulSwipes(message) {
+    const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
+    return swipes
+        .map((swipe) => normalizeComparableText(swipe))
+        .filter(Boolean);
 }
 
 function messageHasMeaningfulContent(message) {
-    if (normalizeText(message?.mes)) {
+    if (normalizeComparableText(message?.mes)) {
         return true;
     }
 
     const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
-    return swipes.some((swipe) => Boolean(normalizeText(swipe)));
+    return swipes.some((swipe) => Boolean(normalizeComparableText(swipe)));
 }
 
 function normalizeText(value) {
     return String(value ?? '')
         .replace(/\r\n/g, '\n')
         .trim();
+}
+
+function normalizeComparableText(value) {
+    let text = normalizeText(value);
+    const contentBlocks = [...text.matchAll(/<content\b[^>]*>([\s\S]*?)<\/content>/giu)]
+        .map((match) => normalizeText(match[1]))
+        .filter(Boolean);
+    if (contentBlocks.length > 0) {
+        text = contentBlocks.join('\n\n');
+    }
+
+    return normalizeText(text
+        .replace(/<(thinking|reasoning|analysis)\b[^>]*>[\s\S]*?<\/\1>/giu, '')
+        .replace(/<report\b[^>]*>[\s\S]*?<\/report>/giu, '')
+        .replace(/<\/?content\b[^>]*>/giu, '')
+        .replace(/<\/?[^>]+>/gu, ''));
 }
 
 export async function finishTerminalUi({ outcome, status, chatIdentity, signal }) {

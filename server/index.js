@@ -784,9 +784,58 @@ function getRecoveryMessage(reason) {
 }
 
 function getRequestBaseUrl(request) {
-    const protocol = request.protocol || 'http';
-    const host = request.get('host') || '127.0.0.1:8000';
+    const protocol = normalizeRequestProtocol(request?.protocol);
+    const host = normalizeReplayHost(request);
     return `${protocol}://${host}`;
+}
+
+function normalizeRequestProtocol(protocol) {
+    const value = typeof protocol === 'string' && protocol.trim()
+        ? protocol.trim().replace(/:$/u, '')
+        : 'http';
+    return value === 'https' ? 'https' : 'http';
+}
+
+function normalizeReplayHost(request) {
+    const rawHost = typeof request?.get === 'function'
+        ? normalizeHeaderValue(request.get('host'))
+        : normalizeHeaderValue(request?.headers?.host);
+    const host = rawHost || '127.0.0.1:8000';
+    const parsed = parseHostHeader(host);
+    if (!isAndroidEmulatorHost(parsed.hostname)) {
+        return host;
+    }
+
+    const localPort = parsed.port || normalizeLocalPort(request?.socket?.localPort) || '8000';
+    return `127.0.0.1:${localPort}`;
+}
+
+function parseHostHeader(host) {
+    try {
+        const url = new URL(`http://${host}`);
+        return {
+            hostname: String(url.hostname || '').replace(/^\[|\]$/gu, '').toLowerCase(),
+            port: url.port || '',
+        };
+    } catch {
+        return {
+            hostname: String(host || '').split(':')[0].toLowerCase(),
+            port: '',
+        };
+    }
+}
+
+function isAndroidEmulatorHost(hostname) {
+    return hostname === '10.0.2.2' || hostname === '10.0.3.2';
+}
+
+function normalizeLocalPort(port) {
+    const numeric = Number(port);
+    if (!Number.isInteger(numeric) || numeric < 1 || numeric > 65535) {
+        return '';
+    }
+
+    return String(numeric);
 }
 
 function extractReplayAuthContext(request) {
@@ -993,6 +1042,7 @@ module.exports = {
     init,
     _test: {
         extractReplayAuthContext,
+        getRequestBaseUrl,
         isAllowedNativeFailureReason,
         restoreSinglePersistedJob,
         restorePersistedJobsWith,

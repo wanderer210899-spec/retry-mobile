@@ -287,6 +287,108 @@ export function createRestoreController({
         }
     }
 
+    async function reconcileLatestForCurrentChat(options = {}) {
+        const currentChatIdentity = getCurrentChatIdentity?.() || null;
+        if (!currentChatIdentity?.chatId || !baseBackendPort?.fetchLatestJob || !stPort?.reconciler?.reconcileAfterRestore) {
+            return {
+                ok: false,
+                reason: 'latest_reconcile_unavailable',
+            };
+        }
+
+        const latest = await baseBackendPort.fetchLatestJob(currentChatIdentity);
+        if (!latest?.jobId) {
+            return {
+                ok: false,
+                reason: 'latest_job_missing',
+            };
+        }
+
+        updateActiveJob(latest, latest.jobId);
+        render();
+
+        const latestState = String(latest.state || '');
+        const targetMessageVersion = Number(latest.targetMessageVersion) || 0;
+        if (latestState === 'running' || targetMessageVersion <= 0) {
+            return {
+                ok: false,
+                reason: latestState === 'running' ? 'latest_job_running' : 'latest_job_has_no_renderable_output',
+                status: latest,
+            };
+        }
+
+        const renderPayload = {
+            kind: 'accepted_output',
+            chatIdentity: latest.chatIdentity || currentChatIdentity,
+            status: latest,
+        };
+        await logEvent?.('reconcile_latest_started', `Reconciling latest job output version ${targetMessageVersion}.`, {
+            reason: options.reason || 'latest_reconcile',
+            jobId: latest.jobId,
+            targetMessageVersion,
+        });
+
+        let result = await stPort.reconciler.reconcileAfterRestore(renderPayload);
+        if (result?.ok !== false) {
+            await logEvent?.('reconcile_latest_succeeded', `Reconciled latest job output version ${targetMessageVersion}.`, {
+                reason: options.reason || 'latest_reconcile',
+                jobId: latest.jobId,
+                targetMessageVersion,
+            });
+            return {
+                ok: true,
+                status: latest,
+                result,
+            };
+        }
+
+        if (options.allowReload === true
+            && result?.recoveryRequired !== false
+            && typeof stPort.guardedReload === 'function') {
+            await logEvent?.('reconcile_latest_reload_started', `Latest output reconcile failed [${result?.error?.code || 'unknown'}]; forcing chat refresh.`, {
+                reason: options.reason || 'latest_reconcile',
+                jobId: latest.jobId,
+                errorCode: result?.error?.code,
+                targetMessageVersion,
+            });
+            try {
+                await stPort.guardedReload();
+                result = await stPort.reconciler.reconcileAfterRestore(renderPayload);
+                if (result?.ok !== false) {
+                    await logEvent?.('reconcile_latest_succeeded', `Reconciled latest job output version ${targetMessageVersion} after refresh.`, {
+                        reason: options.reason || 'latest_reconcile',
+                        jobId: latest.jobId,
+                        targetMessageVersion,
+                    });
+                    return {
+                        ok: true,
+                        status: latest,
+                        result,
+                    };
+                }
+            } catch (error) {
+                result = {
+                    ok: false,
+                    recoveryRequired: true,
+                    error,
+                };
+            }
+        }
+
+        await logEvent?.('reconcile_latest_failed', `Latest output reconcile failed [${result?.error?.code || 'unknown'}].`, {
+            reason: options.reason || 'latest_reconcile',
+            jobId: latest.jobId,
+            errorCode: result?.error?.code,
+            targetMessageVersion,
+        });
+        return {
+            ok: false,
+            status: latest,
+            result,
+            error: result?.error || null,
+        };
+    }
+
     function scheduleRestoreRetry() {
         if (runtime.restoreRetryHandle) {
             return;
@@ -341,6 +443,7 @@ export function createRestoreController({
 
     return {
         restoreControlState,
+        reconcileLatestForCurrentChat,
         scheduleRestoreRetry,
         subscribeChatChangedRestore,
         unsubscribeChatChangedRestore,

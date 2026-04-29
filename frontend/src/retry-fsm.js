@@ -72,6 +72,7 @@ export function createRetryFsm({
         jobCompleted,
         jobFailed,
         restoreRunning,
+        adoptStatus,
         resume,
         userStop,
     };
@@ -510,6 +511,20 @@ export function createRetryFsm({
             });
         }
 
+        return getContext();
+    }
+
+    async function adoptStatus(status) {
+        if (!isState(context, RetryState.RUNNING)) {
+            return getContext();
+        }
+
+        const statusJobId = stringOrNull(status?.jobId);
+        if (statusJobId && statusJobId !== context.jobId) {
+            return getContext();
+        }
+
+        await handlePollingStatus(status);
         return getContext();
     }
 

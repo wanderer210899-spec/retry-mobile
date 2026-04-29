@@ -43,6 +43,7 @@ export async function bootRetryMobile() {
     let stPort = null;
     let retryFsm = null;
     let resumeSignalHandle = 0;
+    let latestReconcileHandle = 0;
 
     const persistSettings = () => {
         writeSettings(getContext(), runtime.settings);
@@ -293,6 +294,10 @@ export async function bootRetryMobile() {
             clearTimeout(resumeSignalHandle);
             resumeSignalHandle = 0;
         }
+        if (latestReconcileHandle) {
+            clearTimeout(latestReconcileHandle);
+            latestReconcileHandle = 0;
+        }
     };
     window.__rmDispatch = (type, payload) => {
         handleExternalSignal(type, payload);
@@ -412,11 +417,7 @@ export async function bootRetryMobile() {
             // Remount immediately rather than waiting for the periodic host observer tick.
             ensurePanelMounted();
             if (state !== RetryState.RUNNING) {
-                // Non-RUNNING path: recovery is driven by CHAT_CHANGED events (which ST
-                // fires when it reloads the chat on browser return). The CHAT_CHANGED
-                // handler in restoreController is debounced so it waits for the chat to
-                // settle before reconciling. We do nothing here to avoid racing with those
-                // reloads — use the Sync button for a manual refresh if needed.
+                scheduleLatestJobReconcile(type);
                 return;
             }
 
@@ -463,7 +464,31 @@ export async function bootRetryMobile() {
         }
     }
 
+    function scheduleLatestJobReconcile(reason) {
+        if (latestReconcileHandle) {
+            return;
+        }
+
+        latestReconcileHandle = window.setTimeout(() => {
+            latestReconcileHandle = 0;
+            if (retryFsm.getState() === RetryState.RUNNING) {
+                return;
+            }
+            void restoreController.reconcileLatestForCurrentChat({
+                reason,
+                allowReload: false,
+            }).then(() => {
+                syncRuntime();
+                render();
+            }).catch((error) => {
+                runtime.controlError = toStructuredError(error, 'Retry Mobile could not reconcile the latest completed job.');
+                render();
+            });
+        }, 600);
+    }
+
     async function syncStatus() {
+        ensurePanelMounted();
         const state = retryFsm.getState();
         if (state === RetryState.RUNNING) {
             const jobId = retryFsm.getContext().jobId;
@@ -471,15 +496,27 @@ export async function bootRetryMobile() {
                 const fresh = await backendPort.pollStatus?.(jobId).catch(() => null);
                 if (fresh && retryFsm.getState() === RetryState.RUNNING && retryFsm.getContext().jobId === jobId) {
                     updateActiveJob(fresh, jobId);
+                    await retryFsm.adoptStatus?.(fresh);
                     syncRuntime();
                     render();
                 }
             }
             return;
         }
+        const latestResult = await restoreController.reconcileLatestForCurrentChat({
+            reason: 'manual_sync',
+            allowReload: true,
+        });
+        if (latestResult?.ok) {
+            syncRuntime();
+            render();
+            return;
+        }
         if (state === RetryState.IDLE) {
             await restoreController.restoreControlState();
         }
+        syncRuntime();
+        render();
     }
 
     function updateActiveJob(status, fallbackJobId = '') {
@@ -509,6 +546,8 @@ export async function bootRetryMobile() {
             captureMeta: {
                 ...(payload.captureMeta && typeof payload.captureMeta === 'object' ? payload.captureMeta : {}),
                 frontendStateLookup: chatState.meta,
+                clientTimeZone: getClientTimeZone(),
+                clientTimezoneOffsetMinutes: new Date().getTimezoneOffset(),
             },
         };
     }
@@ -526,6 +565,14 @@ function toStructuredError(error, fallbackMessage) {
     }
 
     return getStructuredErrorFromApi(error, fallbackMessage);
+}
+
+function getClientTimeZone() {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch {
+        return '';
+    }
 }
 
 function getArmValidationError(runtime) {

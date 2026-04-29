@@ -239,3 +239,130 @@ test('restore controller subscribes to CHAT_CHANGED and ignores internal reload 
     assert.equal(typeof handler, 'function');
     await handler();
 });
+
+test('reconcileLatestForCurrentChat applies the latest completed job output outside RUNNING state', async () => {
+    const calls = [];
+    const latest = {
+        jobId: 'job-complete',
+        state: 'completed',
+        targetMessageVersion: 2,
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+    };
+    const controller = createRestoreController({
+        runtime: {},
+        retryFsm: {
+            getState() {
+                return 'armed';
+            },
+        },
+        intentPort: {},
+        baseBackendPort: {
+            async fetchLatestJob(identity) {
+                calls.push({ method: 'fetchLatestJob', identity });
+                return latest;
+            },
+        },
+        stPort: {
+            reconciler: {
+                async reconcileAfterRestore(payload) {
+                    calls.push({ method: 'reconcileAfterRestore', payload });
+                    return { ok: true };
+                },
+            },
+        },
+        updateActiveJob(status, jobId) {
+            calls.push({ method: 'updateActiveJob', status, jobId });
+        },
+        render() {
+            calls.push({ method: 'render' });
+        },
+        syncRuntimeFromFsm() {},
+        getCurrentChatIdentity() {
+            return latest.chatIdentity;
+        },
+        toStructuredError(error) {
+            return error;
+        },
+    });
+
+    const result = await controller.reconcileLatestForCurrentChat({ reason: 'focus' });
+
+    assert.equal(result.ok, true);
+    assert.equal(calls[0].method, 'fetchLatestJob');
+    assert.equal(calls.some((call) => call.method === 'updateActiveJob' && call.jobId === 'job-complete'), true);
+    const reconcileCall = calls.find((call) => call.method === 'reconcileAfterRestore');
+    assert.equal(reconcileCall.payload.status.targetMessageVersion, 2);
+});
+
+test('reconcileLatestForCurrentChat can force a guarded reload for manual Sync', async () => {
+    const calls = [];
+    const latest = {
+        jobId: 'job-complete',
+        state: 'completed',
+        targetMessageVersion: 1,
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-1',
+            groupId: null,
+        },
+    };
+    let reconcileCount = 0;
+    const controller = createRestoreController({
+        runtime: {},
+        retryFsm: {
+            getState() {
+                return 'armed';
+            },
+        },
+        intentPort: {},
+        baseBackendPort: {
+            async fetchLatestJob() {
+                return latest;
+            },
+        },
+        stPort: {
+            reconciler: {
+                async reconcileAfterRestore() {
+                    reconcileCount += 1;
+                    calls.push({ method: 'reconcileAfterRestore' });
+                    if (reconcileCount === 1) {
+                        return {
+                            ok: false,
+                            recoveryRequired: true,
+                            error: { code: 'client_anchor_mismatch' },
+                        };
+                    }
+                    return { ok: true };
+                },
+            },
+            async guardedReload() {
+                calls.push({ method: 'guardedReload' });
+            },
+        },
+        updateActiveJob() {},
+        render() {},
+        syncRuntimeFromFsm() {},
+        getCurrentChatIdentity() {
+            return latest.chatIdentity;
+        },
+        toStructuredError(error) {
+            return error;
+        },
+    });
+
+    const result = await controller.reconcileLatestForCurrentChat({
+        reason: 'manual_sync',
+        allowReload: true,
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(calls.map((call) => call.method), [
+        'reconcileAfterRestore',
+        'guardedReload',
+        'reconcileAfterRestore',
+    ]);
+});
