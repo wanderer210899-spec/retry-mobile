@@ -6,7 +6,6 @@ import { isSameChat } from './st-chat.js';
 import { t } from './i18n.js';
 import { createSessionLockdown } from './ui/session-lockdown.js';
 import { createChatReconciler } from './render/reconciler.js';
-import { applyAcceptedOutput, reloadSessionUi } from './render/st-operations.js';
 
 export function createStPort({
     onCapture,
@@ -72,11 +71,8 @@ export function createStPort({
         unsubscribeNativeObserver() {
             stopNativeObserver();
         },
-        async applyAcceptedOutput(renderPayload) {
-            return applyAcceptedOutput(renderPayload);
-        },
         async guardedReload(signal) {
-            return reloadSessionUi(signal);
+            return reconciler.guardedReload?.(signal);
         },
         setGeneratingIndicator(targetChat) {
             const context = getContext();
@@ -165,16 +161,3 @@ export function createStPort({
         nativeController = null;
     }
 }
-
-function cloneValue(value) {
-    if (value == null) {
-        return value ?? null;
-    }
-
-    if (typeof globalThis.structuredClone === 'function') {
-        return globalThis.structuredClone(value);
-    }
-
-    return JSON.parse(JSON.stringify(value));
-}
-

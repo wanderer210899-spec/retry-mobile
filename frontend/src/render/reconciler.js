@@ -1,4 +1,5 @@
-import { applyAcceptedOutput } from './st-operations.js';
+import { cloneValue } from '../core/clone.js';
+import { applyAcceptedOutput, reloadSessionUi } from './st-operations.js';
 
 export function createChatReconciler({
     applyAcceptedOutputFn = applyAcceptedOutput,
@@ -28,6 +29,9 @@ export function createChatReconciler({
         async applyTerminal(renderPayload) {
             return applyAcceptedOutputFn?.(cloneValue(renderPayload));
         },
+        async guardedReload(signal) {
+            return reloadSessionUi(signal);
+        },
         async reconcileAfterRestore(renderPayload) {
             if (!renderPayload) {
                 return { ok: false };
@@ -56,18 +60,6 @@ export function createChatReconciler({
             return lastResult ?? { ok: false };
         },
     };
-}
-
-function cloneValue(value) {
-    if (value == null) {
-        return value ?? null;
-    }
-
-    if (typeof globalThis.structuredClone === 'function') {
-        return globalThis.structuredClone(value);
-    }
-
-    return JSON.parse(JSON.stringify(value));
 }
 
 function sleep(ms) {

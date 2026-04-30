@@ -12,6 +12,8 @@ export function syncRuntimeFromFsm(runtime, fsm) {
         runtime.activeJobId = context.jobId;
     } else if (context.lastTerminalResult?.jobId) {
         runtime.activeJobId = context.lastTerminalResult.jobId;
+    } else {
+        runtime.activeJobId = null;
     }
 
     // The runtime mirror caches the live backend status only. Pushing

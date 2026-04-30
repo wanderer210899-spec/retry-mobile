@@ -1,0 +1,113 @@
+{
+  "schemaVersion": 1,
+  "jobId": "job-native-attempt-timeout",
+  "runId": "run-native-attempt-timeout",
+  "state": "failed",
+  "phase": "failed",
+  "createdAt": "2026-04-30T20:00:44.479Z",
+  "updatedAt": "2026-04-30T20:00:44.524Z",
+  "acceptedCount": 0,
+  "attemptCount": 1,
+  "lastError": "Retry Mobile blocked the write path because the native turn has not resolved yet.",
+  "structuredError": {
+    "code": "native_write_not_ready",
+    "message": "Retry Mobile blocked the write path because the native turn has not resolved yet.",
+    "detail": "Attempts: 1/2; accepted: 0/1."
+  },
+  "targetMessageVersion": 0,
+  "targetAcceptedCount": 1,
+  "maxAttempts": 2,
+  "chatIdentity": {
+    "kind": "character",
+    "avatarUrl": "Kate.png",
+    "chatId": "chat-native-attempt-timeout",
+    "fileName": "chat-native-attempt-timeout"
+  },
+  "targetFingerprint": {
+    "userMessageIndex": 0,
+    "userMessageText": "hello"
+  },
+  "nativeState": "pending",
+  "recoveryMode": "",
+  "nativeResolutionCause": "native_attempt_timeout",
+  "nativeGraceDeadline": "",
+  "attemptLog": [
+    {
+      "attemptNumber": 0,
+      "startedAt": "2026-04-30T20:00:44.491Z",
+      "finishedAt": "2026-04-30T20:00:44.491Z",
+      "outcome": "native",
+      "reason": "native_attempt_timeout",
+      "message": "Native first reply exceeded the configured attempt timeout of 5 seconds. Moving on to the next retry attempt.",
+      "phase": "attempt_timed_out",
+      "characterCount": null,
+      "wordCount": null,
+      "tokenCount": null,
+      "tokenCountSource": "",
+      "tokenCountModel": "",
+      "tokenCountDetail": "",
+      "targetMessageVersion": null,
+      "targetMessageIndex": null
+    },
+    {
+      "attemptNumber": 1,
+      "startedAt": "2026-04-30T20:00:44.500Z",
+      "finishedAt": "2026-04-30T20:00:44.510Z",
+      "outcome": "state_wait",
+      "reason": "native_write_not_ready",
+      "message": "Retry Mobile blocked the write path because the native turn has not resolved yet.",
+      "phase": "requesting_generation",
+      "characterCount": null,
+      "wordCount": null,
+      "tokenCount": null,
+      "tokenCountSource": "",
+      "tokenCountModel": "",
+      "tokenCountDetail": "",
+      "targetMessageVersion": null,
+      "targetMessageIndex": null
+    },
+    {
+      "attemptNumber": 1,
+      "startedAt": "2026-04-30T20:00:44.500Z",
+      "finishedAt": "2026-04-30T20:00:44.518Z",
+      "outcome": "state_wait",
+      "reason": "native_write_not_ready",
+      "message": "Retry Mobile blocked the write path because the native turn has not resolved yet.",
+      "phase": "awaiting_native_confirmation",
+      "characterCount": 39,
+      "wordCount": 6,
+      "tokenCount": 7,
+      "tokenCountSource": "",
+      "tokenCountModel": "",
+      "tokenCountDetail": "",
+      "targetMessageVersion": null,
+      "targetMessageIndex": null
+    }
+  ],
+  "runConfig": {
+    "attemptTimeoutSeconds": 5,
+    "validationMode": "characters",
+    "minCharacters": 0,
+    "minWords": 0,
+    "minTokens": 0,
+    "allowHeuristicTokenFallback": false
+  },
+  "capturedRequest": {
+    "prompt": "hello"
+  },
+  "userContext": {
+    "handle": "default-user",
+    "directories": {
+      "root": "unused",
+      "chats": "unused",
+      "groupChats": "unused"
+    }
+  },
+  "targetUserAnchorId": "user-anchor",
+  "targetAssistantAnchorId": "assistant-anchor",
+  "capturedChatIntegrity": "integrity",
+  "capturedChatLength": 1,
+  "logTitle": "2026-04-30 21-00-44 UTC+01:00 - chat-native-attempt-timeout - job-nati",
+  "logUpdatedAt": "2026-04-30T21:00:44+01:00",
+  "logEntryCount": 4
+}

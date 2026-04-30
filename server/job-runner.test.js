@@ -405,6 +405,10 @@ test('runJob treats native_attempt_timeout as a timed-out first attempt and proc
         };
     };
 
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-attempt-timeout-'));
+    const jobsDir = path.join(tempRoot, 'retry-mobile', 'jobs');
+    fs.mkdirSync(jobsDir, { recursive: true });
+
     const now = new Date().toISOString();
     const job = {
         jobId: 'job-native-attempt-timeout',
@@ -438,9 +442,9 @@ test('runJob treats native_attempt_timeout as a timed-out first attempt and proc
         userContext: {
             handle: 'default-user',
             directories: {
-                root: 'unused',
-                chats: 'unused',
-                groupChats: 'unused',
+                root: tempRoot,
+                chats: path.join(tempRoot, 'chats'),
+                groupChats: path.join(tempRoot, 'group chats'),
             },
         },
         attemptLog: [],
@@ -468,5 +472,6 @@ test('runJob treats native_attempt_timeout as a timed-out first attempt and proc
         assert.equal(fetchCalls.length >= 1, true);
     } finally {
         global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });

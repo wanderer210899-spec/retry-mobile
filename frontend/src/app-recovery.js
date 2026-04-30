@@ -288,11 +288,44 @@ export function createRestoreController({
     }
 
     async function reconcileLatestForCurrentChat(options = {}) {
+        const fsmState = retryFsm.getState();
+        if (fsmState === RetryState.RUNNING || fsmState === RetryState.CAPTURING) {
+            return {
+                ok: false,
+                reason: 'latest_reconcile_skipped',
+            };
+        }
+        if (fsmState === RetryState.ARMED && typeof retryFsm.getContext === 'function') {
+            const context = retryFsm.getContext();
+            // Fresh manual arm clears `lastTerminalResult`. In that case, do not
+            // reconcile a previous terminal job or write its status back into
+            // runtime mirrors while the user is waiting to send a new prompt.
+            if (!context?.lastTerminalResult) {
+                return {
+                    ok: false,
+                    reason: 'latest_reconcile_skipped',
+                };
+            }
+        }
+
         const currentChatIdentity = getCurrentChatIdentity?.() || null;
         if (!currentChatIdentity?.chatId || !baseBackendPort?.fetchLatestJob || !stPort?.reconciler?.reconcileAfterRestore) {
             return {
                 ok: false,
                 reason: 'latest_reconcile_unavailable',
+            };
+        }
+
+        const now = Date.now();
+        const lastObservedAt = Date.parse(runtime.activeJobStatusObservedAt || runtime.activeJobStatus?.updatedAt || '');
+        if (!options.force
+            && runtime.activeJobStatus
+            && String(runtime.activeJobStatus.state || '') !== 'running'
+            && Number.isFinite(lastObservedAt)
+            && (now - lastObservedAt) < 1500) {
+            return {
+                ok: false,
+                reason: 'latest_reconcile_throttled',
             };
         }
 
@@ -304,9 +337,6 @@ export function createRestoreController({
             };
         }
 
-        updateActiveJob(latest, latest.jobId);
-        render();
-
         const latestState = String(latest.state || '');
         const targetMessageVersion = Number(latest.targetMessageVersion) || 0;
         if (latestState === 'running' || targetMessageVersion <= 0) {
@@ -316,6 +346,9 @@ export function createRestoreController({
                 status: latest,
             };
         }
+
+        updateActiveJob(latest, latest.jobId);
+        render();
 
         const renderPayload = {
             kind: 'accepted_output',
