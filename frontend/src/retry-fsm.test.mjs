@@ -36,6 +36,7 @@ function createHarness({
     let pollErrorHandler = null;
     let pollStatusResult = null;
     let visible = true;
+    let streaming = false;
     let applyAcceptedOutputResult = { ok: true };
     let applyAcceptedOutputError = null;
     let flushPendingVisibleRenderResult = { ok: true };
@@ -124,6 +125,10 @@ function createHarness({
         isVisible() {
             calls.push({ port: 'st', method: 'isVisible', args: [] });
             return visible;
+        },
+        isStreaming() {
+            calls.push({ port: 'st', method: 'isStreaming', args: [] });
+            return streaming;
         },
         reconciler: {
             isActive() {
@@ -223,6 +228,9 @@ function createHarness({
         },
         setVisible(nextVisible) {
             visible = Boolean(nextVisible);
+        },
+        setStreaming(nextStreaming) {
+            streaming = Boolean(nextStreaming);
         },
         setApplyAcceptedOutputResult(nextResult) {
             applyAcceptedOutputResult = nextResult;
@@ -691,6 +699,37 @@ test('running poll status applies accepted output once per version when visible'
 
     assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
     assert.equal(fsm.getContext().lastAppliedVersion, 1);
+});
+
+test('streaming guard queues a visible pending render and flushes it once streaming settles', async () => {
+    const { fsm, calls, emitPolledStatus, setStreaming } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setStreaming(true);
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+
+    assert.equal(Boolean(fsm.getContext().pendingVisibleRender), true);
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 0);
+
+    setStreaming(false);
+    await emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    // allow flush promise chain to run
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assert.equal(calls.filter((entry) => entry.method === 'flushPendingVisibleRender').length >= 1, true);
+    assert.equal(fsm.getContext().pendingVisibleRender, null);
+    assert.equal(fsm.getContext().lastAppliedVersion >= 2, true);
 });
 
 test('running poll status does not advance applied version when applyAcceptedOutput fails', async () => {

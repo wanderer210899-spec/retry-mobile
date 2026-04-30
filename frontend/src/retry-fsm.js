@@ -57,6 +57,7 @@ export function createRetryFsm({
     logEvent = null,
 } = {}) {
     const abortedCaptureRuns = new Map();
+    let flushInFlight = false;
     let context = createInitialRetryContext({
         intent: readIntentSnapshot(intentPort, null),
     });
@@ -800,6 +801,17 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
             runError: null,
         });
+
+        // Streaming guard: if the tab is visible but native streaming is still mutating
+        // the same assistant turn DOM, do not patch in-place. Queue a visible pending
+        // render and flush it once streaming settles.
+        if (context.pendingVisibleRender
+            && stPort.isVisible?.() !== false
+            && stPort.isStreaming?.() !== true) {
+            void flushPendingVisibleRender('streaming_settled');
+            return;
+        }
+
         if (nextVersion <= Number(context.lastAppliedVersion || 0)) {
             return;
         }
@@ -816,6 +828,15 @@ export function createRetryFsm({
             chatIdentity: clonePlain(context.chatIdentity),
             status: clonePlain(status),
         };
+        if (stPort.isVisible?.() !== false && stPort.isStreaming?.() === true) {
+            const queued = stPort.reconciler?.queue?.(renderPayload) || renderPayload;
+            context = createContextForState({
+                ...context,
+                pendingVisibleRender: clonePlain(queued),
+                runError: null,
+            });
+            return;
+        }
         if (stPort.isVisible?.() === false) {
             const queued = stPort.reconciler?.queue?.(renderPayload) || renderPayload;
             context = createContextForState({
@@ -871,6 +892,60 @@ export function createRetryFsm({
                 logEvent?.('reconcile_apply_failed', `Apply threw an exception — run error set.`, { errorCode: error?.code, targetMessageVersion: nextVersion });
                 handleVisibleApplyFailure(error);
             });
+    }
+
+    async function flushPendingVisibleRender(reason) {
+        if (!isState(context, RetryState.RUNNING)) {
+            return;
+        }
+        if (!context.pendingVisibleRender || flushInFlight) {
+            return;
+        }
+        flushInFlight = true;
+        const pendingRender = clonePlain(context.pendingVisibleRender);
+        const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
+        logEvent?.('reconcile_flush_started', `Flushing pending render version ${pendingVersion} (${reason}).`, { targetMessageVersion: pendingVersion });
+        try {
+            const result = await stPort.reconciler?.flushPending?.(pendingRender);
+            if (!isState(context, RetryState.RUNNING)) {
+                return;
+            }
+            if (result?.ok === false) {
+                const willReload = !context.reloadAttempted;
+                logEvent?.('reconcile_flush_failed', `Flush failed [${result?.error?.code || 'unknown'}]${willReload ? ' — triggering chat reload' : ''}.`, { errorCode: result?.error?.code, targetMessageVersion: pendingVersion });
+                if (willReload) {
+                    context = createContextForState({
+                        ...context,
+                        reloadAttempted: true,
+                    });
+                    try {
+                        await stPort.guardedReload?.();
+                        logEvent?.('chat_reload_completed', 'Chat reload after flush failure completed.', null);
+                    } catch {}
+                }
+                context = createContextForState({
+                    ...context,
+                    lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
+                    pendingVisibleRender: null,
+                });
+                return;
+            }
+            logEvent?.('reconcile_flush_succeeded', `Flush succeeded for version ${pendingVersion}.`, { targetMessageVersion: pendingVersion });
+            context = createContextForState({
+                ...context,
+                lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
+                pendingVisibleRender: null,
+                runError: null,
+            });
+        } catch (error) {
+            if (!isState(context, RetryState.RUNNING)) {
+                return;
+            }
+            logEvent?.('reconcile_flush_failed', 'Flush threw an exception — run error set.', { errorCode: error?.code, targetMessageVersion: pendingVersion });
+            handleVisibleApplyFailure(error);
+        } finally {
+            flushInFlight = false;
+        }
     }
 
     async function completeAfterFinalAcceptedOutput(status) {

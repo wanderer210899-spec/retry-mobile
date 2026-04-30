@@ -35,6 +35,23 @@ export function createStPort({
             // which would strand pending renders and slow polling unnecessarily.
             return document.visibilityState !== 'hidden';
         },
+        isStreaming() {
+            const context = getContext();
+            // Best-effort guard: during native streaming, ST can be rebuilding the same
+            // message DOM repeatedly. Applying accepted-output patches mid-stream risks
+            // leaving the DOM in a duplicated/fused state on mobile.
+            try {
+                if (typeof context?.isGenerating === 'function') {
+                    return Boolean(context.isGenerating());
+                }
+            } catch {}
+            return Boolean(
+                context?.isGenerating
+                || context?.generationRunning
+                || context?.isGenerationInProgress
+                || context?.generationInProgress,
+            );
+        },
         setLockdown(active) {
             reconciler.setActive(Boolean(active));
             if (active) {

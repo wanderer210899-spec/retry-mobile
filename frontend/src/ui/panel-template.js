@@ -143,7 +143,7 @@ export function buildPanelTemplate(options = {}) {
 
                     <div class="rm-run-row">
                         <button class="menu_button rm-button--primary" data-action="toggle-run">${escapeHtml(t('panel.start'))}</button>
-                        <button class="menu_button rm-button--inline rm-sync-button" data-action="sync-status" title="${escapeHtml(t('panel.syncStatus'))}">${escapeHtml(t('panel.syncStatus'))}</button>
+                        <button class="menu_button rm-button--inline rm-sync-button" data-action="sync-status" type="button" title="${escapeHtml(t('panel.syncStatus'))}">${escapeHtml(t('panel.syncStatus'))}</button>
                     </div>
 
                     <div class="rm-error" data-role="error-box" hidden></div>

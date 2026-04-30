@@ -21,7 +21,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    const targetMessageIndex = Number(status?.targetMessageIndex);
+    const reportedTargetMessageIndex = Number(status?.targetMessageIndex);
     const targetMessageVersion = Number(status?.targetMessageVersion) || 0;
     const targetMessage = cloneValue(status?.targetMessage);
     const targetAssistantAnchorId = String(
@@ -30,7 +30,11 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         || '',
     ).trim();
     const liveChat = Array.isArray(context?.chat) ? context.chat : null;
-    if (!Number.isInteger(targetMessageIndex) || targetMessageIndex < 0 || !targetMessage || !liveChat || !targetAssistantAnchorId) {
+    if (!Number.isInteger(reportedTargetMessageIndex)
+        || reportedTargetMessageIndex < 0
+        || !targetMessage
+        || !liveChat
+        || !targetAssistantAnchorId) {
         return {
             ok: false,
             recoveryRequired: true,
@@ -41,7 +45,26 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    const element = await waitForPatchedMessageElement(targetMessageIndex, signal);
+    // The backend reports a best-effort target index, but on some mobile / reload /
+    // persistence-race paths that index can drift. Always verify the anchor and
+    // fall back to an anchor search to avoid patching the wrong live message.
+    const resolvedTargetMessageIndex = resolveTargetMessageIndex({
+        liveChat,
+        reportedIndex: reportedTargetMessageIndex,
+        expectedAnchorId: targetAssistantAnchorId,
+    });
+    if (resolvedTargetMessageIndex == null) {
+        return {
+            ok: false,
+            recoveryRequired: true,
+            error: createStructuredError(
+                'client_target_missing',
+                'Retry Mobile could not resolve the target assistant turn in the live chat.',
+            ),
+        };
+    }
+
+    const element = await waitForPatchedMessageElement(resolvedTargetMessageIndex, signal);
     if (!element) {
         return {
             ok: false,
@@ -53,7 +76,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    const existing = liveChat[targetMessageIndex];
+    const existing = liveChat[resolvedTargetMessageIndex];
     if (!existing || existing.is_user === true || targetMessage.is_user === true) {
         return {
             ok: false,
@@ -78,7 +101,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
     }
 
     const patchedMessage = buildPatchedAssistantMessage(existing, adoptedTargetMessage);
-    liveChat[targetMessageIndex] = patchedMessage;
+    liveChat[resolvedTargetMessageIndex] = patchedMessage;
 
     try {
         // Preserve the user's current scroll position when patching a message.
@@ -94,7 +117,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ? (prevScrollTop + prevClientHeight >= prevScrollHeight - 12)
             : false;
 
-        context.updateMessageBlock?.(targetMessageIndex, patchedMessage);
+        context.updateMessageBlock?.(resolvedTargetMessageIndex, patchedMessage);
         context.swipe?.refresh?.(true);
         await waitForStableText(element, { signal });
 
@@ -117,6 +140,31 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ),
         };
     }
+}
+
+function resolveTargetMessageIndex({ liveChat, reportedIndex, expectedAnchorId }) {
+    const expected = String(expectedAnchorId || '').trim();
+    if (!expected) {
+        return Number.isInteger(reportedIndex) ? reportedIndex : null;
+    }
+
+    const reported = Number.isInteger(reportedIndex) ? reportedIndex : null;
+    if (reported != null) {
+        const candidate = liveChat?.[reported] || null;
+        if (candidate && getAssistantAnchorId(candidate) === expected) {
+            return reported;
+        }
+    }
+
+    for (let index = 0; index < liveChat.length; index += 1) {
+        const message = liveChat[index];
+        if (!message || message.is_user === true) continue;
+        if (getAssistantAnchorId(message) === expected) {
+            return index;
+        }
+    }
+
+    return reported;
 }
 
 export function buildPatchedAssistantMessage(existing, targetMessage) {

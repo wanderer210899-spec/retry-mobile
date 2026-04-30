@@ -241,7 +241,7 @@ export async function bootRetryMobile() {
                 await systemController.downloadRetryLogFromUi();
             },
             onSyncStatus: async () => {
-                await syncStatus();
+                await reloadChatFromUi();
             },
         },
     });
@@ -487,8 +487,12 @@ export async function bootRetryMobile() {
         }, 600);
     }
 
-    async function syncStatus() {
+    async function reloadChatFromUi() {
         ensurePanelMounted();
+        // The user-facing "reload" action must force a full SillyTavern chat
+        // reload, then re-sync Retry Mobile state so completed output renders.
+        await stPort?.guardedReload?.().catch(() => {});
+
         const state = retryFsm.getState();
         if (state === RetryState.RUNNING) {
             const jobId = retryFsm.getContext().jobId;
@@ -505,7 +509,8 @@ export async function bootRetryMobile() {
         }
         const latestResult = await restoreController.reconcileLatestForCurrentChat({
             reason: 'manual_sync',
-            allowReload: true,
+            force: true,
+            allowReload: false,
         });
         if (latestResult?.ok) {
             syncRuntime();
