@@ -9,6 +9,7 @@ const ALLOWED_LEGACY_FRONTEND_CODES = new Set([
     'handoff_request_failed',
     'render_apply_failed',
     'native_wait_timeout',
+    'native_attempt_timeout',
     'capture_cancelled',
     'capture_failed',
     'capture_unsupported',
@@ -103,4 +104,3 @@ function assertFrontendErrorNamespace(code) {
 function isDevMode() {
     return Boolean(globalThis?.__RM_DEV__);
 }
-

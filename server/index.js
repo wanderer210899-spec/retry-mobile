@@ -50,6 +50,7 @@ const ALLOWED_NATIVE_FAILURE_REASONS = new Set([
     'hidden_timeout',
     'native_wait_timeout',
     'native_wait_stalled',
+    'native_attempt_timeout',
     'native_turn_mismatch',
     'native_generation_stopped',
     'capture_chat_changed',

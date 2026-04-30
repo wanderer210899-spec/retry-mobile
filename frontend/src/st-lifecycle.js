@@ -14,6 +14,7 @@ export function waitForNativeCompletion({
     fingerprint,
     timeoutMs = NATIVE_WAIT_TIMEOUT_MS,
     nativeGraceSeconds = 30,
+    attemptTimeoutSeconds = null,
     onEvent,
     signal,
 }) {
@@ -38,6 +39,9 @@ export function waitForNativeCompletion({
         let lastRenderedSummary = '';
         let lastVisibleProgressSignature = '';
         let lastVisibleProgressAt = 0;
+        const nativeAttemptDeadlineMs = Number.isFinite(Number(attemptTimeoutSeconds)) && Number(attemptTimeoutSeconds) > 0
+            ? Date.now() + (Number(attemptTimeoutSeconds) * 1000)
+            : 0;
 
         if (!eventTypes.GENERATION_ENDED) {
             reject(createStructuredError(
@@ -139,6 +143,21 @@ export function waitForNativeCompletion({
         }, timeoutMs);
 
         progressTimeoutHandle = window.setTimeout(() => {
+            if (isVisibleNativeProgressOngoing()) {
+                onEvent?.(
+                    'NATIVE_WAIT_PROGRESS_EXTENDED',
+                    'Native generation is still visibly in progress; extending the no-event watchdog.',
+                );
+                armProgressTimeout();
+                return;
+            }
+
+            const fallbackConfirmation = confirmFromLiveChatWithoutEvents();
+            if (fallbackConfirmation) {
+                settleSucceeded(fallbackConfirmation);
+                return;
+            }
+
             settleFailed(
                 'native_wait_stalled',
                 'Retry Mobile captured the request, but SillyTavern never reported native completion progress.',
@@ -424,6 +443,32 @@ export function waitForNativeCompletion({
             progressTimeoutHandle = 0;
         }
 
+        function armProgressTimeout() {
+            clearProgressTimeout();
+            progressTimeoutHandle = window.setTimeout(() => {
+                if (isVisibleNativeProgressOngoing()) {
+                    onEvent?.(
+                        'NATIVE_WAIT_PROGRESS_EXTENDED',
+                        'Native generation is still visibly in progress; extending the no-event watchdog.',
+                    );
+                    armProgressTimeout();
+                    return;
+                }
+
+                const fallbackConfirmation = confirmFromLiveChatWithoutEvents();
+                if (fallbackConfirmation) {
+                    settleSucceeded(fallbackConfirmation);
+                    return;
+                }
+
+                settleFailed(
+                    'native_wait_stalled',
+                    'Retry Mobile captured the request, but SillyTavern never reported native completion progress.',
+                    describeObservedEvents() || 'No native lifecycle events arrived after capture.',
+                );
+            }, Math.min(timeoutMs, NATIVE_WAIT_PROGRESS_TIMEOUT_MS));
+        }
+
         function armVisibleProgressPoll() {
             if (document.visibilityState === 'hidden' || lastRenderedMessageId == null || lastEndedMessageId != null) {
                 clearVisibleProgressPoll();
@@ -458,7 +503,17 @@ export function waitForNativeCompletion({
                 }
 
                 if (document.body?.dataset?.generating) {
+                    if (nativeAttemptDeadlineMs > 0 && Date.now() >= nativeAttemptDeadlineMs) {
+                        settleTimedOut();
+                        return;
+                    }
                     lastVisibleProgressAt = Date.now();
+                    return;
+                }
+
+                const fallbackConfirmation = confirmFromLiveChatWithoutEvents();
+                if (fallbackConfirmation) {
+                    settleSucceeded(fallbackConfirmation);
                     return;
                 }
 
@@ -480,6 +535,70 @@ export function waitForNativeCompletion({
             window.clearInterval(visibleProgressHandle);
             visibleProgressHandle = 0;
         }
+
+        function settleTimedOut() {
+            if (settled) {
+                return;
+            }
+
+            if (!isVisibleNativeProgressOngoing()) {
+                const fallbackConfirmation = confirmFromLiveChatWithoutEvents();
+                if (fallbackConfirmation) {
+                    settleSucceeded(fallbackConfirmation);
+                    return;
+                }
+            }
+
+            settled = true;
+            cleanup();
+            resolve({
+                outcome: 'timed_out',
+                reason: 'native_attempt_timeout',
+                message: 'Retry Mobile treated the native first reply as an attempt timeout because it exceeded the configured attempt timeout while still streaming.',
+                detail: describeObservedEvents() || 'Native streaming remained active past the configured attempt timeout.',
+            });
+        }
+
+        function isVisibleNativeProgressOngoing() {
+            if (document.visibilityState === 'hidden') {
+                return false;
+            }
+
+            if (document.body?.dataset?.generating) {
+                return true;
+            }
+
+            const stopButtons = document.querySelectorAll?.('#mes_stop, #mes_stop_buttons, .fa-stop');
+            return Boolean(stopButtons && stopButtons.length > 0);
+        }
+
+        function confirmFromLiveChatWithoutEvents() {
+            if (isVisibleNativeProgressOngoing()) {
+                return null;
+            }
+
+            const fallbackAssistantIndex = Number.isInteger(fingerprint?.userIndexAtCapture)
+                ? fingerprint.userIndexAtCapture + 1
+                : null;
+            if (!Number.isInteger(fallbackAssistantIndex) || fallbackAssistantIndex < 0) {
+                return null;
+            }
+
+            const confirmation = confirmTargetTurn(fingerprint, fallbackAssistantIndex);
+            if (!confirmation.ok) {
+                return null;
+            }
+
+            onEvent?.(
+                'NATIVE_FALLBACK_CONFIRMED',
+                `Confirmed native assistant turn ${confirmation.assistantMessageIndex} from live chat state without waiting for missing lifecycle events.`,
+            );
+            return {
+                assistantMessageIndex: confirmation.assistantMessageIndex,
+                assistantMessage: confirmation.assistantMessage,
+                acceptedSeedCount: confirmation.acceptedSeedCount,
+            };
+        }
     });
 }
 
@@ -495,6 +614,11 @@ function normalizeMessageId(messageId) {
 }
 
 function readMessageProgressSignature(messageId) {
+    const renderedText = readRenderedMessageText(messageId);
+    if (renderedText) {
+        return `dom:${renderedText.length}:${renderedText.slice(-64)}`;
+    }
+
     const chat = getCurrentChatArray(getContext());
     const message = Array.isArray(chat) && Number.isFinite(messageId)
         ? chat[messageId]
@@ -507,4 +631,14 @@ function readMessageProgressSignature(messageId) {
     const swipeId = Number.isFinite(Number(message.swipe_id)) ? Number(message.swipe_id) : -1;
     const mesLen = String(message.mes || '').length;
     return `${mesLen}/${swipeCount}/${swipeId}`;
+}
+
+function readRenderedMessageText(messageId) {
+    const element = document.querySelector(`.mes[mesid="${messageId}"]`);
+    if (!element) {
+        return '';
+    }
+
+    const textNode = element.querySelector?.('.mes_text') || element;
+    return String(textNode?.textContent || '').trim();
 }

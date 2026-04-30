@@ -6,6 +6,7 @@ import { isSameChat } from './st-chat.js';
 import { t } from './i18n.js';
 import { createSessionLockdown } from './ui/session-lockdown.js';
 import { createChatReconciler } from './render/reconciler.js';
+import { applyAcceptedOutput, reloadSessionUi } from './render/st-operations.js';
 
 export function createStPort({
     onCapture,
@@ -115,6 +116,7 @@ export function createStPort({
             const result = await waitForNativeCompletion({
                 fingerprint: payload.fingerprint,
                 nativeGraceSeconds: payload.nativeGraceSeconds,
+                attemptTimeoutSeconds: payload.attemptTimeoutSeconds,
                 signal,
                 onEvent: (event, summary) => onNativeEvent?.(event, summary),
             });
@@ -124,6 +126,15 @@ export function createStPort({
 
             if (result?.outcome === 'succeeded') {
                 onNativeReady?.(result);
+                return;
+            }
+
+            if (result?.outcome === 'timed_out') {
+                onNativeFailed?.(createStructuredError(
+                    'native_attempt_timeout',
+                    result?.message || 'Retry Mobile stopped waiting for the native attempt because it exceeded the configured attempt timeout.',
+                    result?.detail || '',
+                ));
                 return;
             }
 

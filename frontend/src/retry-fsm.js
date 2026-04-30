@@ -627,12 +627,14 @@ export function createRetryFsm({
 
     function enterRunning(nextContext) {
         const nativeGraceSeconds = numberOrNull(nextContext.intent?.settings?.nativeGraceSeconds);
+        const attemptTimeoutSeconds = numberOrNull(nextContext.intent?.settings?.attemptTimeoutSeconds);
         if (nextContext.captureFingerprint) {
             stPort.subscribeNativeObserver?.({
                 runId: nextContext.runId,
                 chatIdentity: clonePlain(nextContext.chatIdentity),
                 target: clonePlain(nextContext.target),
                 ...(nativeGraceSeconds != null ? { nativeGraceSeconds } : {}),
+                ...(attemptTimeoutSeconds != null ? { attemptTimeoutSeconds } : {}),
                 fingerprint: clonePlain(nextContext.captureFingerprint),
             });
         }

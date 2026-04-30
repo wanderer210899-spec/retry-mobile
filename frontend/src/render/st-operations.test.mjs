@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { assistantTargetMatches } from './st-operations.js';
+import { adoptTargetMessageForVisibleHost, assistantTargetMatches, buildPatchedAssistantMessage } from './st-operations.js';
 
 test('assistantTargetMatches accepts a live turn that already carries the expected anchor', () => {
     assert.equal(assistantTargetMatches({
@@ -137,4 +137,139 @@ test('assistantTargetMatches rejects a mismatched old anchor when the live swipe
             { extra: { retryMobileAssistantAnchorId: 'new-anchor' } },
         ],
     }, 'new-anchor'), false);
+});
+
+test('buildPatchedAssistantMessage preserves the currently selected live swipe when backend appends new swipes', () => {
+    const patched = buildPatchedAssistantMessage({
+        mes: 'Current swipe',
+        swipe_id: 1,
+        swipes: ['Older swipe', 'Current swipe'],
+        swipe_info: [
+            {
+                send_date: '2026-04-30T09:00:00.000Z',
+                gen_started: '2026-04-30T09:00:00.000Z',
+                gen_finished: '2026-04-30T09:00:00.000Z',
+                extra: { slot: 'older' },
+            },
+            {
+                send_date: '2026-04-30T09:01:00.000Z',
+                gen_started: '2026-04-30T09:01:00.000Z',
+                gen_finished: '2026-04-30T09:01:00.000Z',
+                extra: { slot: 'current' },
+            },
+        ],
+        extra: { slot: 'current' },
+        send_date: '2026-04-30T09:01:00.000Z',
+        gen_started: '2026-04-30T09:01:00.000Z',
+        gen_finished: '2026-04-30T09:01:00.000Z',
+    }, {
+        mes: 'Newest retry swipe',
+        swipe_id: 2,
+        swipes: ['Older swipe', 'Current swipe', 'Newest retry swipe'],
+        swipe_info: [
+            {
+                send_date: '2026-04-30T09:00:00.000Z',
+                gen_started: '2026-04-30T09:00:00.000Z',
+                gen_finished: '2026-04-30T09:00:00.000Z',
+                extra: { slot: 'older', retryMobileAssistantAnchorId: 'new-anchor' },
+            },
+            {
+                send_date: '2026-04-30T09:01:00.000Z',
+                gen_started: '2026-04-30T09:01:00.000Z',
+                gen_finished: '2026-04-30T09:01:00.000Z',
+                extra: { slot: 'current', retryMobileAssistantAnchorId: 'new-anchor' },
+            },
+            {
+                send_date: '2026-04-30T09:02:00.000Z',
+                gen_started: '2026-04-30T09:02:00.000Z',
+                gen_finished: '2026-04-30T09:02:00.000Z',
+                extra: { slot: 'newest', retryMobileAssistantAnchorId: 'new-anchor' },
+            },
+        ],
+        extra: { slot: 'newest', retryMobileAssistantAnchorId: 'new-anchor' },
+        send_date: '2026-04-30T09:02:00.000Z',
+        gen_started: '2026-04-30T09:02:00.000Z',
+        gen_finished: '2026-04-30T09:02:00.000Z',
+    });
+
+    assert.equal(patched.swipe_id, 1);
+    assert.equal(patched.mes, 'Current swipe');
+    assert.deepEqual(patched.extra, {
+        slot: 'current',
+        retryMobileAssistantAnchorId: 'new-anchor',
+    });
+    assert.equal(patched.send_date, '2026-04-30T09:01:00.000Z');
+});
+
+test('buildPatchedAssistantMessage falls back to backend-selected swipe when the live selected swipe no longer matches', () => {
+    const patched = buildPatchedAssistantMessage({
+        mes: 'Different live swipe',
+        swipe_id: 1,
+        swipes: ['Older swipe', 'Different live swipe'],
+        swipe_info: [],
+        extra: { slot: 'different' },
+    }, {
+        mes: 'Newest retry swipe',
+        swipe_id: 2,
+        swipes: ['Older swipe', 'Current swipe', 'Newest retry swipe'],
+        swipe_info: [
+            { extra: { slot: 'older', retryMobileAssistantAnchorId: 'new-anchor' } },
+            { extra: { slot: 'current', retryMobileAssistantAnchorId: 'new-anchor' } },
+            { extra: { slot: 'newest', retryMobileAssistantAnchorId: 'new-anchor' } },
+        ],
+        extra: { slot: 'newest', retryMobileAssistantAnchorId: 'new-anchor' },
+    });
+
+    assert.equal(patched.swipe_id, 2);
+    assert.equal(patched.mes, 'Newest retry swipe');
+});
+
+test('adoptTargetMessageForVisibleHost keeps the native visible swipe selected when backend appends retry swipes under a new anchor', () => {
+    const adopted = adoptTargetMessageForVisibleHost({
+        mes: 'Native reply visible text',
+        swipe_id: 0,
+        swipes: ['Native reply visible text'],
+        swipe_info: [
+            {
+                send_date: '2026-04-30T10:00:00.000Z',
+                gen_started: '2026-04-30T10:00:00.000Z',
+                gen_finished: '2026-04-30T10:00:00.000Z',
+                extra: {},
+            },
+        ],
+        extra: {},
+        send_date: '2026-04-30T10:00:00.000Z',
+        gen_started: '2026-04-30T10:00:00.000Z',
+        gen_finished: '2026-04-30T10:00:00.000Z',
+    }, {
+        mes: 'Retry 1 visible text',
+        swipe_id: 0,
+        swipes: ['Retry 1 visible text', 'Retry 2 visible text', 'Retry 3 visible text'],
+        swipe_info: [
+            {
+                send_date: '2026-04-30T10:01:00.000Z',
+                gen_started: '2026-04-30T10:01:00.000Z',
+                gen_finished: '2026-04-30T10:01:00.000Z',
+                extra: { retryMobileAssistantAnchorId: 'new-anchor', slot: 'retry-1' },
+            },
+            {
+                send_date: '2026-04-30T10:02:00.000Z',
+                gen_started: '2026-04-30T10:02:00.000Z',
+                gen_finished: '2026-04-30T10:02:00.000Z',
+                extra: { retryMobileAssistantAnchorId: 'new-anchor', slot: 'retry-2' },
+            },
+            {
+                send_date: '2026-04-30T10:03:00.000Z',
+                gen_started: '2026-04-30T10:03:00.000Z',
+                gen_finished: '2026-04-30T10:03:00.000Z',
+                extra: { retryMobileAssistantAnchorId: 'new-anchor', slot: 'retry-3' },
+            },
+        ],
+        extra: { retryMobileAssistantAnchorId: 'new-anchor', slot: 'retry-3' },
+    }, 'new-anchor');
+
+    assert.equal(adopted.swipe_id, 0);
+    assert.equal(adopted.mes, 'Retry 1 visible text');
+    assert.equal(adopted.swipes.length, 3);
+    assert.equal(adopted.extra.retryMobileAssistantAnchorId, 'new-anchor');
 });

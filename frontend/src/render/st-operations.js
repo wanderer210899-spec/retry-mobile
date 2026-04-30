@@ -65,7 +65,8 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    if (!assistantTargetMatches(existing, targetMessage, targetAssistantAnchorId)) {
+    const adoptedTargetMessage = adoptTargetMessageForVisibleHost(existing, targetMessage, targetAssistantAnchorId);
+    if (!adoptedTargetMessage) {
         return {
             ok: false,
             recoveryRequired: true,
@@ -76,10 +77,8 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    liveChat[targetMessageIndex] = {
-        ...existing,
-        ...targetMessage,
-    };
+    const patchedMessage = buildPatchedAssistantMessage(existing, adoptedTargetMessage);
+    liveChat[targetMessageIndex] = patchedMessage;
 
     try {
         // Preserve the user's current scroll position when patching a message.
@@ -95,7 +94,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ? (prevScrollTop + prevClientHeight >= prevScrollHeight - 12)
             : false;
 
-        context.updateMessageBlock?.(targetMessageIndex, liveChat[targetMessageIndex]);
+        context.updateMessageBlock?.(targetMessageIndex, patchedMessage);
         context.swipe?.refresh?.(true);
         await waitForStableText(element, { signal });
 
@@ -118,6 +117,24 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             ),
         };
     }
+}
+
+export function buildPatchedAssistantMessage(existing, targetMessage) {
+    const patchedMessage = {
+        ...existing,
+        ...targetMessage,
+    };
+
+    preserveLiveSwipeSelection(patchedMessage, existing, targetMessage);
+    return patchedMessage;
+}
+
+export function adoptTargetMessageForVisibleHost(existing, targetMessage, expectedAnchorId) {
+    if (!assistantTargetMatches(existing, targetMessage, expectedAnchorId)) {
+        return null;
+    }
+
+    return buildTargetMessageForVisibleHost(existing, targetMessage);
 }
 
 export function assistantTargetMatches(message, targetMessage, expectedAnchorId) {
@@ -149,6 +166,10 @@ function getAssistantAnchorId(message) {
 
 function canAdoptUnanchoredSeedTurn(message, targetMessage) {
     if (!messageHasMeaningfulContent(message)) {
+        return true;
+    }
+
+    if (String(targetMessage?.extra?.retryMobileAssistantAnchorId || '').trim()) {
         return true;
     }
 
@@ -199,6 +220,71 @@ function getMeaningfulSwipes(message) {
         .filter(Boolean);
 }
 
+function buildTargetMessageForVisibleHost(existing, targetMessage) {
+    const nextTarget = cloneValue(targetMessage) || {};
+    const liveSelectedText = normalizeComparableText(resolveSwipeText(existing, existing?.swipe_id));
+    if (!liveSelectedText) {
+        return nextTarget;
+    }
+
+    const targetSwipes = Array.isArray(nextTarget.swipes) ? nextTarget.swipes : [];
+    const matchingIndex = targetSwipes.findIndex((swipe) => normalizeComparableText(swipe) === liveSelectedText);
+    if (matchingIndex < 0) {
+        return nextTarget;
+    }
+
+    nextTarget.swipe_id = matchingIndex;
+    syncVisibleFieldsToSwipe(nextTarget, matchingIndex, {
+        fallbackMes: resolveSwipeText(nextTarget, matchingIndex),
+        fallbackExtra: nextTarget.extra || existing?.extra || {},
+        fallbackTimestamp: firstString(
+            existing?.send_date,
+            existing?.gen_finished,
+            existing?.gen_started,
+            nextTarget?.send_date,
+            nextTarget?.gen_finished,
+            nextTarget?.gen_started,
+        ),
+    });
+    return nextTarget;
+}
+
+function preserveLiveSwipeSelection(message, liveMessage, targetMessage) {
+    const targetSwipes = Array.isArray(targetMessage?.swipes) ? targetMessage.swipes : [];
+    if (targetSwipes.length === 0) {
+        return;
+    }
+
+    const liveSwipeId = clampSwipeId(liveMessage?.swipe_id, targetSwipes.length);
+    const liveSelectedText = normalizeComparableText(resolveSwipeText(liveMessage, liveSwipeId));
+    const targetSelectedText = normalizeComparableText(resolveSwipeText(targetMessage, liveSwipeId));
+    if (!liveSelectedText || liveSelectedText !== targetSelectedText) {
+        return;
+    }
+
+    syncVisibleFieldsToSwipe(message, liveSwipeId, {
+        fallbackMes: resolveSwipeText(targetMessage, liveSwipeId) || liveMessage?.mes || '',
+        fallbackExtra: targetMessage?.extra || liveMessage?.extra || {},
+        fallbackTimestamp: firstString(
+            liveMessage?.send_date,
+            liveMessage?.gen_finished,
+            liveMessage?.gen_started,
+            targetMessage?.send_date,
+            targetMessage?.gen_finished,
+            targetMessage?.gen_started,
+        ),
+    });
+}
+
+function resolveSwipeText(message, swipeId) {
+    const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
+    if (swipeId >= 0 && swipeId < swipes.length) {
+        return String(swipes[swipeId] ?? '');
+    }
+
+    return String(message?.mes ?? '');
+}
+
 function messageHasMeaningfulContent(message) {
     if (normalizeComparableText(message?.mes)) {
         return true;
@@ -212,6 +298,47 @@ function normalizeText(value) {
     return String(value ?? '')
         .replace(/\r\n/g, '\n')
         .trim();
+}
+
+function syncVisibleFieldsToSwipe(message, swipeId, options = {}) {
+    const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
+    const resolvedSwipeId = clampSwipeId(swipeId, swipes.length);
+    const activeSwipeInfo = Array.isArray(message?.swipe_info)
+        ? message.swipe_info[resolvedSwipeId]
+        : null;
+    const activeTimestamp = firstString(
+        activeSwipeInfo?.send_date,
+        activeSwipeInfo?.gen_finished,
+        activeSwipeInfo?.gen_started,
+        options.fallbackTimestamp,
+    );
+
+    message.swipe_id = resolvedSwipeId;
+    message.mes = String(swipes[resolvedSwipeId] ?? options.fallbackMes ?? '');
+    message.extra = cloneValue(activeSwipeInfo?.extra || options.fallbackExtra || {});
+    message.send_date = activeTimestamp;
+    message.gen_started = firstString(activeSwipeInfo?.gen_started, activeTimestamp);
+    message.gen_finished = firstString(activeSwipeInfo?.gen_finished, activeTimestamp);
+}
+
+function clampSwipeId(value, swipeCount) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || swipeCount <= 0) {
+        return 0;
+    }
+
+    return Math.max(0, Math.min(Math.trunc(numeric), swipeCount - 1));
+}
+
+function firstString(...values) {
+    for (const value of values) {
+        const text = String(value ?? '').trim();
+        if (text) {
+            return text;
+        }
+    }
+
+    return '';
 }
 
 function normalizeComparableText(value) {

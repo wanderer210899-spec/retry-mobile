@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { extractResponseText, replayCapturedRequest, resolvePendingNativeState } = require('./job-runner');
+const { extractResponseText, replayCapturedRequest, resolvePendingNativeState, runJob } = require('./job-runner');
 
 test('replayCapturedRequest forwards cookie and csrf headers from the successful start request', async () => {
     const originalFetch = global.fetch;
@@ -179,7 +179,7 @@ The model should not persist this hidden reasoning.
 - 状态: 对话继续`);
 });
 
-test('resolvePendingNativeState fails closed when a frontend-confirmed native assistant disappears before persistence confirmation', async () => {
+test('resolvePendingNativeState recovers when a frontend-confirmed native assistant is not persisted yet', async () => {
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-gap-'));
     const chatsRoot = path.join(tempRoot, 'chats');
     const cardDir = path.join(chatsRoot, 'Kate');
@@ -252,18 +252,18 @@ test('resolvePendingNativeState fails closed when a frontend-confirmed native as
     try {
         const result = await resolvePendingNativeState(job, 'frontend_confirmed');
 
-        assert.equal(result.outcome, 'failed');
-        assert.equal(job.state, 'failed');
-        assert.equal(job.phase, 'failed');
-        assert.equal(job.nativeState, 'failed');
-        assert.equal(job.recoveryMode, '');
-        assert.equal(job.structuredError?.code, 'native_turn_missing');
-        assert.match(job.structuredError?.message || '', /disappeared before Retry Mobile could continue safely/i);
+        assert.equal(result.outcome, 'abandoned');
+        assert.equal(job.state, 'running');
+        assert.equal(job.phase, 'native_abandoned');
+        assert.equal(job.nativeState, 'abandoned');
+        assert.equal(job.recoveryMode, 'create_missing_turn');
+        assert.equal(job.structuredError, null);
 
         const logPath = path.join(jobsDir, 'job-native-gap.log.jsonl');
         const logText = fs.readFileSync(logPath, 'utf8');
-        assert.match(logText, /native_confirmation_failed/);
-        assert.doesNotMatch(logText, /create the missing assistant turn/i);
+        assert.match(logText, /native_abandoned/);
+        assert.match(logText, /create the missing assistant turn/i);
+        assert.doesNotMatch(logText, /native_confirmation_failed/);
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -388,5 +388,85 @@ test('resolvePendingNativeState waits briefly for a frontend-confirmed native as
             clearTimeout(delayedWrite);
         }
         fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('runJob treats native_attempt_timeout as a timed-out first attempt and proceeds to retry generation', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return {
+            ok: true,
+            status: 200,
+            async text() {
+                return JSON.stringify({ choices: [{ text: 'Recovered retry result after native timeout.' }] });
+            },
+        };
+    };
+
+    const now = new Date().toISOString();
+    const job = {
+        jobId: 'job-native-attempt-timeout',
+        runId: 'run-native-attempt-timeout',
+        state: 'running',
+        phase: 'pending_native',
+        createdAt: now,
+        updatedAt: now,
+        nativeState: 'pending',
+        nativeResolutionCause: 'native_attempt_timeout',
+        recoveryMode: '',
+        acceptedCount: 0,
+        targetAcceptedCount: 1,
+        attemptCount: 0,
+        maxAttempts: 2,
+        targetMessageVersion: 0,
+        targetUserAnchorId: 'user-anchor',
+        targetAssistantAnchorId: 'assistant-anchor',
+        capturedChatIntegrity: 'integrity',
+        capturedChatLength: 1,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: 'hello',
+        },
+        chatIdentity: {
+            kind: 'character',
+            avatarUrl: 'Kate.png',
+            chatId: 'chat-native-attempt-timeout',
+            fileName: 'chat-native-attempt-timeout',
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: {
+                root: 'unused',
+                chats: 'unused',
+                groupChats: 'unused',
+            },
+        },
+        attemptLog: [],
+        runConfig: {
+            attemptTimeoutSeconds: 5,
+            validationMode: 'characters',
+            minCharacters: 0,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+        capturedRequest: {
+            prompt: 'hello',
+        },
+        jobController: new AbortController(),
+    };
+
+    try {
+        await assert.rejects(
+            async () => runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }),
+            () => false,
+        ).catch(() => {});
+        assert.equal(job.attemptCount >= 1, true);
+        assert.equal(job.attemptLog.some((entry) => entry.reason === 'native_attempt_timeout'), true);
+        assert.equal(fetchCalls.length >= 1, true);
+    } finally {
+        global.fetch = originalFetch;
     }
 });

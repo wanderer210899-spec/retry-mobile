@@ -13,7 +13,7 @@ const {
 
 const NATIVE_PENDING_POLL_MS = 1000;
 const FORCED_NATIVE_INSPECTION_DELAYS_MS = [0, 1000, 2000, 4000, 8000];
-const FRONTEND_CONFIRMED_PERSIST_DELAYS_MS = [0, 250, 500, 1000, 1500];
+const FRONTEND_CONFIRMED_PERSIST_DELAYS_MS = [0, 500, 1000, 2000, 4000, 8000];
 const BASE_RETRY_DELAY_MS = 750;
 const MAX_RETRY_DELAY_MS = 10000;
 const MAX_TARGET_PENDING_INSPECTIONS = 5;
@@ -441,6 +441,22 @@ async function runJob(job, environment) {
 }
 
 async function awaitNativeOutcome(job) {
+    if (job.nativeResolutionCause === 'native_attempt_timeout') {
+        touchJob(job, {
+            phase: 'attempt_timed_out',
+            nativeState: 'pending',
+            nativeGraceDeadline: '',
+            lastError: `Native first reply exceeded the configured attempt timeout of ${Math.max(1, Number(job.runConfig?.attemptTimeoutSeconds) || 0)} seconds.`,
+            structuredError: null,
+        });
+        appendLifecycleLog(
+            job,
+            'native_attempt_timeout',
+            `Native first reply exceeded the configured attempt timeout of ${Math.max(1, Number(job.runConfig?.attemptTimeoutSeconds) || 0)} seconds. Moving on to the next retry attempt.`,
+        );
+        return;
+    }
+
     if (job.nativeState === 'confirmed') {
         touchJob(job, {
             phase: 'native_confirmed',
@@ -655,18 +671,12 @@ function applyInspectionResolution(job, inspection, cause) {
     }
 
     if (inspection.kind === 'missing_assistant' || inspection.kind === 'missing_user_anchor') {
-        if (resolutionCause === 'frontend_confirmed' || job.phase === 'native_confirming_persisted') {
-            const structuredError = inspection.kind === 'missing_user_anchor'
-                ? createStructuredError(
-                    'capture_chat_changed',
-                    'Retry Mobile stopped because the captured user turn disappeared before the confirmed native handoff could be persisted.',
-                    `nativeResolutionCause=${resolutionCause || 'unknown'}`,
-                )
-                : createStructuredError(
-                    'native_turn_missing',
-                    'Retry Mobile stopped because the confirmed native assistant turn disappeared before Retry Mobile could continue safely.',
-                    `nativeResolutionCause=${resolutionCause || 'unknown'}`,
-                );
+        if (inspection.kind === 'missing_user_anchor' && (resolutionCause === 'frontend_confirmed' || job.phase === 'native_confirming_persisted')) {
+            const structuredError = createStructuredError(
+                'capture_chat_changed',
+                'Retry Mobile stopped because the captured user turn disappeared before the confirmed native handoff could be persisted.',
+                `nativeResolutionCause=${resolutionCause || 'unknown'}`,
+            );
             finalizeFailed(job, structuredError);
             appendLifecycleLog(job, 'native_confirmation_failed', structuredError.message);
             return;
