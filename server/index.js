@@ -1,4 +1,6 @@
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const {
     confirmNativeAssistant,
@@ -13,6 +15,7 @@ const { createStructuredError, toStructuredError } = require('./retry-error');
 const {
     advanceGeneration,
     configureJobStore,
+    deletePersistedJobSnapshot,
     getCurrentGeneration,
     loadPersistedJobSnapshots,
     pruneTerminalJobUnits,
@@ -106,6 +109,7 @@ async function init(router) {
             supportedUiLanguages: getSupportedLanguages(),
             backendBootError: bootState.lastError || '',
             backendReady: bootState.ready === true,
+            installedVersion: readInstalledPluginVersion(runtimeRoot),
         });
     });
 
@@ -728,6 +732,21 @@ async function restorePersistedJobs() {
 }
 
 function restoreSinglePersistedJob(snapshot) {
+    // Terminal snapshots from a previous boot must not survive a server
+    // restart. The user expectation (and what other application installers
+    // do) is that restarting the server is a clean slate for retry/job
+    // history. Terminal jobs were previously rehydrated into the in-memory
+    // store so `/latest` could surface them after restart, but that meant
+    // the frontend's boot path could pick up a stale completed/failed run
+    // and treat it as the latest result. We now skip and delete those
+    // snapshots; only `running` snapshots are recovered (and recovered jobs
+    // immediately transition to a terminal state below).
+    const persistedState = String(snapshot?.state || '').trim();
+    if (persistedState && persistedState !== 'running') {
+        deletePersistedJobSnapshot(snapshot);
+        return;
+    }
+
     const job = createJob({
         ...snapshot,
         skipPersist: true,
@@ -769,6 +788,19 @@ function restoreSinglePersistedJob(snapshot) {
         },
     });
     pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+}
+
+function readInstalledPluginVersion(runtimeRoot) {
+    try {
+        const releasePath = path.join(runtimeRoot, 'release.json');
+        if (!fs.existsSync(releasePath)) {
+            return '';
+        }
+        const release = JSON.parse(fs.readFileSync(releasePath, 'utf8'));
+        return typeof release?.version === 'string' ? release.version : '';
+    } catch {
+        return '';
+    }
 }
 
 function getRecoveryMessage(reason) {

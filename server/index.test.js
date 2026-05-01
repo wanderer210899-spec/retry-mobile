@@ -1,7 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
 const plugin = require('./index');
+const { getJob } = require('./state');
 
 test('extractReplayAuthContext keeps only the browser cookie and csrf token needed for server-side replay', () => {
     const request = {
@@ -122,6 +126,63 @@ test('init() registers all plugin routes even when boot recovery throws — othe
             registeredPaths.includes(expected),
             `expected route "${expected}" to be registered, got: ${JSON.stringify(registeredPaths)}`,
         );
+    }
+});
+
+test('restoreSinglePersistedJob skips terminal snapshots and deletes them from disk so a server restart starts with a clean retry/job slate', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-restore-'));
+    const handle = 'test-user';
+    const userRoot = path.join(tempRoot, handle);
+    const jobsDir = path.join(userRoot, 'retry-mobile', 'jobs');
+    fs.mkdirSync(jobsDir, { recursive: true });
+
+    const snapshot = {
+        schemaVersion: 1,
+        jobId: 'completed-job-1',
+        runId: 'completed-job-1',
+        state: 'completed',
+        phase: 'completed',
+        chatIdentity: { kind: 'character', chatId: 'chat-1', groupId: null },
+        chatKey: 'character::chat-1::',
+        userContext: { handle, directories: { root: userRoot } },
+        acceptedCount: 2,
+        attemptCount: 2,
+        targetAcceptedCount: 2,
+        maxAttempts: 5,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+    };
+    const snapshotPath = path.join(jobsDir, `${snapshot.jobId}.json`);
+    fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');
+
+    const failedSnapshot = { ...snapshot, jobId: 'failed-job-1', runId: 'failed-job-1', state: 'failed' };
+    const failedPath = path.join(jobsDir, `${failedSnapshot.jobId}.json`);
+    fs.writeFileSync(failedPath, JSON.stringify(failedSnapshot), 'utf8');
+
+    const cancelledSnapshot = { ...snapshot, jobId: 'cancelled-job-1', runId: 'cancelled-job-1', state: 'cancelled' };
+    const cancelledPath = path.join(jobsDir, `${cancelledSnapshot.jobId}.json`);
+    fs.writeFileSync(cancelledPath, JSON.stringify(cancelledSnapshot), 'utf8');
+
+    try {
+        plugin._test.restoreSinglePersistedJob(snapshot);
+        plugin._test.restoreSinglePersistedJob(failedSnapshot);
+        plugin._test.restoreSinglePersistedJob(cancelledSnapshot);
+
+        assert.equal(getJob(snapshot.jobId), null,
+            'completed snapshots must not be loaded into the in-memory job store on boot');
+        assert.equal(getJob(failedSnapshot.jobId), null,
+            'failed snapshots must not be loaded into the in-memory job store on boot');
+        assert.equal(getJob(cancelledSnapshot.jobId), null,
+            'cancelled snapshots must not be loaded into the in-memory job store on boot');
+
+        assert.equal(fs.existsSync(snapshotPath), false,
+            'completed snapshot file must be deleted from disk during boot restore');
+        assert.equal(fs.existsSync(failedPath), false,
+            'failed snapshot file must be deleted from disk during boot restore');
+        assert.equal(fs.existsSync(cancelledPath), false,
+            'cancelled snapshot file must be deleted from disk during boot restore');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
 

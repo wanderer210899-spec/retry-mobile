@@ -309,6 +309,31 @@ function isTerminalState(state) {
     return state === 'completed' || state === 'failed' || state === 'cancelled';
 }
 
+// Used by boot-time restore to evict terminal-state snapshot files. The
+// in-memory restore already skips them, but they accumulate on disk across
+// runs and re-surface as `/latest` results after a restart, which breaks the
+// "fresh slate after server restart / update" expectation.
+function deletePersistedJobSnapshot(snapshot) {
+    const handle = String(snapshot?.userContext?.handle || '').trim();
+    const jobId = String(snapshot?.jobId || '').trim();
+    if (!handle || !jobId) {
+        return;
+    }
+
+    let paths;
+    try {
+        paths = getRetryMobileUserPaths(handle, snapshot.userContext?.directories);
+    } catch {
+        return;
+    }
+
+    if (!fs.existsSync(paths.jobsDir)) {
+        return;
+    }
+
+    deleteJobUnit(paths.jobsDir, jobId, handle, snapshot.userContext?.directories);
+}
+
 module.exports = {
     SNAPSHOT_SCHEMA_VERSION,
     TERMINAL_JOB_RETENTION,
@@ -317,6 +342,7 @@ module.exports = {
     writeJobSnapshot,
     loadPersistedJobSnapshots,
     pruneTerminalJobUnits,
+    deletePersistedJobSnapshot,
     getCurrentGeneration,
     advanceGeneration,
     writeUnknownSchemaRecoverySidecar,

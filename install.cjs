@@ -110,6 +110,12 @@ async function headlessInstall(layout, platform) {
         );
     }
 
+    const isUpdate = fs.existsSync(layout.backendTarget);
+    const clearedProfiles = isUpdate ? clearRetryMobileRuntimeState(layout) : [];
+    if (clearedProfiles.length > 0) {
+        console.log(`[Headless] Cleared previous Retry Mobile retry/job state for: ${clearedProfiles.join(', ')}.`);
+    }
+
     ensureWritable(layout.pluginsDir, true);
     installBackend(layout);
     console.log('[Headless] Backend installed.');
@@ -435,6 +441,9 @@ async function installOrUpdateNow(rl, layout, platform, language = 'en') {
         ].join('\n');
     }
 
+    const isUpdate = fs.existsSync(layout.backendTarget);
+    const cleared = isUpdate ? clearRetryMobileRuntimeState(layout) : [];
+
     ensureWritable(layout.pluginsDir, true);
     installBackend(layout);
 
@@ -443,11 +452,15 @@ async function installOrUpdateNow(rl, layout, platform, language = 'en') {
         refreshProfiles(layout);
         return formatProcessComplete('Install / Update process complete.', [
             'Backend installed or updated.',
+            ...buildRuntimeStateClearedLines(cleared),
             'Frontend selection was cancelled.',
         ], platform);
     }
 
-    const completionLines = ['Backend installed or updated.'];
+    const completionLines = [
+        'Backend installed or updated.',
+        ...buildRuntimeStateClearedLines(cleared),
+    ];
     if (target.kind === 'global') {
         const installedProfiles = layout.profiles.filter((profile) => profile.hasFrontend);
         if (installedProfiles.length > 0) {
@@ -625,6 +638,54 @@ function removeProfileFrontends(profiles) {
     for (const profile of profiles) {
         removeDirectory(profile.frontendTarget);
     }
+}
+
+// Real-installer behavior: an update should not silently inherit the previous
+// install's runtime state. Persisted retry-job snapshots and chat-generation
+// counters are recovered by the backend on boot, so leaving them in place
+// across an update means the old plugin's "armed" / "running" / failed-job
+// state can leak into the new install. This helper deletes only Retry Mobile's
+// own runtime state files inside each detected user profile data root; chat
+// files, settings, and other SillyTavern data are not touched.
+function clearRetryMobileRuntimeState(layout) {
+    const cleared = [];
+    for (const profile of layout.profiles) {
+        if (clearRetryMobileRuntimeStateForRoot(profile.root)) {
+            cleared.push(profile.handle);
+        }
+    }
+    return cleared;
+}
+
+function clearRetryMobileRuntimeStateForRoot(profileRoot) {
+    const stateDir = path.join(profileRoot, 'retry-mobile');
+    if (!fs.existsSync(stateDir)) {
+        return false;
+    }
+
+    let didClear = false;
+    const jobsDir = path.join(stateDir, 'jobs');
+    if (fs.existsSync(jobsDir)) {
+        removeDirectory(jobsDir);
+        didClear = true;
+    }
+    const generationFile = path.join(stateDir, 'chat-generation.json');
+    if (fs.existsSync(generationFile)) {
+        try {
+            fs.rmSync(generationFile, { force: true });
+            didClear = true;
+        } catch {
+            // Best-effort: an unwritable generation file should not block install.
+        }
+    }
+    return didClear;
+}
+
+function buildRuntimeStateClearedLines(clearedProfiles) {
+    if (!Array.isArray(clearedProfiles) || clearedProfiles.length === 0) {
+        return [];
+    }
+    return [`Cleared previous retry/job state for: ${clearedProfiles.join(', ')}.`];
 }
 
 async function promptForProfiles(rl, profiles, allowMultiple) {

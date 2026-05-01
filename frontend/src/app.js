@@ -24,6 +24,7 @@ import {
     resolveCaptureTarget,
     resolveCaptureSubscriptionChatIdentity,
 } from './app-recovery.js';
+import { applyInstallVersionGate } from './install-version-gate.js';
 
 const runtime = createRuntime();
 
@@ -307,20 +308,38 @@ export async function bootRetryMobile() {
     ensurePanelMounted();
     bindHostObserver(ensurePanelMounted);
     bindPageObservers(runtime);
-    restoreController.subscribeChatChangedRestore();
     systemController.registerCommands();
 
     void systemController.refreshDiagnostics();
     systemController.refreshQuickReplyState({ quiet: true });
     systemController.scheduleQuickReplyRefresh();
-    void fetchCapabilities().then((caps) => {
+
+    // Capabilities tell us the backend's installed plugin version. We must
+    // resolve the install-version gate BEFORE subscribing to CHAT_CHANGED
+    // restore or running the initial restoreControlState() — both of those
+    // paths will re-arm from intent.engaged, which is exactly the state we
+    // need to clear after an update.
+    const caps = await fetchCapabilities().catch(() => null);
+    if (caps) {
         runtime.capabilities = {
             ...runtime.capabilities,
             ...caps,
         };
         runtime.termuxAvailable = Boolean(caps?.termux);
-        render();
+    }
+    const versionGate = applyInstallVersionGate({
+        installedVersion: caps?.installedVersion || '',
+        intentPort,
     });
+    if (versionGate.changed) {
+        void window.__rmLogEvent?.(
+            'install_version_changed',
+            `Cleared armed state because installed version changed: ${versionGate.previous} → ${versionGate.current}.`,
+            { previous: versionGate.previous, current: versionGate.current, clearedBindings: versionGate.clearedBindings },
+        );
+    }
+
+    restoreController.subscribeChatChangedRestore();
     void systemController.refreshReleaseInfo().then((info) => {
         if (hadStoredLanguage) {
             return;
