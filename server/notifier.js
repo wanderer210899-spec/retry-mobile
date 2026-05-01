@@ -1,36 +1,51 @@
 const { execFile } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { normalizeLanguage, translate } = require('./i18n-catalog');
 
 const TERMUX_BIN_DIRS = [
     '/data/data/com.termux/files/usr/bin',
     '/data/user/0/com.termux/files/usr/bin',
 ];
+const TERMUX_CAPABILITIES_TTL_MS = 60000;
+const TERMUX_START_FRESH_WINDOW_MS = 5000;
 
 const MAX_RECENT_ATTEMPTS = 30;
 const MAX_CAPTURE_LENGTH = 500;
 let notificationSequence = 0;
 let commandSequence = 0;
 const recentAttempts = [];
+let _termuxStatus = detectTermuxStatus();
 
-const _termuxBinDir = TERMUX_BIN_DIRS.find((dir) => {
-    try {
-        return fs.statSync(dir).isDirectory();
-    } catch {
-        return false;
+function getTermuxStatus(options = {}) {
+    const maxAgeMs = Number.isFinite(Number(options.maxAgeMs)) ? Number(options.maxAgeMs) : TERMUX_CAPABILITIES_TTL_MS;
+    const checkedAtMs = Date.parse(_termuxStatus.checkedAt || '') || 0;
+    if (!checkedAtMs || (Date.now() - checkedAtMs) > maxAgeMs) {
+        _termuxStatus = detectTermuxStatus();
     }
-}) ?? null;
+
+    return {
+        available: Boolean(_termuxStatus.available),
+        checkedAt: _termuxStatus.checkedAt,
+        binDir: _termuxStatus.binDir,
+    };
+}
+
+function refreshTermuxStatusForStart() {
+    return getTermuxStatus({ maxAgeMs: TERMUX_START_FRESH_WINDOW_MS });
+}
 
 function isTermuxAvailable() {
-    return _termuxBinDir !== null;
+    return Boolean(getTermuxStatus().available);
 }
 
 function resolveBin(name) {
-    if (!_termuxBinDir) {
+    const status = getTermuxStatus();
+    if (!status.binDir) {
         return null;
     }
 
-    const full = path.join(_termuxBinDir, name);
+    const full = path.join(status.binDir, name);
     try {
         fs.accessSync(full, fs.constants.X_OK);
         return full;
@@ -118,15 +133,36 @@ function buildMessage(runConfig, stage, payload) {
         return customMessage;
     }
 
+    const language = normalizeLanguage(runConfig?.uiLanguage || '');
+
     if (stage === 'success') {
-        return `Accepted ${payload.acceptedCount}/${payload.targetAcceptedCount} - ${payload.characterCount}c - ${payload.tokenCount}t`;
+        return translate('backendNotifier.accepted', {
+            language,
+            vars: {
+                acceptedCount: stringifyTemplateValue(payload.acceptedCount),
+                targetAcceptedCount: stringifyTemplateValue(payload.targetAcceptedCount),
+                characterCount: stringifyTemplateValue(payload.characterCount),
+                tokenCount: stringifyTemplateValue(payload.tokenCount),
+            },
+        });
     }
 
     if (stage === 'completed') {
-        return `Done - ${payload.acceptedCount} accepted in ${payload.attemptCount} attempts.`;
+        return translate('backendNotifier.completed', {
+            language,
+            vars: {
+                acceptedCount: stringifyTemplateValue(payload.acceptedCount),
+                attemptCount: stringifyTemplateValue(payload.attemptCount),
+            },
+        });
     }
 
-    return `Retry Mobile ${stage}.`;
+    return translate('backendNotifier.fallback', {
+        language,
+        vars: {
+            stage: stringifyTemplateValue(stage),
+        },
+    });
 }
 
 function renderCustomMessage(runConfig, stage, payload) {
@@ -284,9 +320,11 @@ async function debugNotifier(options = {}) {
     }
 
     const notificationList = await readNotificationList();
+    const termuxStatus = getTermuxStatus();
     return {
-        binDir: _termuxBinDir,
-        isTermuxAvailable: isTermuxAvailable(),
+        binDir: termuxStatus.binDir,
+        isTermuxAvailable: termuxStatus.available,
+        termuxCheckedAt: termuxStatus.checkedAt,
         includeProbes,
         screenState: await readScreenState(),
         probes,
@@ -421,10 +459,28 @@ function delay(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function detectTermuxStatus() {
+    const binDir = TERMUX_BIN_DIRS.find((dir) => {
+        try {
+            return fs.statSync(dir).isDirectory();
+        } catch {
+            return false;
+        }
+    }) ?? null;
+
+    return {
+        available: binDir !== null,
+        checkedAt: new Date().toISOString(),
+        binDir,
+    };
+}
+
 module.exports = {
     acquireWakeLock,
     debugNotifier,
+    getTermuxStatus,
     isTermuxAvailable,
     notify,
+    refreshTermuxStatusForStart,
     releaseWakeLock,
 };

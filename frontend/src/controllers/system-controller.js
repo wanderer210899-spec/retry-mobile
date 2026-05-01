@@ -1,0 +1,281 @@
+import {
+    EXTENSION_NAME,
+    LOG_PREFIX,
+    REPOSITORY_URL,
+    SLASH_COMMAND_PREFIX,
+} from '../constants.js';
+import { createLogger } from '../logger.js';
+import { fetchLatestJob, fetchReleaseInfo } from '../backend-api.js';
+import { runDiagnostics } from '../diagnostics.js';
+import { getQuickReplyStatus, setQuickReplyAttached } from '../quick-reply.js';
+import {
+    focusPanelDrawer,
+    getChatIdentity,
+    getContext,
+    registerSlashCommand,
+    showToast,
+} from '../st-context.js';
+import {
+    buildRetryLogFileName,
+    clearRetryLog,
+    getRetryLogContext,
+    syncRetryLogForStatus,
+} from '../logs/retry-log.js';
+import { createStructuredError } from '../retry-error.js';
+import { t } from '../i18n.js';
+
+const backendLog = createLogger(LOG_PREFIX.BACKEND);
+const qrLog = createLogger(LOG_PREFIX.QR);
+
+export function createSystemController({
+    runtime,
+    render,
+    setJobError,
+    clearJobError,
+    armPluginFromUi,
+    stopPlugin,
+}) {
+    return {
+        refreshDiagnostics,
+        refreshReleaseInfo,
+        refreshQuickReplyState,
+        scheduleQuickReplyRefresh,
+        toggleQuickRepliesFromUi,
+        copyRetryLogFromUi,
+        downloadRetryLogFromUi,
+        registerCommands,
+        showTab,
+        toggleRetryLog,
+    };
+
+    async function refreshDiagnostics(showFeedback = false) {
+        runtime.diagnostics = await runDiagnostics(getContext());
+        if (showFeedback) {
+            showToast(runtime.diagnostics.startEnabled ? 'success' : 'warning', EXTENSION_NAME, runtime.diagnostics.startEnabled
+                ? t('toasts.diagnosticsPassed')
+                : t('toasts.diagnosticsFailed'));
+        }
+
+        render();
+    }
+
+    async function refreshReleaseInfo() {
+        try {
+            runtime.releaseInfo = await fetchReleaseInfo();
+        } catch (error) {
+            backendLog.warn('Could not fetch release info.', error);
+            runtime.releaseInfo = {
+                repositoryUrl: REPOSITORY_URL,
+                branch: 'unknown',
+                update: {
+                    canCheck: false,
+                    hasUpdate: false,
+                    message: error?.message || t('system.releaseFallbackMessage'),
+                },
+                installed: {
+                    version: '',
+                    branch: 'unknown',
+                    commit: '',
+                },
+                latest: {
+                    version: '',
+                    branch: 'unknown',
+                },
+                instructions: {
+                    updateNow: t('system.releaseFallbackUpdateNow'),
+                    addProfile: t('system.releaseFallbackAddProfile'),
+                },
+            };
+        }
+
+        render();
+        return runtime.releaseInfo;
+    }
+
+    function refreshQuickReplyState(options = {}) {
+        runtime.quickReplyStatus = getQuickReplyStatus();
+        if (!options.quiet && !runtime.quickReplyStatus?.ok) {
+            qrLog.warn('Quick Reply sync unavailable.', runtime.quickReplyStatus);
+        }
+        render();
+    }
+
+    function scheduleQuickReplyRefresh() {
+        if (runtime.quickReplyRefreshHandle) {
+            window.clearTimeout(runtime.quickReplyRefreshHandle);
+        }
+
+        runtime.quickReplyRefreshHandle = window.setTimeout(() => {
+            runtime.quickReplyRefreshHandle = 0;
+            refreshQuickReplyState({ quiet: true });
+        }, 1800);
+    }
+
+    async function toggleQuickRepliesFromUi() {
+        const currentStatus = runtime.quickReplyStatus?.ok
+            ? runtime.quickReplyStatus
+            : getQuickReplyStatus();
+        const shouldAttach = !currentStatus?.attached;
+        const result = setQuickReplyAttached(shouldAttach);
+        runtime.quickReplyStatus = result.ok ? result : getQuickReplyStatus();
+
+        if (!result.ok) {
+            setJobError?.(createStructuredError(
+                'capture_missing_payload',
+                result.reason || t('quickReply.apiUnavailable'),
+            ));
+            return;
+        }
+
+        clearJobError?.();
+        showToast(
+            'success',
+            EXTENSION_NAME,
+            shouldAttach
+                ? t('toasts.quickRepliesInjected')
+                : t('toasts.quickRepliesUninjected'),
+        );
+        render();
+    }
+
+    async function copyRetryLogFromUi() {
+        await syncVisibleRetryLog();
+        const logContext = getRetryLogContext(runtime);
+        const text = logContext.text || '';
+        if (!text.trim()) {
+            showToast('info', EXTENSION_NAME, t('toasts.retryLogUnavailable'));
+            return;
+        }
+
+        try {
+            await navigator.clipboard.writeText(text);
+            showToast('success', EXTENSION_NAME, t('toasts.retryLogCopied'));
+        } catch (error) {
+            backendLog.warn('Retry log copy failed.', error);
+            showToast('warning', EXTENSION_NAME, t('toasts.retryLogCopyFailed'));
+        }
+    }
+
+    async function downloadRetryLogFromUi() {
+        await syncVisibleRetryLog();
+        const logContext = getRetryLogContext(runtime);
+        const text = logContext.text || '';
+        if (!text.trim()) {
+            showToast('info', EXTENSION_NAME, t('toasts.retryLogUnavailable'));
+            return;
+        }
+
+        const blob = new Blob([text], {
+            type: 'text/plain;charset=utf-8',
+        });
+        const url = URL.createObjectURL(blob);
+
+        try {
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = buildRetryLogFileName(runtime);
+            anchor.style.display = 'none';
+            document.body.append(anchor);
+            anchor.click();
+            anchor.remove();
+            showToast('success', EXTENSION_NAME, t('toasts.retryLogDownloaded', { filename: anchor.download }));
+        } catch (error) {
+            backendLog.warn('Retry log download failed.', error);
+            showToast('warning', EXTENSION_NAME, t('toasts.retryLogDownloadFailed'));
+        } finally {
+            window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        }
+    }
+
+    function registerCommands() {
+        const context = getContext();
+        if (!context) {
+            return;
+        }
+
+        registerSlashCommand(context, {
+            name: `${SLASH_COMMAND_PREFIX}-start`,
+            callback: async () => {
+                await armPluginFromUi();
+            },
+            helpString: t('system.slashStartHelp'),
+        });
+        registerSlashCommand(context, {
+            name: `${SLASH_COMMAND_PREFIX}-stop`,
+            callback: async () => {
+                await stopPlugin();
+            },
+            helpString: t('system.slashStopHelp'),
+        });
+        registerSlashCommand(context, {
+            name: `${SLASH_COMMAND_PREFIX}-panel`,
+            callback: async () => {
+                focusPanelDrawer(runtime.ui.panel);
+            },
+            helpString: t('system.slashPanelHelp'),
+        });
+        registerSlashCommand(context, {
+            name: `${SLASH_COMMAND_PREFIX}-diagnostics`,
+            callback: async () => {
+                await refreshDiagnostics(true);
+            },
+            helpString: t('system.slashDiagnosticsHelp'),
+        });
+    }
+
+    function showTab(tab) {
+        runtime.ui.activeTab = tab === 'system' ? 'system' : 'main';
+        if (runtime.ui.activeTab === 'system') {
+            void refreshReleaseInfo();
+            void syncVisibleRetryLog().then(() => render());
+        }
+        render();
+    }
+
+    function toggleRetryLog() {
+        runtime.log.show = !runtime.log.show;
+        runtime.ui.activeTab = 'system';
+        if (runtime.log.show) {
+            void syncVisibleRetryLog().then(() => render());
+        }
+        render();
+    }
+
+    async function syncVisibleRetryLog() {
+        const latest = await fetchLatestJob(getChatIdentity(getContext()));
+        const visibleStatus = chooseVisibleRetryLogStatus(runtime.activeJobStatus, latest);
+        if (visibleStatus?.jobId) {
+            await syncRetryLogForStatus(runtime, visibleStatus, {
+                force: true,
+                clearWhenMissing: false,
+            });
+            return;
+        }
+
+        clearRetryLog(runtime);
+    }
+}
+
+export function chooseVisibleRetryLogStatus(activeStatus, latestStatus) {
+    if (!activeStatus?.jobId) {
+        return latestStatus?.jobId ? latestStatus : null;
+    }
+
+    if (!latestStatus?.jobId) {
+        return activeStatus;
+    }
+
+    const activeUpdatedAt = getVisibleStatusUpdatedAt(activeStatus);
+    const latestUpdatedAt = getVisibleStatusUpdatedAt(latestStatus);
+    if (latestUpdatedAt > activeUpdatedAt) {
+        return latestStatus;
+    }
+
+    return activeStatus;
+}
+
+function getVisibleStatusUpdatedAt(status) {
+    const updatedAt = status?.logUpdatedAt || status?.updatedAt || '';
+    const timestamp = Date.parse(String(updatedAt || ''));
+    return Number.isFinite(timestamp) ? timestamp : 0;
+}

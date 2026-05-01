@@ -1,53 +1,216 @@
 const fs = require('node:fs');
 const path = require('node:path');
+
+let _fs = fs;
+
+function configureFs(impl) {
+    _fs = impl || fs;
+}
+
 const { createStructuredError } = require('./retry-error');
+const { saveChatThroughSt } = require('./st-runtime');
 
 async function writeAcceptedResult(job, accepted) {
-    const currentChat = await readCurrentChat(job);
+    assertWritePathReady(job);
+
+    let currentChat = await readCurrentChat(job);
     assertChatStillMatches(job, currentChat);
 
-    const targetIndex = ensureTargetAssistantMessage(job, currentChat);
-    const targetMessage = currentChat[targetIndex];
-    const timestamp = new Date().toISOString();
-
-    targetMessage.swipes.push(accepted.text);
-    targetMessage.swipe_info.push(createSwipeInfo(timestamp, targetMessage.extra));
-    targetMessage.swipe_id = targetMessage.swipes.length - 1;
-    targetMessage.mes = accepted.text;
-
-    targetMessage.send_date = timestamp;
-    targetMessage.gen_started = timestamp;
-    targetMessage.gen_finished = timestamp;
-    targetMessage.extra = {
-        ...(targetMessage.extra || {}),
-        retryMobileJobId: job.jobId,
-        retryMobileAcceptedCount: job.acceptedCount + 1,
-        retryMobileCharacterCount: accepted.characterCount,
-        retryMobileWordCount: accepted.characterCount,
-        retryMobileTokenCount: accepted.tokenCount,
-        model: firstString(job.capturedRequest?.model, targetMessage.extra?.model),
-    };
-
-    const saveTarget = getSaveTarget(job);
+    let targetIndex = null;
     try {
-        saveChatJsonl(currentChat, saveTarget.filePath);
+        targetIndex = ensureAssistantSlotForWrite(job, currentChat);
     } catch (error) {
+        if (!shouldUseConfirmedWriteSafetyRecheck(job, false, error)) {
+            throw error;
+        }
+
+        currentChat = readChatJsonl(getSaveTarget(job).filePath);
+        assertChatStillMatches(job, currentChat);
+        try {
+            targetIndex = ensureAssistantSlotForWrite(job, currentChat);
+        } catch (secondError) {
+            if (shouldThrowNativePersistUnresolved(job, secondError)) {
+                throw createStructuredError(
+                    'native_persist_unresolved',
+                    'Retry Mobile confirmed the native turn in the browser, but the saved chat still did not expose the assistant slot for writing.',
+                );
+            }
+
+            throw secondError;
+        }
+    }
+
+    const targetMessage = currentChat[targetIndex];
+    stampResolvedAnchors(job, currentChat, targetIndex);
+    const timestamp = new Date().toISOString();
+    applyAcceptedResultToMessage(job, targetMessage, accepted, timestamp);
+
+    try {
+        await persistLiveChat(job, currentChat);
+    } catch (error) {
+        const messageText = String(error?.message || error || '');
+        if (/integrity/i.test(messageText)) {
+            throw createStructuredError(
+                'write_conflict',
+                'Retry Mobile stopped because SillyTavern rejected the save due to a chat integrity mismatch.',
+                messageText,
+            );
+        }
+
         throw createStructuredError(
             'backend_write_failed',
             'Retry Mobile could not save the updated swipe set back to the live chat.',
-            error instanceof Error ? error.message : String(error),
+            messageText,
         );
     }
 
-    job.targetMessageIndex = targetIndex;
+    job.targetMessageIndex = targetIndex - getPersistedChatOffset(currentChat);
     job.targetMessageVersion += 1;
     job.targetMessage = clone(targetMessage);
 
     return {
-        targetMessageIndex: targetIndex,
+        targetMessageIndex: job.targetMessageIndex,
         targetMessageVersion: job.targetMessageVersion,
         targetMessage: job.targetMessage,
     };
+}
+
+function applyAcceptedResultToMessage(job, targetMessage, accepted, timestamp = new Date().toISOString()) {
+    const nextExtra = buildAcceptedExtra(job, targetMessage.extra, accepted);
+    const shouldSeedResult = job.acceptedCount === 0 && !messageHasMeaningfulContent(targetMessage);
+
+    if (shouldSeedResult) {
+        targetMessage.swipes = [accepted.text];
+        targetMessage.swipe_info = [createSwipeInfo(timestamp, nextExtra)];
+        syncVisibleFieldsToSwipe(targetMessage, 0, {
+            fallbackMes: accepted.text,
+            fallbackExtra: nextExtra,
+            fallbackTimestamp: timestamp,
+        });
+        return targetMessage;
+    }
+
+    normalizeSwipeShape(targetMessage);
+    const preservedSwipeId = clampSwipeId(targetMessage.swipe_id, targetMessage.swipes.length);
+    targetMessage.swipes.push(accepted.text);
+    targetMessage.swipe_info.push(createSwipeInfo(timestamp, nextExtra));
+    syncVisibleFieldsToSwipe(targetMessage, preservedSwipeId, {
+        fallbackMes: targetMessage.swipes[preservedSwipeId],
+        fallbackExtra: targetMessage.extra,
+        fallbackTimestamp: firstString(targetMessage.send_date, timestamp),
+    });
+    return targetMessage;
+}
+
+function inspectNativeAssistantState(job) {
+    const saveTarget = getSaveTarget(job);
+    let chat = null;
+
+    try {
+        chat = readChatJsonl(saveTarget.filePath);
+    } catch {
+        return { kind: 'target_pending' };
+    }
+
+    const integrityState = getIntegrityState(job, chat);
+    if (integrityState === 'mismatch') {
+        return { kind: 'target_pending' };
+    }
+
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind === 'missing_appendable') {
+        return {
+            kind: canCreateMissingUserAnchor(job, chat)
+                ? 'missing_user_anchor'
+                : 'target_pending',
+            persistedUserIndex: userState.persistedUserIndex,
+        };
+    }
+    if (userState.kind !== 'present') {
+        return { kind: 'target_pending' };
+    }
+
+    return inspectAdjacentAssistantState(job, chat);
+}
+
+function inspectRecoverySnapshot(job) {
+    const persistedFloor = Number(job.acceptedCount) || 0;
+    let chat = null;
+
+    try {
+        const saveTarget = getSaveTarget(job);
+        chat = readChatJsonl(saveTarget.filePath);
+    } catch {
+        return buildRecoveryResult('backend_restarted', persistedFloor, 0, 'Retry Mobile could not read the live chat while recovering a persisted job.');
+    }
+
+    const integrityState = getIntegrityState(job, chat);
+    if (integrityState === 'mismatch') {
+        return buildRecoveryResult(
+            persistedFloor > 0 ? 'recovery_ambiguous' : 'backend_restarted',
+            persistedFloor,
+            0,
+            'The saved chat integrity changed before Retry Mobile could reconcile the recovered job.',
+        );
+    }
+
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind !== 'present') {
+        return buildRecoveryResult(
+            persistedFloor > 0 ? 'recovery_ambiguous' : 'backend_restarted',
+            persistedFloor,
+            0,
+            'Retry Mobile could not resolve the captured user turn while recovering the persisted job.',
+        );
+    }
+
+    const assistantState = inspectAdjacentAssistantState(job, chat);
+    if (assistantState.kind === 'missing_assistant') {
+        return buildRecoveryResult(
+            persistedFloor > 0 ? 'recovery_ambiguous' : 'backend_restarted',
+            persistedFloor,
+            0,
+            'The captured assistant turn was still missing when Retry Mobile recovered the persisted job.',
+        );
+    }
+
+    const liveCeiling = countTaggedAcceptedResults(job, assistantState.assistantMessage);
+    if (liveCeiling < persistedFloor || (liveCeiling === 0 && persistedFloor > 0)) {
+        return buildRecoveryResult(
+            'recovery_ambiguous',
+            persistedFloor,
+            liveCeiling,
+            'The saved chat contains fewer Retry Mobile-tagged swipes than the persisted snapshot expected.',
+        );
+    }
+
+    const resolvedAcceptedCount = liveCeiling > persistedFloor ? liveCeiling : persistedFloor;
+    if (resolvedAcceptedCount >= Number(job.targetAcceptedCount || 0)) {
+        return buildRecoveryResult(
+            'completed_on_recovery',
+            persistedFloor,
+            liveCeiling,
+            `Recovered ${resolvedAcceptedCount} accepted swipes from the live chat after backend restart.`,
+            resolvedAcceptedCount,
+        );
+    }
+
+    if (resolvedAcceptedCount > 0) {
+        return buildRecoveryResult(
+            'partial_on_recovery',
+            persistedFloor,
+            liveCeiling,
+            `Recovered ${resolvedAcceptedCount} accepted swipes from the live chat, but the run did not reach its target before backend restart.`,
+            resolvedAcceptedCount,
+        );
+    }
+
+    return buildRecoveryResult(
+        'backend_restarted',
+        persistedFloor,
+        liveCeiling,
+        'Retry Mobile restarted before it could confirm any accepted swipes from the recovered job.',
+    );
 }
 
 async function readCurrentChat(job) {
@@ -56,9 +219,34 @@ async function readCurrentChat(job) {
     const delayMs = 300;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        const liveChat = readChatJsonl(saveTarget.filePath);
-        if (Array.isArray(liveChat) && liveChat.length > 0 && liveChatContainsTargetTurn(job, liveChat)) {
-            return liveChat;
+        const liveChat = await readChatJsonlAsync(saveTarget.filePath);
+        if (Array.isArray(liveChat) && liveChat.length > 0) {
+            const integrityState = getIntegrityState(job, liveChat);
+            if (integrityState === 'mismatch') {
+                throw createStructuredError(
+                    'chat_context_changed',
+                    'Retry Mobile stopped because the saved chat integrity changed after capture.',
+                );
+            }
+
+            const userState = resolveTargetUserState(job, liveChat);
+            if (userState.kind === 'present') {
+                return liveChat;
+            }
+
+            if (userState.kind === 'missing_appendable' && canCreateMissingUserAnchor(job, liveChat)) {
+                insertUserMessage(job, liveChat, userState.persistedUserIndex);
+                try {
+                    await persistLiveChat(job, liveChat);
+                } catch (error) {
+                    throw createStructuredError(
+                        'backend_write_failed',
+                        'Retry Mobile could not save the recreated captured user turn back to the live chat.',
+                        error instanceof Error ? error.message : String(error),
+                    );
+                }
+                return liveChat;
+            }
         }
 
         if (attempt < maxAttempts) {
@@ -74,73 +262,208 @@ async function readCurrentChat(job) {
 }
 
 function assertChatStillMatches(job, chat) {
-    const fingerprint = job.targetFingerprint;
-    const userIndex = getPersistedUserIndex(job, chat);
-    if (!Number.isFinite(userIndex) || userIndex < 0) {
+    const integrityState = getIntegrityState(job, chat);
+    if (integrityState === 'mismatch') {
+        throw createStructuredError(
+            'chat_context_changed',
+            'Retry Mobile stopped because the saved chat integrity changed after capture.',
+        );
+    }
+
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind !== 'present') {
         throw createStructuredError(
             'backend_turn_missing',
             'Target user turn could not be resolved.',
         );
     }
+}
 
-    const current = chat[userIndex];
-    if (!current || current.is_user !== true) {
+function assertWritePathReady(job) {
+    if (job?.nativeResolutionInProgress === true || job?.phase === 'native_confirming_persisted') {
         throw createStructuredError(
-            'backend_turn_missing',
-            'The target user turn no longer exists as a user message.',
+            'native_write_not_ready',
+            'Retry Mobile blocked the write path because native persistence confirmation is still in progress.',
         );
     }
 
-    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
+    if (job?.nativeState === 'pending') {
         throw createStructuredError(
-            'backend_turn_changed',
-            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
+            'native_write_not_ready',
+            'Retry Mobile blocked the write path because the native turn has not resolved yet.',
         );
     }
 }
 
-function liveChatContainsTargetTurn(job, chat) {
-    const fingerprint = job.targetFingerprint;
-    const userIndex = getPersistedUserIndex(job, chat);
-    if (!Number.isFinite(userIndex) || userIndex < 0) {
-        return false;
-    }
-
-    const current = chat[userIndex];
-    if (!current || current.is_user !== true) {
-        return false;
-    }
-
-    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
-        return false;
-    }
-
-    return true;
+function shouldUseConfirmedWriteSafetyRecheck(job, recheckUsed, error) {
+    return job?.nativeState === 'confirmed'
+        && job?.phase !== 'native_confirming_persisted'
+        && job?.nativeResolutionInProgress !== true
+        && recheckUsed !== true
+        && String(error?.code || '') === 'backend_turn_missing';
 }
 
-function ensureTargetAssistantMessage(job, chat) {
-    const targetIndex = getPersistedAssistantIndex(job, chat);
-    const targetMessage = Number.isFinite(targetIndex) && targetIndex >= 0
-        ? chat[targetIndex]
-        : null;
-    if (!targetMessage || targetMessage.is_user === true) {
+function shouldThrowNativePersistUnresolved(job, error) {
+    return job?.nativeState === 'confirmed'
+        && String(error?.code || '') === 'backend_turn_missing';
+}
+
+function ensureAssistantSlotForWrite(job, chat) {
+    ensureTargetUserMessage(job, chat);
+    const state = inspectAdjacentAssistantState(job, chat);
+
+    if (state.kind === 'missing_assistant') {
+        if (job.recoveryMode === 'create_missing_turn') {
+            const created = insertAssistantMessage(job, chat, state.persistedAssistantIndex);
+            job.assistantMessageIndex = created.assistantMessageIndex;
+            job.targetMessageIndex = created.assistantMessageIndex;
+            return created.persistedAssistantIndex;
+        }
+
         throw createStructuredError(
             'backend_turn_missing',
             'The native assistant turn was missing when Retry Mobile tried to append a swipe.',
         );
     }
 
-    const previousMessage = chat[targetIndex - 1];
-    if (previousMessage?.is_user !== true || previousMessage.mes !== job.targetFingerprint?.userMessageText) {
+    const previousMessage = chat[state.persistedAssistantIndex - 1];
+    if (previousMessage?.is_user !== true || !isMatchingTargetUserMessage(job, previousMessage)) {
         throw createStructuredError(
             'backend_turn_changed',
             'The live assistant target no longer points at the captured user turn.',
         );
     }
 
-    normalizeSwipeShape(targetMessage);
-    job.targetMessageIndex = targetIndex - getPersistedChatOffset(chat);
-    return targetIndex;
+    stampResolvedAnchors(job, chat, state.persistedAssistantIndex);
+    job.assistantMessageIndex = state.assistantMessageIndex;
+    job.targetMessageIndex = state.assistantMessageIndex;
+    return state.persistedAssistantIndex;
+}
+
+function inspectAdjacentAssistantState(job, chat) {
+    const persistedUserIndex = getPersistedUserIndex(job, chat);
+    const anchoredAssistantIndex = findAnchoredMessageIndex(chat, job?.targetAssistantAnchorId, { requireUser: false });
+    const persistedAssistantIndex = anchoredAssistantIndex >= 0
+        ? anchoredAssistantIndex
+        : (Number.isFinite(persistedUserIndex) && persistedUserIndex >= 0
+            ? persistedUserIndex + 1
+            : -1);
+    const assistantMessage = persistedAssistantIndex >= 0
+        ? chat[persistedAssistantIndex]
+        : null;
+    const assistantMessageIndex = persistedAssistantIndex >= 0
+        ? persistedAssistantIndex - getPersistedChatOffset(chat)
+        : null;
+
+    if (!assistantMessage || assistantMessage.is_user === true) {
+        return {
+            kind: 'missing_assistant',
+            persistedUserIndex,
+            persistedAssistantIndex,
+            assistantMessageIndex,
+            assistantMessage: null,
+        };
+    }
+
+    return {
+        kind: messageHasMeaningfulContent(assistantMessage) ? 'filled' : 'empty_placeholder',
+        persistedUserIndex,
+        persistedAssistantIndex,
+        assistantMessageIndex,
+        assistantMessage,
+    };
+}
+
+function ensureTargetUserMessage(job, chat) {
+    const userState = resolveTargetUserState(job, chat);
+    if (userState.kind === 'present') {
+        return userState.persistedUserIndex;
+    }
+
+    if (userState.kind === 'missing_appendable' && canCreateMissingUserAnchor(job, chat)) {
+        return insertUserMessage(job, chat, userState.persistedUserIndex).persistedUserIndex;
+    }
+
+    throw createStructuredError(
+        'backend_turn_missing',
+        'Target user turn could not be resolved.',
+    );
+}
+
+function insertAssistantMessage(job, chat, persistedAssistantIndex) {
+    const message = buildAssistantSeedMessage(job);
+    chat.splice(persistedAssistantIndex, 0, message);
+
+    return {
+        persistedAssistantIndex,
+        assistantMessageIndex: persistedAssistantIndex - getPersistedChatOffset(chat),
+        assistantMessage: message,
+    };
+}
+
+function insertUserMessage(job, chat, persistedUserIndex) {
+    const message = buildUserSeedMessage(job);
+    chat.splice(persistedUserIndex, 0, message);
+    return {
+        persistedUserIndex,
+        userMessage: message,
+    };
+}
+
+function buildUserSeedMessage(job) {
+    const message = {
+        name: firstString(job.captureMeta?.userName, 'You'),
+        is_user: true,
+        is_system: false,
+        send_date: new Date().toISOString(),
+        mes: String(job.targetFingerprint?.userMessageText || ''),
+        extra: {
+            isSmallSys: false,
+            retryMobileUserAnchorId: String(job.targetUserAnchorId || ''),
+        },
+    };
+
+    const userAvatar = firstString(job.captureMeta?.userAvatar);
+    if (userAvatar) {
+        message.force_avatar = userAvatar;
+    }
+
+    return message;
+}
+
+function buildAssistantSeedMessage(job) {
+    const extra = {
+        retryMobileAssistantAnchorId: String(job.targetAssistantAnchorId || ''),
+    };
+    const model = firstString(job.capturedRequest?.model);
+    const api = firstString(job.capturedRequest?.chat_completion_source);
+
+    if (api) {
+        extra.api = api;
+    }
+
+    if (model) {
+        extra.model = model;
+    }
+
+    const message = {
+        name: firstString(job.captureMeta?.assistantName, job.chatIdentity?.assistantName, 'Assistant'),
+        is_user: false,
+        is_system: false,
+        send_date: '',
+        mes: '',
+        title: '',
+        extra,
+        swipes: [],
+        swipe_info: [],
+        swipe_id: 0,
+    };
+
+    if (job.chatIdentity?.avatarUrl) {
+        message.original_avatar = job.chatIdentity.avatarUrl;
+    }
+
+    return message;
 }
 
 function normalizeSwipeShape(message) {
@@ -160,12 +483,80 @@ function normalizeSwipeShape(message) {
     }
 }
 
+function syncVisibleFieldsToSwipe(message, swipeId, options = {}) {
+    normalizeSwipeShape(message);
+
+    const resolvedSwipeId = clampSwipeId(swipeId, message.swipes.length);
+    const activeSwipeInfo = Array.isArray(message.swipe_info)
+        ? message.swipe_info[resolvedSwipeId]
+        : null;
+    const activeTimestamp = firstString(
+        activeSwipeInfo?.send_date,
+        activeSwipeInfo?.gen_finished,
+        activeSwipeInfo?.gen_started,
+        options.fallbackTimestamp,
+    );
+
+    message.swipe_id = resolvedSwipeId;
+    message.mes = String(message.swipes[resolvedSwipeId] ?? options.fallbackMes ?? '');
+    message.extra = clone(activeSwipeInfo?.extra || options.fallbackExtra || {});
+    message.send_date = activeTimestamp;
+    message.gen_started = firstString(activeSwipeInfo?.gen_started, activeTimestamp);
+    message.gen_finished = firstString(activeSwipeInfo?.gen_finished, activeTimestamp);
+}
+
+function clampSwipeId(value, swipeCount) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || swipeCount <= 0) {
+        return 0;
+    }
+
+    return Math.max(0, Math.min(Math.trunc(numeric), swipeCount - 1));
+}
+
+function messageHasMeaningfulContent(message) {
+    if (!message || typeof message !== 'object') {
+        return false;
+    }
+
+    if (normalizeText(message.mes)) {
+        return true;
+    }
+
+    if (Array.isArray(message.swipes)) {
+        return message.swipes.some((swipe) => Boolean(normalizeText(swipe)));
+    }
+
+    return false;
+}
+
+function normalizeText(value) {
+    return String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
+}
+
 function createSwipeInfo(timestamp, extra = {}) {
     return {
         send_date: timestamp,
         gen_started: timestamp,
         gen_finished: timestamp,
         extra: clone(extra || {}),
+    };
+}
+
+function buildAcceptedExtra(job, currentExtra, accepted) {
+    return {
+        ...(currentExtra || {}),
+        retryMobileUserAnchorId: String(job.targetUserAnchorId || ''),
+        retryMobileAssistantAnchorId: String(job.targetAssistantAnchorId || ''),
+        retryMobileJobId: job.jobId,
+        retryMobileAcceptedCount: job.acceptedCount + 1,
+        retryMobileCharacterCount: accepted.characterCount,
+        // Backwards-compatible alias: historically this stored characters, not true words.
+        retryMobileWordCount: accepted.characterCount,
+        retryMobileTokenCount: accepted.tokenCount,
+        model: firstString(job.capturedRequest?.model, currentExtra?.model),
     };
 }
 
@@ -201,6 +592,11 @@ function getSaveTarget(job) {
 }
 
 function getPersistedUserIndex(job, chat) {
+    const anchoredIndex = findAnchoredMessageIndex(chat, job?.targetUserAnchorId, { requireUser: true });
+    if (anchoredIndex >= 0) {
+        return anchoredIndex;
+    }
+
     const liveIndex = Number(job.targetFingerprint?.userMessageIndex);
     if (!Number.isFinite(liveIndex) || liveIndex < 0) {
         return -1;
@@ -209,13 +605,155 @@ function getPersistedUserIndex(job, chat) {
     return liveIndex + getPersistedChatOffset(chat);
 }
 
-function getPersistedAssistantIndex(job, chat) {
-    const liveIndex = Number(job.assistantMessageIndex);
-    if (!Number.isFinite(liveIndex) || liveIndex < 0) {
+function resolveTargetUserState(job, chat) {
+    const fingerprint = job.targetFingerprint;
+    const persistedUserIndex = getPersistedUserIndex(job, chat);
+    if (!Number.isFinite(persistedUserIndex) || persistedUserIndex < 0) {
+        return { kind: 'missing_unresolved', persistedUserIndex };
+    }
+
+    const current = chat[persistedUserIndex];
+    if (!current) {
+        if (persistedUserIndex === chat.length) {
+            return { kind: 'missing_appendable', persistedUserIndex };
+        }
+
+        return { kind: 'missing_unresolved', persistedUserIndex };
+    }
+
+    if (current.is_user !== true) {
+        throw createStructuredError(
+            'backend_turn_changed',
+            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
+        );
+    }
+
+    stampMessageAnchor(current, 'retryMobileUserAnchorId', job.targetUserAnchorId);
+
+    if (typeof fingerprint?.userMessageText === 'string' && current.mes !== fingerprint.userMessageText) {
+        throw createStructuredError(
+            'backend_turn_changed',
+            'The target user turn changed after capture, so Retry Mobile stopped instead of guessing.',
+        );
+    }
+
+    return {
+        kind: 'present',
+        persistedUserIndex,
+        userMessage: current,
+    };
+}
+
+function isMatchingTargetUserMessage(job, message) {
+    const anchoredUserId = String(job?.targetUserAnchorId || '');
+    if (anchoredUserId && getMessageAnchorId(message, 'retryMobileUserAnchorId') === anchoredUserId) {
+        return true;
+    }
+
+    return String(message?.mes ?? '') === String(job?.targetFingerprint?.userMessageText ?? '');
+}
+
+function stampResolvedAnchors(job, chat, persistedAssistantIndex) {
+    const persistedUserIndex = getPersistedUserIndex(job, chat);
+    if (persistedUserIndex >= 0 && chat[persistedUserIndex]) {
+        stampMessageAnchor(chat[persistedUserIndex], 'retryMobileUserAnchorId', job.targetUserAnchorId);
+    }
+
+    if (Number.isInteger(persistedAssistantIndex) && persistedAssistantIndex >= 0 && chat[persistedAssistantIndex]) {
+        stampMessageAnchor(chat[persistedAssistantIndex], 'retryMobileAssistantAnchorId', job.targetAssistantAnchorId);
+    }
+}
+
+function findAnchoredMessageIndex(chat, anchorId, options = {}) {
+    const targetAnchor = String(anchorId || '').trim();
+    if (!targetAnchor || !Array.isArray(chat)) {
         return -1;
     }
 
-    return liveIndex + getPersistedChatOffset(chat);
+    for (let index = 0; index < chat.length; index += 1) {
+        const message = chat[index];
+        if (!message || typeof message !== 'object') {
+            continue;
+        }
+
+        if (options.requireUser === true && message.is_user !== true) {
+            continue;
+        }
+
+        if (options.requireUser === false && message.is_user === true) {
+            continue;
+        }
+
+        if (getMessageAnchorId(message, options.requireUser === true ? 'retryMobileUserAnchorId' : 'retryMobileAssistantAnchorId') === targetAnchor) {
+            return index;
+        }
+    }
+
+    return -1;
+}
+
+function getMessageAnchorId(message, key) {
+    const direct = String(message?.extra?.[key] || '').trim();
+    if (direct) {
+        return direct;
+    }
+
+    const swipeInfo = Array.isArray(message?.swipe_info) ? message.swipe_info : [];
+    for (const row of swipeInfo) {
+        const candidate = String(row?.extra?.[key] || '').trim();
+        if (candidate) {
+            return candidate;
+        }
+    }
+
+    return '';
+}
+
+function stampMessageAnchor(message, key, anchorId) {
+    const targetAnchor = String(anchorId || '').trim();
+    if (!message || !targetAnchor) {
+        return;
+    }
+
+    message.extra = {
+        ...(message.extra || {}),
+        [key]: targetAnchor,
+    };
+
+    if (Array.isArray(message.swipe_info)) {
+        message.swipe_info = message.swipe_info.map((row) => ({
+            ...(row || {}),
+            extra: {
+                ...(row?.extra || {}),
+                [key]: targetAnchor,
+            },
+        }));
+    }
+}
+
+function shouldCreateMissingUserAnchor(job) {
+    return job.nativeState === 'abandoned' && job.recoveryMode === 'create_missing_turn';
+}
+
+function canCreateMissingUserAnchor(job, chat) {
+    return shouldCreateMissingUserAnchor(job)
+        && getIntegrityState(job, chat) === 'match'
+        && Number.isFinite(Number(job.capturedChatLength))
+        && (chat.length - getPersistedChatOffset(chat)) === Number(job.capturedChatLength);
+}
+
+function getIntegrityState(job, chat) {
+    const expected = typeof job.capturedChatIntegrity === 'string' ? job.capturedChatIntegrity.trim() : '';
+    if (!expected) {
+        return 'missing';
+    }
+
+    const actual = String(chat?.[0]?.chat_metadata?.integrity || '').trim();
+    if (!actual) {
+        return 'missing';
+    }
+
+    return actual === expected ? 'match' : 'mismatch';
 }
 
 function getPersistedChatOffset(chat) {
@@ -228,11 +766,11 @@ function getPersistedChatOffset(chat) {
 function readChatJsonl(filePath) {
     let raw = '';
     try {
-        raw = fs.readFileSync(filePath, 'utf8');
+        raw = _fs.readFileSync(filePath, 'utf8');
     } catch (error) {
         throw createStructuredError(
-            'backend_turn_missing',
-            `Retry Mobile could not read the chat file at the expected path.`,
+            'backend_file_unreadable',
+            'Retry Mobile could not read the chat file at the expected path.',
             error instanceof Error ? error.message : String(error),
         );
     }
@@ -248,13 +786,65 @@ function readChatJsonl(filePath) {
     return parsed;
 }
 
-function saveChatJsonl(chatData, filePath) {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
+async function readChatJsonlAsync(filePath) {
+    let raw = '';
+    try {
+        raw = await _fs.promises.readFile(filePath, 'utf8');
+    } catch (error) {
+        throw createStructuredError(
+            'backend_file_unreadable',
+            'Retry Mobile could not read the chat file at the expected path.',
+            error instanceof Error ? error.message : String(error),
+        );
     }
-    const jsonl = chatData.map((row) => JSON.stringify(row)).join('\n');
-    fs.writeFileSync(filePath, jsonl, 'utf8');
+
+    const lines = raw.split('\n').filter((line) => line.trim());
+    const parsed = [];
+    for (const line of lines) {
+        try {
+            parsed.push(JSON.parse(line));
+        } catch {
+        }
+    }
+    return parsed;
+}
+
+async function persistLiveChat(job, chatData) {
+    const saveTarget = getSaveTarget(job);
+    return await saveChatThroughSt({
+        chatData,
+        filePath: saveTarget.filePath,
+        skipIntegrityCheck: false,
+        handle: job.userContext.handle,
+        cardName: saveTarget.cardName,
+        backupDirectory: job.userContext.directories.backups,
+    });
+}
+
+function buildRecoveryResult(reason, floor, ceiling, detail, acceptedCount = null) {
+    return {
+        reason,
+        floor,
+        ceiling,
+        acceptedCount: acceptedCount == null ? floor : acceptedCount,
+        detail,
+    };
+}
+
+function countTaggedAcceptedResults(job, assistantMessage) {
+    let count = 0;
+    const swipeInfo = Array.isArray(assistantMessage?.swipe_info) ? assistantMessage.swipe_info : [];
+    for (const row of swipeInfo) {
+        if (String(row?.extra?.retryMobileJobId || '') === String(job.jobId)) {
+            count += 1;
+        }
+    }
+
+    if (count === 0 && String(assistantMessage?.extra?.retryMobileJobId || '') === String(job.jobId)) {
+        count = 1;
+    }
+
+    return count;
 }
 
 function sleep(ms) {
@@ -283,5 +873,12 @@ function sanitizeFileName(value) {
 }
 
 module.exports = {
+    applyAcceptedResultToMessage,
+    assertWritePathReady,
+    configureFs,
+    inspectNativeAssistantState,
+    inspectRecoverySnapshot,
+    shouldThrowNativePersistUnresolved,
+    shouldUseConfirmedWriteSafetyRecheck,
     writeAcceptedResult,
 };

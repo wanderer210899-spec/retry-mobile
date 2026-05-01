@@ -8,17 +8,6 @@ export const QUICK_REPLY_SET_NAME = 'Retry Mobile';
 export const SLASH_COMMAND_PREFIX = 'retry-mobile';
 export const REPOSITORY_URL = 'https://github.com/wanderer210899-spec/retry-mobile';
 
-export const RUN_STATE = Object.freeze({
-    IDLE: 'idle',
-    ARMED: 'armed',
-    WAITING_FOR_NATIVE: 'waiting_for_native',
-    HANDING_OFF: 'handing_off',
-    RUNNING: 'running',
-    COMPLETED: 'completed',
-    FAILED: 'failed',
-    CANCELLED: 'cancelled',
-});
-
 export const RUN_MODE = Object.freeze({
     SINGLE: 'single',
     TOGGLE: 'toggle',
@@ -27,41 +16,84 @@ export const RUN_MODE = Object.freeze({
 export const VALIDATION_MODE = Object.freeze({
     CHARACTERS: 'characters',
     TOKENS: 'tokens',
+    WORDS: 'words',
+});
+
+// Sub-mode of the "counter" path on the main panel: either count words
+// (English-style) or characters (Chinese-style 字数). The 'auto' value defers
+// to the active UI language: en → words, zh → characters.
+export const COUNTER_MODE = Object.freeze({
+    AUTO: 'auto',
+    WORDS: 'words',
+    CHARACTERS: 'characters',
 });
 
 export const DEFAULT_SETTINGS = Object.freeze({
+    uiLanguage: 'en',
     runMode: RUN_MODE.SINGLE,
     targetAcceptedCount: 3,
     maxAttempts: 30,
     attemptTimeoutSeconds: 90,
+    nativeGraceSeconds: 30,
+    // 'characters' here means the binary counter side of the toggle (vs. 'tokens').
+    // Whether that's word-counted or character-counted is decided by counterMode.
     validationMode: VALIDATION_MODE.CHARACTERS,
+    counterMode: COUNTER_MODE.AUTO,
     minTokens: 0,
     minCharacters: 300,
+    minWords: 60,
     notifyOnSuccess: false,
     notifyOnComplete: true,
     vibrateOnSuccess: false,
     vibrateOnComplete: false,
     notificationMessageTemplate: '',
+    allowHeuristicTokenFallback: false,
 });
+
+// Resolves the AUTO sentinel against the current uiLanguage. en → words; zh → characters.
+export function resolveCounterMode(counterMode, uiLanguage) {
+    if (counterMode === COUNTER_MODE.WORDS || counterMode === COUNTER_MODE.CHARACTERS) {
+        return counterMode;
+    }
+    return String(uiLanguage || '').toLowerCase() === 'zh'
+        ? COUNTER_MODE.CHARACTERS
+        : COUNTER_MODE.WORDS;
+}
 
 export const REQUIRED_EVENT_NAMES = Object.freeze([
     'CHAT_CHANGED',
     'CHAT_DELETED',
     'CHAT_COMPLETION_SETTINGS_READY',
+    'TEXT_COMPLETION_SETTINGS_READY',
     'GENERATION_ENDED',
     'GENERATION_STOPPED',
     'CHARACTER_MESSAGE_RENDERED',
 ]);
 
 export const REQUIRED_PAYLOAD_KEYS = Object.freeze([
-    'chat_completion_source',
-    'messages',
+    'chat_completion_source + messages[]',
+    'or prompt + api_type + api_server',
 ]);
 
-export const POLL_INTERVAL_MS = 1800;
+export const PROTOCOL_VERSION = 5; // Must match PROTOCOL_VERSION in server/plugin-meta.js
+export const POLL_INTERVAL_FAST_MS = 1800;
+export const POLL_INTERVAL_STEADY_MS = 4000;
+export const POLL_INTERVAL_SLOW_MS = 8000;
 export const NATIVE_WAIT_TIMEOUT_MS = 180000;
+export const NATIVE_WAIT_PROGRESS_TIMEOUT_MS = 60000;
+export const NATIVE_HIDDEN_DEBOUNCE_MS = 2500;
 export const NATIVE_CONFIRM_TIMEOUT_MS = 4000;
 export const NATIVE_CONFIRM_POLL_MS = 120;
+export const NATIVE_VISIBLE_PROGRESS_POLL_MS = 1000;
+export const NATIVE_RENDERED_STALL_TIMEOUT_MS = 15000;
+// Calibrate these DOM-facing waits further after the machine refactor has live traces.
+export const RENDER_MESSAGE_POLL_MS = 50;
+export const RENDER_MESSAGE_WAIT_MS = 1800;
+export const RENDER_MESSAGE_RETRY_WAIT_MS = 1800;
+export const RENDER_STABLE_TEXT_INTERVAL_MS = 100;
+export const RENDER_STABLE_TEXT_TIMEOUT_MS = 3200;
+export const TERMINAL_UI_SETTLE_TIMEOUT_MS = 1600;
+export const TERMINAL_UI_SETTLE_RETRY_TIMEOUT_MS = 1600;
 export const DEBUG_EVENT_LIMIT = 16;
 
 export const LOG_PREFIX = Object.freeze({

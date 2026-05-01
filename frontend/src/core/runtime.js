@@ -1,0 +1,69 @@
+
+function createDefaultCapabilities() {
+    return {
+        protocolVersion: 0,
+        minSupportedProtocolVersion: 0,
+        nativeSaveSupport: false,
+        nativeSaveCompatibilityDetail: '',
+        compatibilityCheckedAt: null,
+        userDirectorySupport: false,
+        userDirectoryScanSupport: false,
+        termux: false,
+        termuxCheckedAt: null,
+    };
+}
+
+export function createRuntime() {
+    return {
+        settings: null,
+        sessionId: '',
+        diagnostics: null,
+        releaseInfo: null,
+        quickReplyStatus: null,
+        capabilities: createDefaultCapabilities(),
+        termuxAvailable: false,
+        retryFsm: null,
+        controlError: null,
+        activeJobId: null,
+        activeJobStatus: null,
+        activeJobStatusObservedAt: null,
+        activeRunBinding: null,
+        mountRetryHandle: 0,
+        restoreRetryHandle: 0,
+        hostObserver: null,
+        quickReplyRefreshHandle: 0,
+        capture: {
+            session: null,
+            request: null,
+            fingerprint: null,
+            assistantMessageIndex: null,
+        },
+        pendingNativeOutcome: null,
+        log: {
+            text: '',
+            jobId: '',
+            title: '',
+            updatedAt: null,
+            entryCount: 0,
+            show: false,
+        },
+        ui: {
+            panel: null,
+            statusText: null,
+            stats: null,
+            statsRenderKey: '',
+            errorBox: null,
+            actionToggleButton: null,
+            quickReplyStatusLine: null,
+            quickReplyToggleButton: null,
+            mainPane: null,
+            systemPane: null,
+            retryLogShell: null,
+            retryLogContainer: null,
+            releaseInfoContainer: null,
+            tabButtons: [],
+            toggleLogButton: null,
+            activeTab: 'main',
+        },
+    };
+}

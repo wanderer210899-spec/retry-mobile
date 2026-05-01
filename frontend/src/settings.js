@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, RUN_MODE, SETTINGS_KEY, VALIDATION_MODE } from './constants.js';
+import { COUNTER_MODE, DEFAULT_SETTINGS, RUN_MODE, SETTINGS_KEY, VALIDATION_MODE } from './constants.js';
 
 export function readSettings(context) {
     const source = context?.extensionSettings?.[SETTINGS_KEY];
@@ -14,8 +14,16 @@ export function writeSettings(context, nextSettings) {
         return false;
     }
 
+    const currentSource = context.extensionSettings?.[SETTINGS_KEY];
+    const preservedFields = currentSource && typeof currentSource === 'object'
+        ? { ...currentSource }
+        : {};
+
     context.extensionSettings ??= {};
-    context.extensionSettings[SETTINGS_KEY] = normalizeSettings(nextSettings || {});
+    context.extensionSettings[SETTINGS_KEY] = {
+        ...preservedFields,
+        ...normalizeSettings(nextSettings || {}),
+    };
     context.saveSettingsDebounced?.();
     return true;
 }
@@ -26,22 +34,31 @@ function normalizeSettings(source) {
         ...(source || {}),
     };
 
+    settings.uiLanguage = normalizeUiLanguage(settings.uiLanguage, DEFAULT_SETTINGS.uiLanguage);
+
     settings.runMode = settings.runMode === RUN_MODE.TOGGLE
         ? RUN_MODE.TOGGLE
         : RUN_MODE.SINGLE;
     settings.validationMode = normalizeValidationMode(source, settings);
+    settings.counterMode = normalizeCounterMode(source?.counterMode);
     settings.minCharacters = normalizeWholeNumber(
-        source?.minCharacters ?? source?.minWords,
+        source?.minCharacters,
         DEFAULT_SETTINGS.minCharacters,
+    );
+    settings.minWords = normalizeWholeNumber(
+        source?.minWords,
+        DEFAULT_SETTINGS.minWords,
     );
     settings.minTokens = normalizeWholeNumber(settings.minTokens, DEFAULT_SETTINGS.minTokens);
     settings.targetAcceptedCount = Math.max(1, normalizeWholeNumber(settings.targetAcceptedCount, DEFAULT_SETTINGS.targetAcceptedCount));
     settings.maxAttempts = Math.max(1, normalizeWholeNumber(settings.maxAttempts, DEFAULT_SETTINGS.maxAttempts));
     settings.attemptTimeoutSeconds = Math.max(1, normalizeWholeNumber(settings.attemptTimeoutSeconds, DEFAULT_SETTINGS.attemptTimeoutSeconds));
-    settings.notifyOnSuccess = Boolean(settings.notifyOnSuccess);
-    settings.notifyOnComplete = Boolean(settings.notifyOnComplete);
-    settings.vibrateOnSuccess = Boolean(settings.vibrateOnSuccess);
-    settings.vibrateOnComplete = Boolean(settings.vibrateOnComplete);
+    settings.nativeGraceSeconds = normalizeClampedWholeNumber(settings.nativeGraceSeconds, 10, 300, DEFAULT_SETTINGS.nativeGraceSeconds);
+    settings.notifyOnSuccess = normalizeBoolean(settings.notifyOnSuccess, DEFAULT_SETTINGS.notifyOnSuccess);
+    settings.notifyOnComplete = normalizeBoolean(settings.notifyOnComplete, DEFAULT_SETTINGS.notifyOnComplete);
+    settings.vibrateOnSuccess = normalizeBoolean(settings.vibrateOnSuccess, DEFAULT_SETTINGS.vibrateOnSuccess);
+    settings.vibrateOnComplete = normalizeBoolean(settings.vibrateOnComplete, DEFAULT_SETTINGS.vibrateOnComplete);
+    settings.allowHeuristicTokenFallback = normalizeBoolean(settings.allowHeuristicTokenFallback, DEFAULT_SETTINGS.allowHeuristicTokenFallback);
     settings.notificationMessageTemplate = typeof settings.notificationMessageTemplate === 'string'
         ? settings.notificationMessageTemplate
         : '';
@@ -54,7 +71,14 @@ function normalizeValidationMode(source, settings) {
         return VALIDATION_MODE.TOKENS;
     }
 
-    if (explicit === VALIDATION_MODE.CHARACTERS || explicit === 'words') {
+    // 'words' is also part of the "counter" branch on the main panel — it survives
+    // round-trips so legacy settings that wrote 'words' here still resolve to the
+    // counter side rather than tokens.
+    if (
+        explicit === VALIDATION_MODE.CHARACTERS
+        || explicit === VALIDATION_MODE.WORDS
+        || explicit === 'words'
+    ) {
         return VALIDATION_MODE.CHARACTERS;
     }
 
@@ -65,6 +89,13 @@ function normalizeValidationMode(source, settings) {
     return VALIDATION_MODE.CHARACTERS;
 }
 
+function normalizeCounterMode(value) {
+    if (value === COUNTER_MODE.WORDS || value === COUNTER_MODE.CHARACTERS) {
+        return value;
+    }
+    return COUNTER_MODE.AUTO;
+}
+
 function normalizeWholeNumber(value, fallback) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed) || parsed < 0) {
@@ -72,4 +103,37 @@ function normalizeWholeNumber(value, fallback) {
     }
 
     return parsed;
+}
+
+function normalizeClampedWholeNumber(value, minimum, maximum, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    if (!Number.isFinite(parsed)) {
+        return fallback;
+    }
+
+    return Math.min(maximum, Math.max(minimum, parsed));
+}
+
+function normalizeBoolean(value, fallback) {
+    if (value === true || value === false) {
+        return value;
+    }
+
+    if (value === 'true') {
+        return true;
+    }
+
+    if (value === 'false') {
+        return false;
+    }
+
+    return fallback;
+}
+
+function normalizeUiLanguage(value, fallback) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (normalized === 'zh' || normalized === 'en') {
+        return normalized;
+    }
+    return fallback;
 }
