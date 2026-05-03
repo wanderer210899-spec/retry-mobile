@@ -4,7 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { applyAcceptedResultToMessage, inspectRecoverySnapshot } = require('./chat-writer');
+const {
+    applyAcceptedResultToMessage,
+    inspectNativeAssistantState,
+    inspectRecoverySnapshot,
+} = require('./chat-writer');
 
 function createDirectories(rootPath) {
     const directories = {
@@ -201,6 +205,99 @@ test('the first accepted result seeds swipe storage and selects it', () => {
     assert.equal(message.mes, 'First accepted swipe');
     assert.equal(message.extra.retryMobileJobId, 'job-2');
     assert.equal(message.send_date, '2026-04-18T22:18:00.000Z');
+});
+
+test('inspectNativeAssistantState returns target_pending when the assistant slot still matches the captured baseline', () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-baseline-'));
+    const directories = createDirectories(sandboxRoot);
+    const chatPath = path.join(directories.chats, 'hero', 'session-1.jsonl');
+    writeJsonl(chatPath, [
+        {
+            chat_metadata: {
+                integrity: 'integrity-a',
+            },
+        },
+        {
+            name: 'You',
+            is_user: true,
+            mes: 'Hello there',
+        },
+        {
+            name: 'Hero',
+            is_user: false,
+            mes: 'Stale prior reply',
+            swipes: ['Stale prior reply'],
+            swipe_id: 0,
+            gen_finished: '2026-05-03T22:00:00.000Z',
+        },
+    ]);
+
+    const job = createJob(directories, {
+        acceptedCount: 0,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: 'Hello there',
+            assistantBaseline: {
+                messageText: 'Stale prior reply',
+                swipeCount: 1,
+                swipeId: 0,
+                genFinished: '2026-05-03T22:00:00.000Z',
+            },
+        },
+    });
+
+    const inspection = inspectNativeAssistantState(job);
+    assert.equal(inspection.kind, 'target_pending');
+    assert.equal(inspection.baselineMatch, true);
+    assert.equal(inspection.assistantMessage?.mes, 'Stale prior reply');
+
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+});
+
+test('inspectNativeAssistantState returns filled once the assistant slot diverges from the baseline', () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-baseline-'));
+    const directories = createDirectories(sandboxRoot);
+    const chatPath = path.join(directories.chats, 'hero', 'session-1.jsonl');
+    writeJsonl(chatPath, [
+        {
+            chat_metadata: {
+                integrity: 'integrity-a',
+            },
+        },
+        {
+            name: 'You',
+            is_user: true,
+            mes: 'Hello there',
+        },
+        {
+            name: 'Hero',
+            is_user: false,
+            mes: 'Fresh new generation',
+            swipes: ['Stale prior reply', 'Fresh new generation'],
+            swipe_id: 1,
+            gen_finished: '2026-05-03T22:55:00.000Z',
+        },
+    ]);
+
+    const job = createJob(directories, {
+        acceptedCount: 0,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: 'Hello there',
+            assistantBaseline: {
+                messageText: 'Stale prior reply',
+                swipeCount: 1,
+                swipeId: 0,
+                genFinished: '2026-05-03T22:00:00.000Z',
+            },
+        },
+    });
+
+    const inspection = inspectNativeAssistantState(job);
+    assert.equal(inspection.kind, 'filled');
+    assert.equal(inspection.assistantMessage?.mes, 'Fresh new generation');
+
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
 });
 
 test('replace_rejected_native overwrites the existing native swipe instead of appending', () => {

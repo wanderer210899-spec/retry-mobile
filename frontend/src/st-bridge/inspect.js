@@ -52,10 +52,31 @@ export function buildFingerprint({ chatIdentity, chat, requestType, messageIdHin
         precedingMessageText: userMessageIndex > 0
             ? String(chat[userMessageIndex - 1]?.mes ?? '')
             : '',
+        // Snapshot of the assistant slot's existing content at capture time so
+        // the backend can distinguish stale prior content (swipe/regenerate
+        // about to replace it) from genuinely new generation output. Without
+        // this, the backend reads the chat file, sees the prior reply already
+        // sitting at userMessageIndex+1, and confirms that stale text as the
+        // "native first reply" within milliseconds of the user pressing send.
+        assistantBaseline: captureAssistantBaseline(chat, userMessageIndex),
         capturedChatLength: chat.length,
         capturedAt: new Date().toISOString(),
         requestType: type,
         messageIdHint: Number.isInteger(messageIdHint) ? messageIdHint : null,
+    };
+}
+
+function captureAssistantBaseline(chat, userMessageIndex) {
+    const candidate = chat[userMessageIndex + 1];
+    if (!candidate || typeof candidate !== 'object' || candidate.is_user === true) {
+        return null;
+    }
+
+    return {
+        messageText: String(candidate.mes ?? ''),
+        swipeCount: Array.isArray(candidate.swipes) ? candidate.swipes.length : 0,
+        swipeId: Number.isFinite(Number(candidate.swipe_id)) ? Number(candidate.swipe_id) : 0,
+        genFinished: typeof candidate.gen_finished === 'string' ? candidate.gen_finished : '',
     };
 }
 

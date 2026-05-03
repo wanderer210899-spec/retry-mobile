@@ -52,6 +52,59 @@ test('reloadCurrentChatSafe marks a successful canonical reload as internal', as
     clearInternalChatReloadMarker();
 });
 
+test('buildFingerprint captures the assistant slot baseline so the backend can reject stale prior content', () => {
+    const chat = [
+        { is_user: true, mes: 'Tell me a joke' },
+        {
+            is_user: false,
+            mes: 'Prior assistant reply',
+            swipes: ['Prior assistant reply', 'Earlier swipe'],
+            swipe_id: 0,
+            gen_finished: '2026-05-03T22:00:00.000Z',
+        },
+    ];
+
+    const fingerprint = buildFingerprint({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-baseline',
+            groupId: null,
+        },
+        chat,
+        requestType: 'swipe',
+        messageIdHint: 1,
+    });
+
+    assert.equal(fingerprint.userMessageIndex, 0);
+    assert.deepEqual(fingerprint.assistantBaseline, {
+        messageText: 'Prior assistant reply',
+        swipeCount: 2,
+        swipeId: 0,
+        genFinished: '2026-05-03T22:00:00.000Z',
+    });
+});
+
+test('buildFingerprint returns a null assistant baseline when no assistant slot exists yet', () => {
+    const chat = [
+        { is_user: false, mes: 'Greeting' },
+        { is_user: true, mes: 'Hello there' },
+    ];
+
+    const fingerprint = buildFingerprint({
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'chat-no-baseline',
+            groupId: null,
+        },
+        chat,
+        requestType: 'normal',
+        messageIdHint: null,
+    });
+
+    assert.equal(fingerprint.userMessageIndex, 1);
+    assert.equal(fingerprint.assistantBaseline, null);
+});
+
 test('buildFingerprint keeps a bounded tail anchor instead of scanning the whole chat', () => {
     const chat = [
         { is_user: true, mes: 'Old repeated line' },

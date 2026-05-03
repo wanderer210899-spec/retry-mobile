@@ -366,13 +366,49 @@ function inspectAdjacentAssistantState(job, chat) {
         };
     }
 
+    const hasContent = messageHasMeaningfulContent(assistantMessage);
+
+    // When the assistant slot still matches the snapshot Retry Mobile took at
+    // capture time, the new native generation has not produced anything new
+    // yet (typical for swipe/regenerate where the prior reply is still sitting
+    // in the slot on disk). Treat as still pending so the backend keeps
+    // waiting instead of confirming the stale text as the native first reply.
+    if (hasContent && assistantMatchesBaseline(job, assistantMessage)) {
+        return {
+            kind: 'target_pending',
+            persistedUserIndex,
+            persistedAssistantIndex,
+            assistantMessageIndex,
+            assistantMessage,
+            baselineMatch: true,
+        };
+    }
+
     return {
-        kind: messageHasMeaningfulContent(assistantMessage) ? 'filled' : 'empty_placeholder',
+        kind: hasContent ? 'filled' : 'empty_placeholder',
         persistedUserIndex,
         persistedAssistantIndex,
         assistantMessageIndex,
         assistantMessage,
     };
+}
+
+function assistantMatchesBaseline(job, message) {
+    const baseline = job?.targetFingerprint?.assistantBaseline;
+    if (!baseline || typeof baseline !== 'object') {
+        return false;
+    }
+
+    const baselineText = String(baseline.messageText ?? '');
+    const baselineSwipeCount = Number.isFinite(Number(baseline.swipeCount)) ? Number(baseline.swipeCount) : 0;
+    const baselineGenFinished = String(baseline.genFinished ?? '');
+    const currentText = String(message?.mes ?? '');
+    const currentSwipeCount = Array.isArray(message?.swipes) ? message.swipes.length : 0;
+    const currentGenFinished = typeof message?.gen_finished === 'string' ? message.gen_finished : '';
+
+    return currentText === baselineText
+        && currentSwipeCount === baselineSwipeCount
+        && currentGenFinished === baselineGenFinished;
 }
 
 function ensureTargetUserMessage(job, chat) {

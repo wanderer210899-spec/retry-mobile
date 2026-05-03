@@ -718,12 +718,27 @@ async function resolvePendingNativeState(job, cause) {
             if (inspection.kind === 'target_pending') {
                 const nextAttempts = Number(job.inspectionAttempts || 0) + 1;
                 if (nextAttempts >= MAX_TARGET_PENDING_INSPECTIONS) {
-                    const forcedInspection = {
-                        kind: 'missing_assistant',
-                        persistedAssistantIndex: null,
-                        assistantMessageIndex: null,
-                        assistantMessage: null,
-                    };
+                    // If the assistant slot already exists on disk and was
+                    // only marked target_pending because its content matches
+                    // the captured baseline (typical for a swipe/regenerate
+                    // whose generation never produced new text), force
+                    // empty_placeholder so retries append into the existing
+                    // slot. Without this, hidden-tab takeover would create a
+                    // duplicate assistant turn next to the stale one.
+                    const forcedInspection = inspection.baselineMatch === true && inspection.assistantMessage
+                        ? {
+                            kind: 'empty_placeholder',
+                            persistedUserIndex: inspection.persistedUserIndex,
+                            persistedAssistantIndex: inspection.persistedAssistantIndex,
+                            assistantMessageIndex: inspection.assistantMessageIndex,
+                            assistantMessage: inspection.assistantMessage,
+                        }
+                        : {
+                            kind: 'missing_assistant',
+                            persistedAssistantIndex: null,
+                            assistantMessageIndex: null,
+                            assistantMessage: null,
+                        };
                     touchJob(job, {
                         inspectionAttempts: nextAttempts,
                     });
