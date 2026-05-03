@@ -1,3 +1,9 @@
+// st-bridge/lockdown.js
+// Phase 3: cooperates with ST's send-button mechanism via body.dataset.generating
+// and deactivateSendButtons/activateSendButtons instead of capturing input events
+// for #send_but, #option_regenerate, etc. Retains only the overswipe-right gate
+// and the ArrowRight keyboard swipe shortcut gate.
+
 // Mirrors SillyTavern `OVERSWIPE_BEHAVIOR` string values from `scripts/constants.js`.
 const OVERSWIPE = {
     NONE: 'none',
@@ -6,21 +12,6 @@ const OVERSWIPE = {
     EDIT_GENERATE: 'edit_generate',
     REGENERATE: 'regenerate',
 };
-
-/** @internal Used only for toast gating — not a DOM selector. */
-const BLOCKED_LAST_SWIPE_RIGHT_GEN = 'blocked:last-swipe-right-gen';
-
-const BLOCKED_CLICK_SELECTORS = [
-    '#send_but',
-    '#option_regenerate',
-    '#option_continue',
-    '#mes_continue',
-    '#mes_impersonate',
-];
-
-const ENTER_BLOCK_SELECTORS = [
-    '#send_textarea',
-];
 
 const TOAST_THROTTLE_MS = 1800;
 const REGEN_SWIPE_MIN_DISTANCE_PX = 56;
@@ -40,6 +31,7 @@ export function createSessionLockdown({
     let touchEndHandler = null;
     let pointerDownHandler = null;
     let pointerUpHandler = null;
+    let generatingObserver = null;
     let lastToastAt = 0;
     const gesture = {
         active: false,
@@ -55,6 +47,11 @@ export function createSessionLockdown({
                 return true;
             }
             active = true;
+            // Cooperate with ST's send-button mechanism: set body.dataset.generating
+            // so ST's own CSS gates new sends, and call deactivateSendButtons() to
+            // also hide swipe navigation and show the stop indicator.
+            getContext?.()?.deactivateSendButtons?.();
+            startGeneratingObserver();
             bindListeners();
             return true;
         },
@@ -63,6 +60,9 @@ export function createSessionLockdown({
                 return true;
             }
             active = false;
+            stopGeneratingObserver();
+            // Restore ST's send UI: clear body.dataset.generating and show swipe buttons.
+            getContext?.()?.activateSendButtons?.();
             unbindListeners();
             return true;
         },
@@ -71,30 +71,42 @@ export function createSessionLockdown({
         },
     };
 
+    function startGeneratingObserver() {
+        if (typeof MutationObserver === 'undefined') {
+            return;
+        }
+        const body = documentRef.body ?? documentRef.querySelector?.('body');
+        if (!body) {
+            return;
+        }
+        generatingObserver = new MutationObserver(() => {
+            if (!active) {
+                return;
+            }
+            // ST cleared body.dataset.generating (e.g. native generation completed during
+            // CAPTURING phase). Re-enforce while lockdown is still active.
+            if (body.dataset.generating !== 'true') {
+                getContext?.()?.deactivateSendButtons?.();
+            }
+        });
+        generatingObserver.observe(body, { attributes: true, attributeFilter: ['data-generating'] });
+    }
+
+    function stopGeneratingObserver() {
+        generatingObserver?.disconnect();
+        generatingObserver = null;
+    }
+
     function bindListeners() {
         clickHandler = (event) => {
             const element = toElement(event?.target);
             if (!element) {
                 return;
             }
-            if (element.closest?.('.last_mes .swipe_right') && wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
+            if (element.closest?.('.last_mes .swipe_right')
+                && wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
                 blockEvent(event);
-                emitBlockedToast({
-                    source: 'blocked_click',
-                    blockedSelector: BLOCKED_LAST_SWIPE_RIGHT_GEN,
-                });
-                return;
-            }
-            const blockedSelector = resolveBlockedClickSelector(element);
-            if (!blockedSelector) {
-                return;
-            }
-            blockEvent(event);
-            if (shouldToastForBlockedSelector(blockedSelector)) {
-                emitBlockedToast({
-                    source: 'blocked_click',
-                    blockedSelector,
-                });
+                emitBlockedToast({ source: 'blocked_click' });
             }
         };
 
@@ -103,28 +115,15 @@ export function createSessionLockdown({
             if (!element) {
                 return;
             }
-
-            if (event?.key === 'Enter' && !event?.shiftKey && matchesAnySelector(element, ENTER_BLOCK_SELECTORS)) {
-                blockEvent(event);
-                emitBlockedToast({
-                    source: 'blocked_send',
-                    kind: 'enter_submit',
-                });
-                return;
-            }
-
-            // Stock SillyTavern (RossAscends): unmodified ArrowRight with empty
-            // send bar triggers `$('.swipe_right:last').click()` — block only
-            // when that would overswipe into generation on the last message.
+            // Stock SillyTavern (RossAscends): unmodified ArrowRight with empty send bar
+            // triggers `$('.swipe_right:last').click()` — block only when that would
+            // overswipe into generation on the last message.
             if (event?.key === 'ArrowRight'
                 && !keyboardEventHasModifier(event)
                 && sendTextareaIsEmptyForSwipeHotkey(documentRef)
                 && wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
                 blockEvent(event);
-                emitBlockedToast({
-                    source: 'blocked_keyboard_swipe',
-                    blockedSelector: BLOCKED_LAST_SWIPE_RIGHT_GEN,
-                });
+                emitBlockedToast({ source: 'blocked_keyboard_swipe' });
             }
         };
 
@@ -155,25 +154,14 @@ export function createSessionLockdown({
             if (!point || !element) {
                 return;
             }
-            const deltaX = point.x - startX;
-            const deltaY = point.y - startY;
-            const absX = Math.abs(deltaX);
-            const absY = Math.abs(deltaY);
-            const isHorizontalSwipe = absX >= REGEN_SWIPE_MIN_DISTANCE_PX && absY <= REGEN_SWIPE_MAX_VERTICAL_DRIFT_PX;
-            if (!isHorizontalSwipe || !startedOnLastMessage) {
-                return;
-            }
-            if (deltaX >= 0) {
+            if (!isOverswipeRightGesture(point, startX, startY, startedOnLastMessage)) {
                 return;
             }
             if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
                 return;
             }
             blockEvent(event);
-            emitBlockedToast({
-                source: 'blocked_swipe',
-                swipeDirection: 'right_to_left',
-            });
+            emitBlockedToast({ source: 'blocked_swipe' });
         };
 
         pointerDownHandler = (event) => {
@@ -196,7 +184,9 @@ export function createSessionLockdown({
             if (!gesture.active) {
                 return;
             }
-            if (gesture.pointerId != null && typeof event?.pointerId === 'number' && event.pointerId !== gesture.pointerId) {
+            if (gesture.pointerId != null
+                && typeof event?.pointerId === 'number'
+                && event.pointerId !== gesture.pointerId) {
                 return;
             }
             const element = toElement(event?.target);
@@ -209,36 +199,23 @@ export function createSessionLockdown({
             if (!element || !point) {
                 return;
             }
-            const deltaX = point.x - startX;
-            const deltaY = point.y - startY;
-            const absX = Math.abs(deltaX);
-            const absY = Math.abs(deltaY);
-            const isHorizontalSwipe = absX >= REGEN_SWIPE_MIN_DISTANCE_PX && absY <= REGEN_SWIPE_MAX_VERTICAL_DRIFT_PX;
-            if (!isHorizontalSwipe || !startedOnLastMessage) {
-                return;
-            }
-            if (deltaX >= 0) {
+            if (!isOverswipeRightGesture(point, startX, startY, startedOnLastMessage)) {
                 return;
             }
             if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
                 return;
             }
             blockEvent(event);
-            emitBlockedToast({
-                source: 'blocked_swipe',
-                swipeDirection: 'right_to_left',
-            });
+            emitBlockedToast({ source: 'blocked_swipe' });
         };
 
         documentRef.addEventListener?.('click', clickHandler, true);
         documentRef.addEventListener?.('keydown', keydownHandler, true);
         // passive: true — these handlers only record gesture state, never call preventDefault().
-        // Passive listeners let the browser start scrolling/responding immediately without
-        // waiting for the JS handler, which eliminates per-keypress/touch latency on mobile.
         documentRef.addEventListener?.('touchstart', touchStartHandler, { capture: true, passive: true });
         // passive: false required — touchend/pointerup call preventDefault() to cancel overswipe generation.
         documentRef.addEventListener?.('touchend', touchEndHandler, { capture: true, passive: false });
-        // passive: true — same reasoning as touchstart; pointerdown only records start coords.
+        // passive: true — pointerdown only records start coords.
         documentRef.addEventListener?.('pointerdown', pointerDownHandler, { capture: true, passive: true });
         // passive: false required — pointerup calls preventDefault() to cancel overswipe generation.
         documentRef.addEventListener?.('pointerup', pointerUpHandler, { capture: true, passive: false });
@@ -269,6 +246,19 @@ export function createSessionLockdown({
         touchEndHandler = null;
         pointerDownHandler = null;
         pointerUpHandler = null;
+    }
+
+    // Right-to-left finger motion (negative deltaX) on the last message is ST's
+    // "swipe right" gesture — it advances to the next swipe candidate and can
+    // trigger generation on the last available swipe.
+    function isOverswipeRightGesture(point, startX, startY, startedOnLastMessage) {
+        const deltaX = point.x - startX;
+        const deltaY = point.y - startY;
+        const absX = Math.abs(deltaX);
+        const absY = Math.abs(deltaY);
+        const isHorizontalSwipe = absX >= REGEN_SWIPE_MIN_DISTANCE_PX
+            && absY <= REGEN_SWIPE_MAX_VERTICAL_DRIFT_PX;
+        return isHorizontalSwipe && startedOnLastMessage && deltaX < 0;
     }
 
     function emitBlockedToast(detail) {
@@ -359,33 +349,6 @@ function sendTextareaIsEmptyForSwipeHotkey(documentRef) {
 
 function keyboardEventHasModifier(event) {
     return Boolean(event?.ctrlKey || event?.metaKey || event?.altKey || event?.shiftKey);
-}
-
-function resolveBlockedClickSelector(element) {
-    for (const selector of BLOCKED_CLICK_SELECTORS) {
-        try {
-            if (element.closest?.(selector)) {
-                return selector;
-            }
-        } catch {}
-    }
-    return '';
-}
-
-function shouldToastForBlockedSelector(selector) {
-    if (!selector) {
-        return false;
-    }
-    return selector === '#send_but'
-        || selector === BLOCKED_LAST_SWIPE_RIGHT_GEN
-        || selector === '#option_regenerate'
-        || selector === '#option_continue'
-        || selector === '#mes_continue'
-        || selector === '#mes_impersonate';
-}
-
-function matchesAnySelector(element, selectors) {
-    return selectors.some((selector) => element.closest?.(selector));
 }
 
 function blockEvent(event) {

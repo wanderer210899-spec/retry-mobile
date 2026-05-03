@@ -2,7 +2,14 @@ import { fetchCapabilities, fetchChatState, getStructuredErrorFromApi } from './
 import { sendFrontendLogEvent, syncRetryLogForStatus } from './logs/retry-log.js';
 import { createStructuredError } from './retry-error.js';
 import { writeSettings, readSettings } from './settings.js';
-import { getChatIdentity, getContext, getEventTypes, showToast, subscribeEvent } from './st-context.js';
+import {
+    createStPort,
+    getChatIdentity,
+    getContext,
+    getEventTypes,
+    showToast,
+    subscribeEvent,
+} from './st-bridge/index.js';
 import { COUNTER_MODE, PROTOCOL_VERSION, VALIDATION_MODE, resolveCounterMode } from './constants.js';
 import { createRuntime } from './core/runtime.js';
 import { isRunningLikeState } from './core/run-state.js';
@@ -12,7 +19,6 @@ import { createSystemController } from './controllers/system-controller.js';
 import { getFrontendSessionId } from './job/run-binding.js';
 import { createIntentPort } from './intent.js';
 import { createRetryFsm, RetryState } from './retry-fsm.js';
-import { createStPort } from './st-adapter.js';
 import { createBackendPort } from './backend-client.js';
 import { createAppPorts } from './app-ports.js';
 import { syncRuntimeFromFsm, updateRuntimeActiveJob } from './app-runtime-sync.js';

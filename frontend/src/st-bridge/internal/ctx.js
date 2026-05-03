@@ -1,4 +1,25 @@
-import { REQUIRED_EVENT_NAMES, REQUIRED_PAYLOAD_KEYS } from './constants.js';
+// st-bridge/internal/ctx.js
+// The ONLY file in the frontend allowed to call window.SillyTavern.
+// Imported only by other modules under st-bridge/. Outside callers go through
+// the public surface in st-bridge/index.js.
+
+// SillyTavern event names the capability probe expects to see in
+// `context.eventTypes`. Kept here (not in constants.js) so the bridge stays
+// the only source of ST event-name literal strings in the frontend.
+const REQUIRED_EVENT_NAMES = Object.freeze([
+    'CHAT_CHANGED',
+    'CHAT_DELETED',
+    'CHAT_COMPLETION_SETTINGS_READY',
+    'TEXT_COMPLETION_SETTINGS_READY',
+    'GENERATION_ENDED',
+    'GENERATION_STOPPED',
+    'CHARACTER_MESSAGE_RENDERED',
+]);
+
+const REQUIRED_PAYLOAD_KEYS = Object.freeze([
+    'chat_completion_source + messages[]',
+    'or prompt + api_type + api_server',
+]);
 
 export function getContext() {
     return window.SillyTavern?.getContext?.() ?? null;

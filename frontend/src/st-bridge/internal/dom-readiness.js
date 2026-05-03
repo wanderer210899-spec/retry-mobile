@@ -1,10 +1,14 @@
+// st-bridge/internal/dom-readiness.js
+// Polls SillyTavern's chat DOM for the target message element and stable text.
+// Lifted from the former frontend/src/render/readiness.js with no behavioural change.
+
 import {
     RENDER_MESSAGE_POLL_MS,
     RENDER_MESSAGE_WAIT_MS,
     RENDER_STABLE_TEXT_INTERVAL_MS,
     RENDER_STABLE_TEXT_TIMEOUT_MS,
     TERMINAL_UI_SETTLE_TIMEOUT_MS,
-} from '../constants.js';
+} from '../../constants.js';
 
 export async function waitForMessageElement(messageId, { signal, timeoutMs = RENDER_MESSAGE_WAIT_MS } = {}) {
     const startedAt = Date.now();

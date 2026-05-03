@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { waitForNativeCompletion } from './st-lifecycle.js';
+import { waitForNativeCompletion } from './lifecycle.js';
 
 test('waitForNativeCompletion fails closed when the observed native assistant row is deleted before confirmation', async () => {
     const originalWindow = globalThis.window;

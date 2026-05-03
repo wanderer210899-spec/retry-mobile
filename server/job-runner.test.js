@@ -4,7 +4,51 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { extractResponseText, replayCapturedRequest, resolvePendingNativeState, runJob } = require('./job-runner');
+const {
+    extractNativeReplyText,
+    extractResponseText,
+    replayCapturedRequest,
+    resolveNativeAttempt,
+    resolvePendingNativeState,
+    runJob,
+} = require('./job-runner');
+
+function buildResolveAttemptJob(overrides = {}) {
+    return {
+        jobId: 'resolve-native-test-job',
+        runId: 'resolve-native-test-run',
+        state: 'running',
+        phase: 'native_confirmed',
+        attemptCount: 0,
+        acceptedCount: 0,
+        targetAcceptedCount: 2,
+        maxAttempts: 5,
+        nativeState: 'confirmed',
+        nativeAttemptResolved: false,
+        recoveryMode: 'top_up_existing',
+        cancelRequested: false,
+        captureConfirmedAt: '2026-05-03T10:00:00.000Z',
+        targetMessage: {
+            mes: 'Native first reply text body that is long enough to pass.',
+            swipes: ['Native first reply text body that is long enough to pass.'],
+            swipe_id: 0,
+            extra: {},
+        },
+        acceptedResults: [],
+        attemptLog: [],
+        runConfig: {
+            validationMode: 'characters',
+            minCharacters: 10,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+        capturedRequest: { model: 'native-test-model' },
+        // userContext omitted on purpose — appendJobLog/ensureJobLog short-circuit
+        // when job.userContext.handle is missing, so tests stay disk-free.
+        ...overrides,
+    };
+}
 
 test('replayCapturedRequest forwards cookie and csrf headers from the successful start request', async () => {
     const originalFetch = global.fetch;
@@ -474,4 +518,111 @@ test('runJob treats native_attempt_timeout as a timed-out first attempt and proc
         global.fetch = originalFetch;
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
+});
+
+test('extractNativeReplyText prefers mes, then the active swipe, then empty string', () => {
+    assert.equal(extractNativeReplyText(null), '');
+    assert.equal(extractNativeReplyText({}), '');
+    assert.equal(extractNativeReplyText({ mes: 'visible text' }), 'visible text');
+    assert.equal(extractNativeReplyText({
+        mes: '',
+        swipes: ['first', 'second'],
+        swipe_id: 1,
+    }), 'second');
+    assert.equal(extractNativeReplyText({
+        mes: '',
+        swipes: [],
+        swipe_id: 0,
+    }), '');
+    assert.equal(extractNativeReplyText({
+        mes: 'mes wins',
+        swipes: ['swipe loses'],
+        swipe_id: 0,
+    }), 'mes wins');
+});
+
+test('resolveNativeAttempt counts an accepted native reply toward the goal as attempt 1', async () => {
+    const job = buildResolveAttemptJob();
+
+    await resolveNativeAttempt(job);
+
+    assert.equal(job.attemptCount, 1);
+    assert.equal(job.acceptedCount, 1);
+    assert.equal(job.nativeAttemptResolved, true);
+    assert.equal(job.recoveryMode, 'top_up_existing');
+    assert.equal(job.acceptedResults.length, 1);
+    assert.equal(job.acceptedResults[0].source, 'native');
+    assert.equal(job.phase, 'awaiting_retry_results');
+
+    const lastAttempt = job.attemptLog[job.attemptLog.length - 1];
+    assert.equal(lastAttempt.outcome, 'accepted');
+    assert.equal(lastAttempt.reason, 'native_accepted');
+    assert.equal(lastAttempt.attemptNumber, 1);
+});
+
+test('resolveNativeAttempt rejects a too-short native reply and flips recoveryMode to replace_rejected_native', async () => {
+    const job = buildResolveAttemptJob({
+        targetMessage: {
+            mes: 'short',
+            swipes: ['short'],
+            swipe_id: 0,
+            extra: {},
+        },
+        runConfig: {
+            validationMode: 'characters',
+            minCharacters: 50,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+    });
+
+    await resolveNativeAttempt(job);
+
+    assert.equal(job.attemptCount, 1);
+    assert.equal(job.acceptedCount, 0);
+    assert.equal(job.nativeAttemptResolved, true);
+    assert.equal(job.recoveryMode, 'replace_rejected_native');
+    assert.equal(job.acceptedResults.length, 0);
+    assert.equal(job.phase, 'native_rejected');
+
+    const lastAttempt = job.attemptLog[job.attemptLog.length - 1];
+    assert.equal(lastAttempt.outcome, 'rejected');
+    assert.equal(lastAttempt.reason, 'below_min_characters');
+    assert.equal(lastAttempt.attemptNumber, 1);
+});
+
+test('resolveNativeAttempt is a no-op when nativeState is not confirmed', async () => {
+    const job = buildResolveAttemptJob({ nativeState: 'pending' });
+
+    await resolveNativeAttempt(job);
+
+    assert.equal(job.attemptCount, 0);
+    assert.equal(job.acceptedCount, 0);
+    assert.equal(job.nativeAttemptResolved, false);
+});
+
+test('resolveNativeAttempt is a no-op when nativeAttemptResolved is already true (idempotent across re-entry)', async () => {
+    const job = buildResolveAttemptJob({
+        nativeAttemptResolved: true,
+        attemptCount: 1,
+        acceptedCount: 1,
+    });
+
+    await resolveNativeAttempt(job);
+
+    assert.equal(job.attemptCount, 1);
+    assert.equal(job.acceptedCount, 1);
+    assert.equal(job.attemptLog.length, 0);
+});
+
+test('resolveNativeAttempt marks pre-existing progress as resolved without replaying the native attempt', async () => {
+    const job = buildResolveAttemptJob({ attemptCount: 2, acceptedCount: 1 });
+
+    await resolveNativeAttempt(job);
+
+    assert.equal(job.attemptCount, 2);
+    assert.equal(job.acceptedCount, 1);
+    assert.equal(job.nativeAttemptResolved, true);
+    assert.equal(job.attemptLog.length, 0);
 });

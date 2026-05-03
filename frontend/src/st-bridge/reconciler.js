@@ -1,5 +1,10 @@
+// st-bridge/reconciler.js
+// Single owner of accepted-output apply / fallback reload reconciliation.
+// Lifted from the former frontend/src/render/reconciler.js with no
+// behavioural change. Public surface is exposed via stPort.reconciler.
+
 import { cloneValue } from '../core/clone.js';
-import { applyAcceptedOutput, reloadSessionUi } from './st-operations.js';
+import { applyAcceptedOutput, reloadSessionUi } from './write.js';
 
 export function createChatReconciler({
     applyAcceptedOutputFn = applyAcceptedOutput,

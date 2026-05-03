@@ -8,7 +8,7 @@ import {
     markInternalChatReload,
     reloadCurrentChatSafe,
     wasInternalChatReloadRecentlyTriggered,
-} from './st-chat.js';
+} from './inspect.js';
 
 test('internal reload markers are scoped to the current chat identity', () => {
     clearInternalChatReloadMarker();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { wouldLastMessageRightSwipeCauseGeneration } from './ui/session-lockdown.js';
+import { wouldLastMessageRightSwipeCauseGeneration } from './lockdown.js';
 
 test('wouldLastMessageRightSwipeCauseGeneration is false when next swipe is an existing candidate', () => {
     const ctx = {

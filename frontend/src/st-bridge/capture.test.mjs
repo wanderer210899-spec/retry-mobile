@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createArmCaptureSession } from './st-capture.js';
+import { createArmCaptureSession } from './capture.js';
 
 test('createArmCaptureSession ignores dry-run payloads and keeps the real capture armed', async () => {
     const originalWindow = global.window;

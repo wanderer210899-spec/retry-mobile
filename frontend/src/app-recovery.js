@@ -1,8 +1,7 @@
 import { findLatestActiveRunBinding, recoverBoundStatus } from './job/run-binding.js';
 import { createStructuredError } from './retry-error.js';
 import { RetryState } from './retry-fsm.js';
-import { getChatIdentity } from './st-context.js';
-import { wasInternalChatReloadRecentlyTriggered } from './st-chat.js';
+import { getChatIdentity, wasInternalChatReloadRecentlyTriggered } from './st-bridge/index.js';
 
 const RESTORE_RETRY_CAP = 5;
 

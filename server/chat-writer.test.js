@@ -202,3 +202,32 @@ test('the first accepted result seeds swipe storage and selects it', () => {
     assert.equal(message.extra.retryMobileJobId, 'job-2');
     assert.equal(message.send_date, '2026-04-18T22:18:00.000Z');
 });
+
+test('replace_rejected_native overwrites the existing native swipe instead of appending', () => {
+    const message = {
+        mes: 'short native reply',
+        extra: { existing: true },
+        swipes: ['short native reply'],
+        swipe_info: [{ extra: { existing: true } }],
+        swipe_id: 0,
+    };
+
+    applyAcceptedResultToMessage({
+        jobId: 'job-replace-native',
+        acceptedCount: 0,
+        recoveryMode: 'replace_rejected_native',
+        capturedRequest: {
+            model: 'replace-model',
+        },
+    }, message, {
+        text: 'Accepted backend retry',
+        characterCount: 1024,
+        tokenCount: 256,
+    }, '2026-04-18T22:19:00.000Z');
+
+    assert.equal(message.swipes.length, 1);
+    assert.equal(message.swipes[0], 'Accepted backend retry');
+    assert.equal(message.swipe_id, 0);
+    assert.equal(message.mes, 'Accepted backend retry');
+    assert.equal(message.extra.retryMobileJobId, 'job-replace-native');
+});

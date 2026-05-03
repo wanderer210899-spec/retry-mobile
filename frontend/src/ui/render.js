@@ -1,7 +1,7 @@
 import { formatVisibleStateLabel, isRunningLikeState } from '../core/run-state.js';
 import { syncValidationControls } from './panel-bindings.js';
 import { deriveUiState } from './derive-ui.js';
-import { showToast } from '../st-context.js';
+import { showToast } from '../st-bridge/index.js';
 import { t } from '../i18n.js';
 
 export function createRenderer({ runtime }) {

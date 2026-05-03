@@ -1,7 +1,23 @@
+// st-bridge/write.js
+// Applies accepted-output writes onto the live SillyTavern chat host. Phase 2
+// of the bridge plan: backend chat-writer.js still owns the disk-truth path,
+// but the frontend replay now goes through ST's canonical
+// `saveReply({type: 'swipe'})` so other extensions react to the resulting
+// MESSAGE_RECEIVED / CHARACTER_MESSAGE_RENDERED emissions natively. The
+// liveChat[i] = patched + updateMessageBlock + swipe.refresh path has been
+// retired here, the scroll-restore hack is dropped (addOneMessage handles
+// scroll), and status.targetMessage.swipes[] is now informational only —
+// the bridge derives one accepted-text per missing slot and replays via
+// saveReply, one swipe per tick.
+
 import { createStructuredError } from '../retry-error.js';
-import { getChatIdentity, getContext } from '../st-context.js';
-import { isSameChat, reloadCurrentChatSafe } from '../st-chat.js';
-import { readMessageText, waitForMessageElement, waitForStableText, waitForUiSettled } from './readiness.js';
+import { getChatIdentity, getContext } from './internal/ctx.js';
+import { isSameChat, reloadCurrentChatSafe } from './inspect.js';
+import {
+    readMessageText,
+    waitForMessageElement,
+    waitForUiSettled,
+} from './internal/dom-readiness.js';
 import {
     RENDER_MESSAGE_RETRY_WAIT_MS,
     TERMINAL_UI_SETTLE_RETRY_TIMEOUT_MS,
@@ -21,7 +37,17 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    const reportedTargetMessageIndex = Number(status?.targetMessageIndex);
+    if (typeof context.saveReply !== 'function') {
+        return {
+            ok: false,
+            recoveryRequired: true,
+            error: createStructuredError(
+                'client_save_reply_unavailable',
+                'Retry Mobile could not apply an accepted output because SillyTavern saveReply is unavailable.',
+            ),
+        };
+    }
+
     const targetMessageVersion = Number(status?.targetMessageVersion) || 0;
     const targetMessage = cloneValue(status?.targetMessage);
     const targetAssistantAnchorId = String(
@@ -30,11 +56,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         || '',
     ).trim();
     const liveChat = Array.isArray(context?.chat) ? context.chat : null;
-    if (!Number.isInteger(reportedTargetMessageIndex)
-        || reportedTargetMessageIndex < 0
-        || !targetMessage
-        || !liveChat
-        || !targetAssistantAnchorId) {
+    if (!targetMessage || !liveChat || liveChat.length === 0 || !targetAssistantAnchorId) {
         return {
             ok: false,
             recoveryRequired: true,
@@ -45,26 +67,33 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    // The backend reports a best-effort target index, but on some mobile / reload /
-    // persistence-race paths that index can drift. Always verify the anchor and
-    // fall back to an anchor search to avoid patching the wrong live message.
-    const resolvedTargetMessageIndex = resolveTargetMessageIndex({
-        liveChat,
-        reportedIndex: reportedTargetMessageIndex,
-        expectedAnchorId: targetAssistantAnchorId,
-    });
-    if (resolvedTargetMessageIndex == null) {
+    // saveReply only operates on `chat[chat.length - 1]`. The target assistant
+    // turn must be the live last row; anchor matching guards against drift.
+    const lastIndex = liveChat.length - 1;
+    const lastMessage = liveChat[lastIndex];
+    if (!lastMessage || lastMessage.is_user === true || targetMessage.is_user === true) {
         return {
             ok: false,
             recoveryRequired: true,
             error: createStructuredError(
-                'client_target_missing',
-                'Retry Mobile could not resolve the target assistant turn in the live chat.',
+                'client_patch_unsafe',
+                'Retry Mobile could not safely patch the target assistant turn.',
             ),
         };
     }
 
-    const element = await waitForPatchedMessageElement(resolvedTargetMessageIndex, signal);
+    if (!assistantTargetMatches(lastMessage, targetMessage, targetAssistantAnchorId)) {
+        return {
+            ok: false,
+            recoveryRequired: true,
+            error: createStructuredError(
+                'client_anchor_mismatch',
+                'Retry Mobile refused to patch a live assistant turn whose anchor no longer matches backend truth.',
+            ),
+        };
+    }
+
+    const element = await waitForPatchedMessageElement(lastIndex, signal);
     if (!element) {
         return {
             ok: false,
@@ -76,54 +105,46 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    const existing = liveChat[resolvedTargetMessageIndex];
-    if (!existing || existing.is_user === true || targetMessage.is_user === true) {
+    ensureSwipeShape(lastMessage);
+    stampAnchorOnLiveRow(lastMessage, targetAssistantAnchorId);
+
+    const backendSwipes = Array.isArray(targetMessage.swipes) ? targetMessage.swipes : [];
+    const liveSwipeCount = lastMessage.swipes.length;
+    const missingSwipes = backendSwipes
+        .slice(liveSwipeCount)
+        .map((swipe) => String(swipe ?? ''));
+
+    if (missingSwipes.length === 0) {
         return {
-            ok: false,
-            recoveryRequired: true,
-            error: createStructuredError(
-                'client_patch_unsafe',
-                'Retry Mobile could not safely patch the target assistant turn.',
-            ),
+            ok: true,
+            jobId: String(status?.jobId || ''),
+            status,
+            targetMessageVersion,
         };
     }
-
-    const adoptedTargetMessage = adoptTargetMessageForVisibleHost(existing, targetMessage, targetAssistantAnchorId);
-    if (!adoptedTargetMessage) {
-        return {
-            ok: false,
-            recoveryRequired: true,
-            error: createStructuredError(
-                'client_anchor_mismatch',
-                'Retry Mobile refused to patch a live assistant turn whose anchor no longer matches backend truth.',
-            ),
-        };
-    }
-
-    const patchedMessage = buildPatchedAssistantMessage(existing, adoptedTargetMessage);
-    liveChat[resolvedTargetMessageIndex] = patchedMessage;
 
     try {
-        // Preserve the user's current scroll position when patching a message.
-        // ST's message rerender can alter layout; we must not yank the user to the updated turn.
-        const chatContainer = document.getElementById('chat') || document.querySelector('#chat');
-        const prevScrollTop = chatContainer ? chatContainer.scrollTop : null;
-        const prevScrollHeight = chatContainer ? chatContainer.scrollHeight : null;
-        const prevClientHeight = chatContainer ? chatContainer.clientHeight : null;
-        const wasNearBottom = chatContainer
-            && prevScrollTop != null
-            && prevScrollHeight != null
-            && prevClientHeight != null
-            ? (prevScrollTop + prevClientHeight >= prevScrollHeight - 12)
-            : false;
+        for (const swipeText of missingSwipes) {
+            if (signal?.aborted) {
+                return {
+                    ok: false,
+                    recoveryRequired: false,
+                    error: createStructuredError(
+                        'client_chat_changed',
+                        'Retry Mobile aborted swipe replay because the operation was cancelled.',
+                    ),
+                };
+            }
 
-        context.updateMessageBlock?.(resolvedTargetMessageIndex, patchedMessage);
-        context.swipe?.refresh?.(true);
-        await waitForStableText(element, { signal });
+            // Move swipe_id onto the slot saveReply will populate, and
+            // re-stamp the anchor so the new swipe_info entry inherits it via
+            // ST's `extra: structuredClone(item.extra)` capture.
+            lastMessage.swipe_id = lastMessage.swipes.length;
+            stampAnchorOnLiveRow(lastMessage, targetAssistantAnchorId);
 
-        if (chatContainer && prevScrollTop != null && !wasNearBottom) {
-            chatContainer.scrollTop = prevScrollTop;
+            await context.saveReply({ type: 'swipe', getMessage: swipeText });
         }
+
         return {
             ok: true,
             jobId: String(status?.jobId || ''),
@@ -142,49 +163,6 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
     }
 }
 
-function resolveTargetMessageIndex({ liveChat, reportedIndex, expectedAnchorId }) {
-    const expected = String(expectedAnchorId || '').trim();
-    if (!expected) {
-        return Number.isInteger(reportedIndex) ? reportedIndex : null;
-    }
-
-    const reported = Number.isInteger(reportedIndex) ? reportedIndex : null;
-    if (reported != null) {
-        const candidate = liveChat?.[reported] || null;
-        if (candidate && getAssistantAnchorId(candidate) === expected) {
-            return reported;
-        }
-    }
-
-    for (let index = 0; index < liveChat.length; index += 1) {
-        const message = liveChat[index];
-        if (!message || message.is_user === true) continue;
-        if (getAssistantAnchorId(message) === expected) {
-            return index;
-        }
-    }
-
-    return reported;
-}
-
-export function buildPatchedAssistantMessage(existing, targetMessage) {
-    const patchedMessage = {
-        ...existing,
-        ...targetMessage,
-    };
-
-    preserveLiveSwipeSelection(patchedMessage, existing, targetMessage);
-    return patchedMessage;
-}
-
-export function adoptTargetMessageForVisibleHost(existing, targetMessage, expectedAnchorId) {
-    if (!assistantTargetMatches(existing, targetMessage, expectedAnchorId)) {
-        return null;
-    }
-
-    return buildTargetMessageForVisibleHost(existing, targetMessage);
-}
-
 export function assistantTargetMatches(message, targetMessage, expectedAnchorId) {
     const liveAnchorId = getAssistantAnchorId(message);
     if (liveAnchorId) {
@@ -193,6 +171,44 @@ export function assistantTargetMatches(message, targetMessage, expectedAnchorId)
     }
 
     return canAdoptUnanchoredSeedTurn(message, targetMessage);
+}
+
+function ensureSwipeShape(message) {
+    if (!Array.isArray(message.swipes)) {
+        const seedText = String(message.mes ?? '');
+        message.swipes = seedText ? [seedText] : [];
+    }
+    if (!Array.isArray(message.swipe_info)) {
+        message.swipe_info = message.swipes.map(() => ({}));
+    }
+    while (message.swipe_info.length < message.swipes.length) {
+        message.swipe_info.push({});
+    }
+    if (!Number.isInteger(message.swipe_id) || message.swipe_id < 0 || message.swipe_id >= message.swipes.length) {
+        message.swipe_id = message.swipes.length > 0 ? Math.max(0, message.swipes.length - 1) : 0;
+    }
+    if (!message.extra || typeof message.extra !== 'object') {
+        message.extra = {};
+    }
+}
+
+function stampAnchorOnLiveRow(message, anchorId) {
+    if (!message.extra || typeof message.extra !== 'object') {
+        message.extra = {};
+    }
+    message.extra.retryMobileAssistantAnchorId = anchorId;
+    if (!Array.isArray(message.swipe_info)) {
+        return;
+    }
+    for (const info of message.swipe_info) {
+        if (!info || typeof info !== 'object') {
+            continue;
+        }
+        if (!info.extra || typeof info.extra !== 'object') {
+            info.extra = {};
+        }
+        info.extra.retryMobileAssistantAnchorId = anchorId;
+    }
 }
 
 function getAssistantAnchorId(message) {
@@ -268,71 +284,6 @@ function getMeaningfulSwipes(message) {
         .filter(Boolean);
 }
 
-function buildTargetMessageForVisibleHost(existing, targetMessage) {
-    const nextTarget = cloneValue(targetMessage) || {};
-    const liveSelectedText = normalizeComparableText(resolveSwipeText(existing, existing?.swipe_id));
-    if (!liveSelectedText) {
-        return nextTarget;
-    }
-
-    const targetSwipes = Array.isArray(nextTarget.swipes) ? nextTarget.swipes : [];
-    const matchingIndex = targetSwipes.findIndex((swipe) => normalizeComparableText(swipe) === liveSelectedText);
-    if (matchingIndex < 0) {
-        return nextTarget;
-    }
-
-    nextTarget.swipe_id = matchingIndex;
-    syncVisibleFieldsToSwipe(nextTarget, matchingIndex, {
-        fallbackMes: resolveSwipeText(nextTarget, matchingIndex),
-        fallbackExtra: nextTarget.extra || existing?.extra || {},
-        fallbackTimestamp: firstString(
-            existing?.send_date,
-            existing?.gen_finished,
-            existing?.gen_started,
-            nextTarget?.send_date,
-            nextTarget?.gen_finished,
-            nextTarget?.gen_started,
-        ),
-    });
-    return nextTarget;
-}
-
-function preserveLiveSwipeSelection(message, liveMessage, targetMessage) {
-    const targetSwipes = Array.isArray(targetMessage?.swipes) ? targetMessage.swipes : [];
-    if (targetSwipes.length === 0) {
-        return;
-    }
-
-    const liveSwipeId = clampSwipeId(liveMessage?.swipe_id, targetSwipes.length);
-    const liveSelectedText = normalizeComparableText(resolveSwipeText(liveMessage, liveSwipeId));
-    const targetSelectedText = normalizeComparableText(resolveSwipeText(targetMessage, liveSwipeId));
-    if (!liveSelectedText || liveSelectedText !== targetSelectedText) {
-        return;
-    }
-
-    syncVisibleFieldsToSwipe(message, liveSwipeId, {
-        fallbackMes: resolveSwipeText(targetMessage, liveSwipeId) || liveMessage?.mes || '',
-        fallbackExtra: targetMessage?.extra || liveMessage?.extra || {},
-        fallbackTimestamp: firstString(
-            liveMessage?.send_date,
-            liveMessage?.gen_finished,
-            liveMessage?.gen_started,
-            targetMessage?.send_date,
-            targetMessage?.gen_finished,
-            targetMessage?.gen_started,
-        ),
-    });
-}
-
-function resolveSwipeText(message, swipeId) {
-    const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
-    if (swipeId >= 0 && swipeId < swipes.length) {
-        return String(swipes[swipeId] ?? '');
-    }
-
-    return String(message?.mes ?? '');
-}
-
 function messageHasMeaningfulContent(message) {
     if (normalizeComparableText(message?.mes)) {
         return true;
@@ -346,47 +297,6 @@ function normalizeText(value) {
     return String(value ?? '')
         .replace(/\r\n/g, '\n')
         .trim();
-}
-
-function syncVisibleFieldsToSwipe(message, swipeId, options = {}) {
-    const swipes = Array.isArray(message?.swipes) ? message.swipes : [];
-    const resolvedSwipeId = clampSwipeId(swipeId, swipes.length);
-    const activeSwipeInfo = Array.isArray(message?.swipe_info)
-        ? message.swipe_info[resolvedSwipeId]
-        : null;
-    const activeTimestamp = firstString(
-        activeSwipeInfo?.send_date,
-        activeSwipeInfo?.gen_finished,
-        activeSwipeInfo?.gen_started,
-        options.fallbackTimestamp,
-    );
-
-    message.swipe_id = resolvedSwipeId;
-    message.mes = String(swipes[resolvedSwipeId] ?? options.fallbackMes ?? '');
-    message.extra = cloneValue(activeSwipeInfo?.extra || options.fallbackExtra || {});
-    message.send_date = activeTimestamp;
-    message.gen_started = firstString(activeSwipeInfo?.gen_started, activeTimestamp);
-    message.gen_finished = firstString(activeSwipeInfo?.gen_finished, activeTimestamp);
-}
-
-function clampSwipeId(value, swipeCount) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || swipeCount <= 0) {
-        return 0;
-    }
-
-    return Math.max(0, Math.min(Math.trunc(numeric), swipeCount - 1));
-}
-
-function firstString(...values) {
-    for (const value of values) {
-        const text = String(value ?? '').trim();
-        if (text) {
-            return text;
-        }
-    }
-
-    return '';
 }
 
 function normalizeComparableText(value) {
@@ -410,7 +320,6 @@ export async function finishTerminalUi({ outcome, status, chatIdentity, signal }
     const context = getContext();
     try {
         context?.activateSendButtons?.();
-        context?.swipe?.refresh?.(true);
         const settled = await waitForTerminalUiWithRetry(signal);
         if (!settled) {
             return {
@@ -494,18 +403,15 @@ function cloneValue(value) {
 }
 
 async function waitForPatchedMessageElement(targetMessageIndex, signal) {
-    let element = await waitForMessageElement(targetMessageIndex, { signal });
+    const element = await waitForMessageElement(targetMessageIndex, { signal });
     if (element) {
         return element;
     }
 
-    const context = getContext();
-    context?.swipe?.refresh?.(true);
-    element = await waitForMessageElement(targetMessageIndex, {
+    return waitForMessageElement(targetMessageIndex, {
         signal,
         timeoutMs: RENDER_MESSAGE_RETRY_WAIT_MS,
     });
-    return element;
 }
 
 async function waitForTerminalUiWithRetry(signal) {
@@ -516,7 +422,6 @@ async function waitForTerminalUiWithRetry(signal) {
 
     const context = getContext();
     context?.activateSendButtons?.();
-    context?.swipe?.refresh?.(true);
     settled = await waitForUiSettled({
         signal,
         timeoutMs: TERMINAL_UI_SETTLE_RETRY_TIMEOUT_MS,

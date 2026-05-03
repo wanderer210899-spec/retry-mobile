@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createStPort } from './st-adapter.js';
+import { createStPort } from './index.js';
 
 test('clearGeneratingIndicator restores the currently viewed target chat', () => {
     const originalWindow = global.window;
@@ -104,7 +104,77 @@ test('clearGeneratingIndicator does not touch a different visible chat', () => {
     }
 });
 
-test('setLockdown blocks all configured click selectors and Enter send', () => {
+test('setLockdown(true) calls deactivateSendButtons on ST context (Phase 3 cooperation)', () => {
+    const originalWindow = global.window;
+    const originalDocument = global.document;
+
+    const calls = [];
+    const context = {
+        getCurrentChatId() { return 'chat-visible'; },
+        deactivateSendButtons() { calls.push('deactivateSendButtons'); },
+        activateSendButtons() { calls.push('activateSendButtons'); },
+    };
+
+    global.window = {
+        SillyTavern: { getContext() { return context; } },
+    };
+    global.document = {
+        visibilityState: 'visible',
+        addEventListener() {},
+        removeEventListener() {},
+        body: { dataset: {} },
+    };
+
+    try {
+        const stPort = createStPort();
+        stPort.setLockdown(true);
+        assert.ok(
+            calls.includes('deactivateSendButtons'),
+            'setLockdown(true) must call deactivateSendButtons to cooperate with ST send-button mechanism',
+        );
+    } finally {
+        global.window = originalWindow;
+        global.document = originalDocument;
+    }
+});
+
+test('setLockdown(false) calls activateSendButtons on ST context (Phase 3 cooperation)', () => {
+    const originalWindow = global.window;
+    const originalDocument = global.document;
+
+    const calls = [];
+    const context = {
+        getCurrentChatId() { return 'chat-visible'; },
+        deactivateSendButtons() { calls.push('deactivateSendButtons'); },
+        activateSendButtons() { calls.push('activateSendButtons'); },
+    };
+
+    global.window = {
+        SillyTavern: { getContext() { return context; } },
+    };
+    global.document = {
+        visibilityState: 'visible',
+        addEventListener() {},
+        removeEventListener() {},
+        body: { dataset: {} },
+    };
+
+    try {
+        const stPort = createStPort();
+        stPort.setLockdown(true);
+        calls.length = 0;
+        stPort.setLockdown(false);
+        assert.ok(
+            calls.includes('activateSendButtons'),
+            'setLockdown(false) must call activateSendButtons to restore ST send-button state',
+        );
+    } finally {
+        global.window = originalWindow;
+        global.document = originalDocument;
+    }
+});
+
+test('setLockdown still blocks last-message overswipe-right that would regenerate', () => {
     const originalWindow = global.window;
     const originalDocument = global.document;
 
@@ -112,135 +182,43 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
     let clickHandler = null;
     let keydownHandler = null;
     const context = {
-        getCurrentChatId() {
-            return 'chat-visible';
-        },
+        getCurrentChatId() { return 'chat-visible'; },
+        deactivateSendButtons() {},
+        activateSendButtons() {},
         chat: [
             { is_user: true, mes: 'u' },
-            { is_user: false, is_system: false, swipe_id: 0, swipes: ['a', 'b'], mes: 'a' },
+            // Last swipe — only one candidate, next swipe would regenerate
+            { is_user: false, is_system: false, swipe_id: 0, swipes: ['one'], mes: 'one' },
         ],
         chatMetadata: { tainted: true },
     };
 
     global.window = {
         toastr: {
-            warning(message, title) {
-                calls.push(['toastr.warning', title, message]);
-            },
+            warning(message, title) { calls.push(['toastr.warning', title, message]); },
         },
-        SillyTavern: {
-            getContext() {
-                return context;
-            },
-        },
+        SillyTavern: { getContext() { return context; } },
     };
     global.document = {
         visibilityState: 'visible',
-        addEventListener(name, handler, capture) {
-            if (capture !== true) {
-                return;
-            }
-            if (name === 'click') {
-                clickHandler = handler;
-            }
-            if (name === 'keydown') {
-                keydownHandler = handler;
-            }
+        addEventListener(name, handler, opts) {
+            const capture = opts === true || opts?.capture === true;
+            if (!capture) return;
+            if (name === 'click') clickHandler = handler;
+            if (name === 'keydown') keydownHandler = handler;
         },
         removeEventListener() {},
-        body: {},
-        getElementById(id) {
-            if (id !== 'send_but') {
-                return null;
-            }
-            return {
-                classList: {
-                    _set: new Set(['fa-solid', 'fa-paper-plane']),
-                    add(name) { this._set.add(name); },
-                    remove(name) { this._set.delete(name); },
-                    contains(name) { return this._set.has(name); },
-                    [Symbol.iterator]() { return this._set[Symbol.iterator](); },
-                },
-            };
-        },
+        body: { dataset: {} },
+        getElementById() { return null; },
     };
-    // Generation-triggering controls — must be blocked while retry owns the
-    // session.
-    const blockedSelectors = [
-        '#send_but',
-        '#option_regenerate',
-        '#option_continue',
-        '#mes_continue',
-        '#mes_impersonate',
-    ];
-    // Pure-navigation controls — must NOT be blocked, otherwise the user can't
-    // step back through existing swipes during a retry.
-    const unblockedSelectors = [
-        '.last_mes .swipe_left',
-        // Last row but not on the newest candidate — right chevron still exists
-        // for stepping forward without regenerate; must not match lockdown.
-        '.last_mes .swipe_right',
-    ];
 
     try {
         const stPort = createStPort();
         stPort.setLockdown(true);
-        assert.ok(clickHandler, 'expected tap hijack to register capture click handler');
-        assert.ok(keydownHandler, 'expected tap hijack to register capture keydown handler');
+        assert.ok(clickHandler, 'must register capture-phase click handler');
+        assert.ok(keydownHandler, 'must register capture-phase keydown handler');
 
-        for (const selector of blockedSelectors) {
-            const event = {
-                target: {
-                    closest(candidate) {
-                        return candidate === selector ? this : null;
-                    },
-                },
-                preventDefault() { calls.push(['preventDefault', selector]); },
-                stopImmediatePropagation() { calls.push(['stopImmediatePropagation', selector]); },
-                stopPropagation() { calls.push(['stopPropagation', selector]); },
-            };
-            clickHandler(event);
-        }
-
-        for (const selector of unblockedSelectors) {
-            const event = {
-                target: {
-                    closest(candidate) {
-                        return candidate === selector ? this : null;
-                    },
-                },
-                preventDefault() { calls.push(['preventDefault', selector]); },
-                stopImmediatePropagation() { calls.push(['stopImmediatePropagation', selector]); },
-                stopPropagation() { calls.push(['stopPropagation', selector]); },
-            };
-            clickHandler(event);
-        }
-
-        keydownHandler({
-            key: 'Enter',
-            shiftKey: false,
-            target: {
-                closest(candidate) {
-                    return candidate === '#send_textarea' ? this : null;
-                },
-            },
-            preventDefault() { calls.push(['preventDefault', 'enter_submit']); },
-            stopImmediatePropagation() { calls.push(['stopImmediatePropagation', 'enter_submit']); },
-            stopPropagation() { calls.push(['stopPropagation', 'enter_submit']); },
-        });
-        const blockedHits = calls.filter((entry) => Array.isArray(entry)
-            && entry[0] === 'preventDefault'
-            && (blockedSelectors.includes(entry[1]) || entry[1] === 'enter_submit'));
-        assert.equal(
-            blockedHits.length,
-            blockedSelectors.length + 1,
-            'every generation-triggering selector and the textarea Enter must be blocked',
-        );
-
-        context.chat = [
-            { is_user: true, mes: 'u' },
-            { is_user: false, is_system: false, swipe_id: 0, swipes: ['one'], mes: 'one' },
-        ];
+        // Clicking the swipe_right chevron on the last message MUST be blocked.
         clickHandler({
             target: {
                 closest(candidate) {
@@ -248,23 +226,58 @@ test('setLockdown blocks all configured click selectors and Enter send', () => {
                 },
             },
             preventDefault() { calls.push(['preventDefault', 'swipe_right_gen']); },
-            stopImmediatePropagation() { calls.push(['stopImmediatePropagation', 'swipe_right_gen']); },
-            stopPropagation() { calls.push(['stopPropagation', 'swipe_right_gen']); },
+            stopImmediatePropagation() {},
+            stopPropagation() {},
         });
         assert.ok(
-            calls.some((entry) => Array.isArray(entry) && entry[0] === 'preventDefault' && entry[1] === 'swipe_right_gen'),
-            'last-message right swipe that would regenerate must be blocked',
+            calls.some((c) => Array.isArray(c) && c[0] === 'preventDefault' && c[1] === 'swipe_right_gen'),
+            'last-message swipe_right that would regenerate must be blocked',
         );
 
-        const swipeLeftHits = calls.filter((entry) => Array.isArray(entry)
-            && entry[1] === '.last_mes .swipe_left');
-        assert.equal(
-            swipeLeftHits.length,
-            0,
-            'swipe_left back-navigation must not be blocked or it cannot be used during retry',
+        // swipe_left (back navigation) must NOT be blocked.
+        const leftCalls = [];
+        clickHandler({
+            target: {
+                closest(candidate) {
+                    return candidate === '.last_mes .swipe_left' ? this : null;
+                },
+            },
+            preventDefault() { leftCalls.push('prevented'); },
+            stopImmediatePropagation() {},
+            stopPropagation() {},
+        });
+        assert.equal(leftCalls.length, 0, 'swipe_left must not be blocked');
+
+        // ArrowRight keyboard shortcut on empty textarea MUST be blocked.
+        keydownHandler({
+            key: 'ArrowRight',
+            shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+            target: { closest() { return null; } },
+            preventDefault() { calls.push(['preventDefault', 'arrow_right']); },
+            stopImmediatePropagation() {},
+            stopPropagation() {},
+        });
+        assert.ok(
+            calls.some((c) => Array.isArray(c) && c[0] === 'preventDefault' && c[1] === 'arrow_right'),
+            'ArrowRight with empty textarea and generation-causing overswipe must be blocked',
         );
 
-        assert.equal(calls.some((entry) => Array.isArray(entry) && entry[0] === 'toastr.warning'), true);
+        // Enter key must NOT be blocked (Phase 3 removes the Enter gate).
+        const enterCalls = [];
+        keydownHandler({
+            key: 'Enter',
+            shiftKey: false, ctrlKey: false, metaKey: false, altKey: false,
+            target: { closest() { return null; } },
+            preventDefault() { enterCalls.push('prevented'); },
+            stopImmediatePropagation() {},
+            stopPropagation() {},
+        });
+        assert.equal(enterCalls.length, 0, 'Enter key must not be blocked by Phase 3 lockdown');
+
+        assert.ok(
+            calls.some((c) => Array.isArray(c) && c[0] === 'toastr.warning'),
+            'blocked interaction must emit a warning toast',
+        );
     } finally {
         global.window = originalWindow;
         global.document = originalDocument;

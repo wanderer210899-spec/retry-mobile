@@ -1,4 +1,4 @@
-import { getCapabilityReport, runDryRunProbe } from './st-context.js';
+import { getCapabilityReport, runDryRunProbe } from './st-bridge/index.js';
 
 export async function runDiagnostics(context) {
     const capabilities = getCapabilityReport(context);

@@ -7,70 +7,60 @@ import { fileURLToPath } from 'node:url';
 const appPortsSource = readFileSync(new URL('./app-ports.js', import.meta.url), 'utf8');
 const appRuntimeSyncSource = readFileSync(new URL('./app-runtime-sync.js', import.meta.url), 'utf8');
 const appRecoverySource = readFileSync(new URL('./app-recovery.js', import.meta.url), 'utf8');
-const sessionLockdownSource = readFileSync(new URL('./ui/session-lockdown.js', import.meta.url), 'utf8');
-const reconcilerSource = readFileSync(new URL('./render/reconciler.js', import.meta.url), 'utf8');
+const sessionLockdownSource = readFileSync(new URL('./st-bridge/lockdown.js', import.meta.url), 'utf8');
 
-test('app-ports stays isolated from concrete adapters', () => {
+test('app-ports stays isolated from concrete adapter factories', () => {
+    // app-ports must not construct its own ST or backend ports; the composition
+    // root in app.js injects them.
     assert.doesNotMatch(
         appPortsSource,
-        new RegExp(`from ['"]${escapeForRegExp('./st-adapter.js')}['"]`),
-        'app-ports.js must not import st-adapter.js',
+        /\bcreateStPort\b/,
+        'app-ports.js must not import createStPort (composition root only)',
     );
     assert.doesNotMatch(
         appPortsSource,
-        new RegExp(`from ['"]${escapeForRegExp('./backend-client.js')}['"]`),
-        'app-ports.js must not import backend-client.js',
+        /\bcreateBackendPort\b/,
+        'app-ports.js must not import createBackendPort (composition root only)',
     );
 });
 
-test('app-runtime-sync stays isolated from concrete adapters', () => {
+test('app-runtime-sync stays isolated from concrete adapter factories', () => {
     assert.doesNotMatch(
         appRuntimeSyncSource,
-        new RegExp(`from ['"]${escapeForRegExp('./st-adapter.js')}['"]`),
-        'app-runtime-sync.js must not import st-adapter.js',
+        /\bcreateStPort\b/,
+        'app-runtime-sync.js must not import createStPort',
     );
     assert.doesNotMatch(
         appRuntimeSyncSource,
-        new RegExp(`from ['"]${escapeForRegExp('./backend-client.js')}['"]`),
-        'app-runtime-sync.js must not import backend-client.js',
+        /\bcreateBackendPort\b/,
+        'app-runtime-sync.js must not import createBackendPort',
     );
 });
 
-test('app-recovery stays isolated from concrete adapters', () => {
+test('app-recovery stays isolated from concrete adapter factories', () => {
     assert.doesNotMatch(
         appRecoverySource,
-        new RegExp(`from ['"]${escapeForRegExp('./st-adapter.js')}['"]`),
-        'app-recovery.js must not import st-adapter.js',
+        /\bcreateStPort\b/,
+        'app-recovery.js must not import createStPort',
     );
     assert.doesNotMatch(
         appRecoverySource,
-        new RegExp(`from ['"]${escapeForRegExp('./backend-client.js')}['"]`),
-        'app-recovery.js must not import backend-client.js',
+        /\bcreateBackendPort\b/,
+        'app-recovery.js must not import createBackendPort',
     );
 });
 
-test('only session-lockdown owns blocked click and keydown interception', () => {
+test('only st-bridge/lockdown owns blocked click and keydown interception', () => {
     assert.match(sessionLockdownSource, /addEventListener\?\.\('click'/);
     assert.match(sessionLockdownSource, /addEventListener\?\.\('keydown'/);
 
-    const sources = collectFrontendSources().filter((entry) => !entry.filePath.endsWith(path.join('ui', 'session-lockdown.js')));
+    const sources = collectFrontendSources()
+        .filter((entry) => !entry.filePath.endsWith(path.join('st-bridge', 'lockdown.js')));
     for (const entry of sources) {
         assert.doesNotMatch(
             entry.source,
             /#send_but|\.last_mes \.swipe_right|#option_regenerate|#mes_continue|#send_textarea/,
-            `Only session-lockdown.js may own blocked generation selectors (${entry.filePath})`,
-        );
-    }
-});
-
-test('only reconciler imports chat write helpers from st-operations', () => {
-    assert.match(reconcilerSource, /from ['"]\.\.?\/st-operations\.js['"]/);
-    const sources = collectFrontendSources().filter((entry) => !entry.filePath.endsWith(path.join('render', 'reconciler.js')));
-    for (const entry of sources) {
-        assert.doesNotMatch(
-            entry.source,
-            /from ['"][./]+render\/st-operations\.js['"]/,
-            `Only reconciler.js may import st-operations chat write helpers (${entry.filePath})`,
+            `Only st-bridge/lockdown.js may own blocked generation selectors (${entry.filePath})`,
         );
     }
 });
@@ -86,10 +76,6 @@ test('runtime active job mirrors are only written in app-runtime-sync', () => {
         );
     }
 });
-
-function escapeForRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 function collectFrontendSources() {
     const root = fileURLToPath(new URL('.', import.meta.url));
@@ -115,4 +101,3 @@ function listFilesRecursively(directoryPath) {
     }
     return files;
 }
-

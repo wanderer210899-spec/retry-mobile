@@ -77,7 +77,8 @@ async function writeAcceptedResult(job, accepted) {
 
 function applyAcceptedResultToMessage(job, targetMessage, accepted, timestamp = new Date().toISOString()) {
     const nextExtra = buildAcceptedExtra(job, targetMessage.extra, accepted);
-    const shouldSeedResult = job.acceptedCount === 0 && !messageHasMeaningfulContent(targetMessage);
+    const shouldSeedResult = job.acceptedCount === 0
+        && (!messageHasMeaningfulContent(targetMessage) || job.recoveryMode === 'replace_rejected_native');
 
     if (shouldSeedResult) {
         targetMessage.swipes = [accepted.text];

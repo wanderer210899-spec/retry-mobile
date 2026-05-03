@@ -76,6 +76,7 @@ export function syncValidationControls(runtime, settings) {
 
 function cachePanelElements(runtime, drawer) {
     runtime.ui.panel = drawer;
+    runtime.ui.statsRenderKey = '';
     runtime.ui.statusText = drawer.querySelector('[data-role="state-pill"]');
     runtime.ui.stats = drawer.querySelector('[data-role="stats"]');
     runtime.ui.retryLogShell = drawer.querySelector('[data-role="retry-log-shell"]');

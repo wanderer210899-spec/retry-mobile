@@ -53,6 +53,15 @@ async function runJob(job, environment) {
             return;
         }
 
+        await resolveNativeAttempt(job);
+        if (job.state && job.state !== 'running') {
+            return;
+        }
+        if (job.cancelRequested) {
+            finalizeCancelled(job);
+            return;
+        }
+
         while (!job.cancelRequested && job.acceptedCount < job.targetAcceptedCount && job.attemptCount < job.maxAttempts) {
             job.attemptCount += 1;
             const attemptRecord = {
@@ -438,6 +447,177 @@ async function runJob(job, environment) {
     } finally {
         releaseWakeLock();
     }
+}
+
+async function resolveNativeAttempt(job) {
+    if (job.nativeAttemptResolved) {
+        return;
+    }
+    if (job.nativeState !== 'confirmed') {
+        return;
+    }
+    if ((Number(job.attemptCount) || 0) > 0 || (Number(job.acceptedCount) || 0) > 0) {
+        // A snapshot from a pre-upgrade job (or a partially advanced job) may
+        // already have non-zero counts. Treat the native attempt as resolved
+        // so it cannot be replayed on top of existing progress.
+        touchJob(job, { nativeAttemptResolved: true });
+        return;
+    }
+
+    const nativeText = extractNativeReplyText(job.targetMessage);
+    job.attemptCount = Number(job.attemptCount) || 0;
+    job.attemptCount += 1;
+
+    const startedAt = job.captureConfirmedAt || new Date().toISOString();
+    const attemptRecord = {
+        attemptNumber: job.attemptCount,
+        startedAt,
+        phase: 'native_validation',
+    };
+
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'attempt_started',
+        summary: `Validating native first reply as attempt ${job.attemptCount}/${job.maxAttempts}.`,
+        detail: {
+            attemptNumber: job.attemptCount,
+            phase: 'native_validation',
+            source: 'native',
+        },
+    });
+
+    const validation = await validateAcceptedText(nativeText, job.runConfig, {
+        countTokens: (value) => countTextTokensWithSt(value, {
+            tokenizerDescriptor: job.tokenizerDescriptor,
+            requestModel: job.capturedRequest?.model,
+        }),
+    });
+
+    if (job.cancelRequested || (job.state && job.state !== 'running')) {
+        return;
+    }
+
+    const metrics = validation.metrics || {};
+
+    if (validation.accepted) {
+        job.acceptedResults.push({
+            text: metrics.text,
+            characterCount: metrics.characterCount,
+            wordCount: metrics.wordCount,
+            tokenCount: metrics.tokenCount,
+            tokenCountSource: metrics.tokenCountSource,
+            tokenizerModel: metrics.tokenizerModel,
+            source: 'native',
+        });
+        job.acceptedCount = (Number(job.acceptedCount) || 0) + 1;
+        job.lastAcceptedMetrics = metrics;
+        job.lastValidation = validation;
+        job.lastAcceptedAt = new Date().toISOString();
+        job.lastError = '';
+        job.structuredError = null;
+
+        touchJob(job, {
+            phase: 'awaiting_retry_results',
+            nativeAttemptResolved: true,
+        });
+
+        appendAttemptLog(job, {
+            ...attemptRecord,
+            finishedAt: new Date().toISOString(),
+            outcome: 'accepted',
+            reason: 'native_accepted',
+            message: `Accepted native first reply as ${job.acceptedCount}/${job.targetAcceptedCount}.`,
+            phase: 'awaiting_retry_results',
+            characterCount: metrics.characterCount,
+            wordCount: metrics.wordCount,
+            tokenCount: metrics.tokenCount,
+            tokenCountSource: metrics.tokenCountSource,
+            tokenCountModel: metrics.tokenizerModel,
+            tokenCountDetail: metrics.tokenCountDetail,
+        });
+        appendJobLog(job, {
+            source: 'backend',
+            event: 'attempt_accepted',
+            summary: `Native first reply accepted as ${job.acceptedCount}/${job.targetAcceptedCount}.`,
+            detail: {
+                attemptNumber: job.attemptCount,
+                source: 'native',
+                characterCount: metrics.characterCount,
+                wordCount: metrics.wordCount,
+                tokenCount: metrics.tokenCount,
+                tokenCountSource: metrics.tokenCountSource,
+                tokenCountModel: metrics.tokenizerModel,
+                tokenCountDetail: metrics.tokenCountDetail,
+            },
+        });
+
+        notify(job.runConfig, 'success', {
+            acceptedCount: job.acceptedCount,
+            targetAcceptedCount: job.targetAcceptedCount,
+            attemptCount: job.attemptCount,
+            characterCount: metrics.characterCount,
+            wordCount: metrics.wordCount,
+            tokenCount: metrics.tokenCount,
+        });
+        return;
+    }
+
+    const rejectionMessage = formatValidationRejection(validation);
+    job.lastValidation = validation;
+    job.lastError = `Rejected native first reply: ${rejectionMessage}`;
+    job.structuredError = null;
+
+    touchJob(job, {
+        phase: 'native_rejected',
+        recoveryMode: 'replace_rejected_native',
+        nativeAttemptResolved: true,
+    });
+
+    appendAttemptLog(job, {
+        ...attemptRecord,
+        finishedAt: new Date().toISOString(),
+        outcome: 'rejected',
+        reason: validation.reason,
+        message: rejectionMessage,
+        phase: 'native_rejected',
+        characterCount: metrics.characterCount,
+        wordCount: metrics.wordCount,
+        tokenCount: metrics.tokenCount,
+        tokenCountSource: metrics.tokenCountSource,
+        tokenCountModel: metrics.tokenizerModel,
+        tokenCountDetail: metrics.tokenCountDetail,
+    });
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'attempt_rejected',
+        summary: `Native first reply rejected: ${rejectionMessage}`,
+        detail: {
+            attemptNumber: job.attemptCount,
+            source: 'native',
+            reason: validation.reason,
+            characterCount: metrics.characterCount,
+            wordCount: metrics.wordCount,
+            tokenCount: metrics.tokenCount,
+            tokenCountSource: metrics.tokenCountSource,
+            tokenCountModel: metrics.tokenizerModel,
+            tokenCountDetail: metrics.tokenCountDetail,
+        },
+    });
+}
+
+function extractNativeReplyText(targetMessage) {
+    if (!targetMessage) {
+        return '';
+    }
+    const swipes = Array.isArray(targetMessage.swipes) ? targetMessage.swipes : null;
+    const swipeId = Number(targetMessage.swipe_id);
+    const fromSwipe = swipes && Number.isFinite(swipeId) && swipeId >= 0 && swipeId < swipes.length
+        ? swipes[swipeId]
+        : '';
+    const text = typeof targetMessage.mes === 'string' && targetMessage.mes
+        ? targetMessage.mes
+        : (typeof fromSwipe === 'string' ? fromSwipe : '');
+    return String(text || '');
 }
 
 async function awaitNativeOutcome(job) {
@@ -1340,8 +1520,10 @@ function sleep(ms) {
 
 module.exports = {
     confirmNativeAssistant,
+    extractNativeReplyText,
     extractResponseText,
     replayCapturedRequest,
+    resolveNativeAttempt,
     resolvePendingNativeState,
     runJob,
     waitForNativeResolutionIdle,

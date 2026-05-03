@@ -1,11 +1,90 @@
-import { createStructuredError, normalizeStructuredError } from './retry-error.js';
-import { createArmCaptureSession } from './st-capture.js';
-import { getChatIdentity, getContext, showToast } from './st-context.js';
-import { waitForNativeCompletion } from './st-lifecycle.js';
-import { isSameChat } from './st-chat.js';
-import { t } from './i18n.js';
-import { createSessionLockdown } from './ui/session-lockdown.js';
-import { createChatReconciler } from './render/reconciler.js';
+// st-bridge/index.js
+// The single public barrel for SillyTavern integration. This is the only
+// st-bridge file that code outside `st-bridge/` is allowed to import.
+//
+// Architectural contract:
+//   - All `window.SillyTavern`, jQuery, ST event-name literal, and
+//     ST-specific DOM selector access lives in modules under `st-bridge/`.
+//   - Outside the bridge, every consumer imports from this file (or uses the
+//     `stPort` instance returned by `createStPort()`).
+//   - Surface area is fixed by `port.js` (ST_PORT_METHOD_ALLOWLIST) and the
+//     re-exports below; both are enforced by `st-bridge-boundary.test.mjs`.
+//
+// Phase 1 of the bridge plan keeps every previously existing helper available
+// through this file with no behavioural change. Phase 2 swaps the swipe-write
+// path to `saveReply({type:'swipe'})`; Phase 3 slims lockdown to cooperate
+// with `body.dataset.generating`. Both happen behind this barrel.
+
+import { createStructuredError, normalizeStructuredError } from '../retry-error.js';
+import { t } from '../i18n.js';
+import { createArmCaptureSession } from './capture.js';
+import { waitForNativeCompletion } from './lifecycle.js';
+import { createSessionLockdown } from './lockdown.js';
+import { createChatReconciler } from './reconciler.js';
+import {
+    getCapabilityReport,
+    getChatIdentity,
+    getContext,
+    showToast,
+} from './internal/ctx.js';
+import { isSameChat } from './inspect.js';
+
+// ---------- Public re-exports (bridge-owned helpers) ----------
+//
+// Kept at the top of the barrel so consumers can do
+// `import { getChatIdentity, showToast } from '../st-bridge/index.js'`.
+// The boundary test forbids importing these symbols from anywhere else.
+
+export {
+    getContext,
+    getChatIdentity,
+    getEventTypes,
+    getEventSource,
+    getCurrentChatArray,
+    getUserMessageIndexFromEvent,
+    subscribeEvent,
+    payloadHasRequiredKeys,
+    clonePayload,
+    showToast,
+    focusPanelDrawer,
+    registerSlashCommand,
+    runDryRunProbe,
+    getCapabilityReport,
+} from './internal/ctx.js';
+
+export {
+    buildFingerprint,
+    confirmTargetTurn,
+    getAssistantMessageAt,
+    isSameChat,
+    markInternalChatReload,
+    clearInternalChatReloadMarker,
+    wasInternalChatReloadRecentlyTriggered,
+    normalizeRequestType,
+    reloadCurrentChatSafe,
+} from './inspect.js';
+
+export { createArmCaptureSession } from './capture.js';
+export { waitForNativeCompletion } from './lifecycle.js';
+export {
+    applyAcceptedOutput,
+    finishTerminalUi,
+    reloadSessionUi,
+    assistantTargetMatches,
+} from './write.js';
+export {
+    createSessionLockdown,
+    wouldLastMessageRightSwipeCauseGeneration,
+} from './lockdown.js';
+export { createChatReconciler } from './reconciler.js';
+export { ST_PORT_METHOD_ALLOWLIST } from './port.js';
+
+// ---------- StPort factory ----------
+//
+// Replaces the former `createStPort()` export from `frontend/src/st-adapter.js`.
+// The factory composes capture + native-observation + lockdown + reconciler
+// behind one stable surface; consumers inject their own callbacks for capture
+// outcomes and native-completion outcomes.
 
 export function createStPort({
     onCapture,

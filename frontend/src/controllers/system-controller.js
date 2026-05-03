@@ -14,7 +14,7 @@ import {
     getContext,
     registerSlashCommand,
     showToast,
-} from '../st-context.js';
+} from '../st-bridge/index.js';
 import {
     buildRetryLogFileName,
     clearRetryLog,

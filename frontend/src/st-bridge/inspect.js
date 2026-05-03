@@ -1,5 +1,10 @@
-import { getChatIdentity, getContext, getCurrentChatArray } from './st-context.js';
-import { createStructuredError } from './retry-error.js';
+// st-bridge/inspect.js
+// Read-only chat inspection: identity normalisation, fingerprinting, target
+// confirmation, and the internal-reload echo marker. Lifted from the former
+// frontend/src/st-chat.js with no behavioural change.
+
+import { getChatIdentity, getContext, getCurrentChatArray } from './internal/ctx.js';
+import { createStructuredError } from '../retry-error.js';
 
 const INTERNAL_CHAT_RELOAD_GRACE_MS = 1500;
 const CAPTURE_TAIL_WINDOW = 4;

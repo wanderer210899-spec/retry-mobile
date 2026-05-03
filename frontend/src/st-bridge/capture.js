@@ -1,6 +1,25 @@
-import { payloadHasRequiredKeys, clonePayload, getContext, getCurrentChatArray, getEventTypes, getChatIdentity, getUserMessageIndexFromEvent, subscribeEvent } from './st-context.js';
-import { buildFingerprint, isSameChat, normalizeRequestType, wasInternalChatReloadRecentlyTriggered } from './st-chat.js';
-import { createStructuredError } from './retry-error.js';
+// st-bridge/capture.js
+// Arms ST lifecycle event listeners and emits exactly one captured request
+// payload + bounded turn fingerprint. Lifted from the former
+// frontend/src/st-capture.js with no behavioural change.
+
+import {
+    payloadHasRequiredKeys,
+    clonePayload,
+    getContext,
+    getCurrentChatArray,
+    getEventTypes,
+    getChatIdentity,
+    getUserMessageIndexFromEvent,
+    subscribeEvent,
+} from './internal/ctx.js';
+import {
+    buildFingerprint,
+    isSameChat,
+    normalizeRequestType,
+    wasInternalChatReloadRecentlyTriggered,
+} from './inspect.js';
+import { createStructuredError } from '../retry-error.js';
 
 const FRESH_SEND_HINT_WAIT_MS = 1600;
 const FRESH_SEND_HINT_POLL_MS = 50;

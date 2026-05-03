@@ -1,3 +1,8 @@
+// st-bridge/lifecycle.js
+// Waits for SillyTavern's authoritative completion events for the captured turn,
+// with hidden/visible-progress fallback timers. Lifted from the former
+// frontend/src/st-lifecycle.js with no behavioural change.
+
 import {
     NATIVE_CONFIRM_POLL_MS,
     NATIVE_CONFIRM_TIMEOUT_MS,
@@ -5,10 +10,10 @@ import {
     NATIVE_VISIBLE_PROGRESS_POLL_MS,
     NATIVE_WAIT_PROGRESS_TIMEOUT_MS,
     NATIVE_WAIT_TIMEOUT_MS,
-} from './constants.js';
-import { getChatIdentity, getContext, getCurrentChatArray, getEventTypes, subscribeEvent } from './st-context.js';
-import { confirmTargetTurn, isSameChat, wasInternalChatReloadRecentlyTriggered } from './st-chat.js';
-import { createStructuredError } from './retry-error.js';
+} from '../constants.js';
+import { getChatIdentity, getContext, getCurrentChatArray, getEventTypes, subscribeEvent } from './internal/ctx.js';
+import { confirmTargetTurn, isSameChat, wasInternalChatReloadRecentlyTriggered } from './inspect.js';
+import { createStructuredError } from '../retry-error.js';
 
 export function waitForNativeCompletion({
     fingerprint,
