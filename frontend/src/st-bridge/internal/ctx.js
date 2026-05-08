@@ -8,6 +8,7 @@
 // the only source of ST event-name literal strings in the frontend.
 const REQUIRED_EVENT_NAMES = Object.freeze([
     'CHAT_CHANGED',
+    'CHAT_LOADED',
     'CHAT_DELETED',
     'CHAT_COMPLETION_SETTINGS_READY',
     'TEXT_COMPLETION_SETTINGS_READY',

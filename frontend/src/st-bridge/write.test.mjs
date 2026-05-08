@@ -601,3 +601,104 @@ test('assistantTargetMatches rejects a mismatched old anchor when the live swipe
         ],
     }, 'new-anchor'), false);
 });
+
+test('applyAcceptedOutput stamps retryMobileTargetVersion on the live message after successful apply', async () => {
+    const chat = [
+        { is_user: true, mes: 'User turn', extra: {} },
+        {
+            is_user: false,
+            mes: 'Native reply',
+            swipe_id: 0,
+            swipes: ['Native reply'],
+            swipe_info: [{ send_date: 't0', extra: { retryMobileAssistantAnchorId: ANCHOR_ID } }],
+            extra: { retryMobileAssistantAnchorId: ANCHOR_ID },
+        },
+    ];
+    const { teardown } = installFakeStEnvironment({ chat });
+    try {
+        const status = {
+            jobId: 'job-ver',
+            targetAssistantAnchorId: ANCHOR_ID,
+            targetMessageVersion: 2,
+            chatIdentity: CHAT_IDENTITY,
+            targetMessage: {
+                swipes: ['Native reply', 'Retry swipe 1'],
+                extra: { retryMobileAssistantAnchorId: ANCHOR_ID },
+            },
+        };
+        const result = await applyAcceptedOutput({ chatIdentity: CHAT_IDENTITY, status });
+        assert.equal(result.ok, true);
+        const lastMessage = chat[chat.length - 1];
+        assert.equal(lastMessage.extra.retryMobileTargetVersion, 2, 'version stamped after apply');
+    } finally {
+        teardown();
+    }
+});
+
+test('applyAcceptedOutput returns client_target_version_drift when live version is more than one write behind', async () => {
+    // Live message has been previously stamped at version 1 (first apply succeeded),
+    // but backend now reports version 3 (two backend writes done). Since liveVersion(1)
+    // < targetMessageVersion(3) - 1 = 2, the gap indicates mid-run drift.
+    const chat = [
+        { is_user: true, mes: 'User turn', extra: {} },
+        {
+            is_user: false,
+            mes: 'Native reply',
+            swipe_id: 0,
+            swipes: ['Native reply'],
+            swipe_info: [{ send_date: 't0', extra: { retryMobileAssistantAnchorId: ANCHOR_ID } }],
+            extra: { retryMobileAssistantAnchorId: ANCHOR_ID, retryMobileTargetVersion: 1 },
+        },
+    ];
+    const { teardown } = installFakeStEnvironment({ chat });
+    try {
+        const status = {
+            jobId: 'job-drift',
+            targetAssistantAnchorId: ANCHOR_ID,
+            targetMessageVersion: 3,
+            chatIdentity: CHAT_IDENTITY,
+            targetMessage: {
+                swipes: ['Native reply', 'Retry swipe 1', 'Retry swipe 2'],
+                extra: { retryMobileAssistantAnchorId: ANCHOR_ID },
+            },
+        };
+        const result = await applyAcceptedOutput({ chatIdentity: CHAT_IDENTITY, status });
+        assert.equal(result.ok, false);
+        assert.equal(result.recoveryRequired, true);
+        assert.equal(result.error?.code, 'client_target_version_drift');
+    } finally {
+        teardown();
+    }
+});
+
+test('applyAcceptedOutput does not flag version drift when gap is exactly one (normal next-write case)', async () => {
+    // liveVersion = 1, targetMessageVersion = 2: gap is exactly 1, this is normal
+    const chat = [
+        { is_user: true, mes: 'User turn', extra: {} },
+        {
+            is_user: false,
+            mes: 'Native reply',
+            swipe_id: 0,
+            swipes: ['Native reply'],
+            swipe_info: [{ send_date: 't0', extra: { retryMobileAssistantAnchorId: ANCHOR_ID } }],
+            extra: { retryMobileAssistantAnchorId: ANCHOR_ID, retryMobileTargetVersion: 1 },
+        },
+    ];
+    const { teardown } = installFakeStEnvironment({ chat });
+    try {
+        const status = {
+            jobId: 'job-normal-gap',
+            targetAssistantAnchorId: ANCHOR_ID,
+            targetMessageVersion: 2,
+            chatIdentity: CHAT_IDENTITY,
+            targetMessage: {
+                swipes: ['Native reply', 'Retry swipe 1'],
+                extra: { retryMobileAssistantAnchorId: ANCHOR_ID },
+            },
+        };
+        const result = await applyAcceptedOutput({ chatIdentity: CHAT_IDENTITY, status });
+        assert.equal(result.ok, true, 'gap of exactly 1 is the normal apply case, not drift');
+    } finally {
+        teardown();
+    }
+});

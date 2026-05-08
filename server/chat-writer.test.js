@@ -123,6 +123,49 @@ test('recovery becomes ambiguous when the live chat has fewer tagged swipes than
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
 });
 
+test('recovery adopts liveCeiling when disk has more tagged swipes than the snapshot floor (partial recovery)', () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-recovery-ceil-'));
+    const directories = createDirectories(sandboxRoot);
+    const chatPath = path.join(directories.chats, 'hero', 'session-1.jsonl');
+    // Disk has 2 tagged swipes; snapshot only recorded 1 (backend restarted mid-run)
+    writeJsonl(chatPath, [
+        {
+            chat_metadata: {
+                integrity: 'integrity-a',
+            },
+        },
+        {
+            name: 'You',
+            is_user: true,
+            mes: 'Hello there',
+        },
+        {
+            name: 'Hero',
+            is_user: false,
+            mes: 'Second swipe',
+            swipe_info: [
+                {
+                    extra: { retryMobileJobId: 'job-1' },
+                },
+                {
+                    extra: { retryMobileJobId: 'job-1' },
+                },
+            ],
+        },
+    ]);
+
+    const result = inspectRecoverySnapshot(createJob(directories, {
+        acceptedCount: 1,
+        targetAcceptedCount: 3,
+    }));
+    assert.equal(result.reason, 'partial_on_recovery', 'partial recovery when liveCeiling > persistedFloor but not yet at target');
+    assert.equal(result.floor, 1);
+    assert.equal(result.ceiling, 2);
+    assert.equal(result.acceptedCount, 2, 'resolvedAcceptedCount adopts the higher liveCeiling');
+
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+});
+
 test('appending an accepted swipe preserves the currently selected swipe', () => {
     const message = {
         mes: 'Current swipe',

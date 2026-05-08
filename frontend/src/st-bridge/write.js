@@ -93,6 +93,22 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
+    // Detect structural drift: if we've applied before (liveVersion > 0) but we're
+    // more than one backend write behind (targetMessageVersion > liveVersion + 1),
+    // the live message content may have drifted (e.g. user-edited swipe). Force
+    // a recovery reconcile rather than silently patching on a stale base.
+    const liveVersion = Number(lastMessage?.extra?.retryMobileTargetVersion) || 0;
+    if (liveVersion > 0 && targetMessageVersion > 0 && liveVersion < targetMessageVersion - 1) {
+        return {
+            ok: false,
+            recoveryRequired: true,
+            error: createStructuredError(
+                'client_target_version_drift',
+                'Retry Mobile detected a version gap on the live assistant turn indicating mid-run drift.',
+            ),
+        };
+    }
+
     const element = await waitForPatchedMessageElement(lastIndex, signal);
     if (!element) {
         return {
@@ -115,6 +131,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         .map((swipe) => String(swipe ?? ''));
 
     if (missingSwipes.length === 0) {
+        stampVersionOnLiveRow(lastMessage, targetMessageVersion);
         return {
             ok: true,
             jobId: String(status?.jobId || ''),
@@ -145,6 +162,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
             await context.saveReply({ type: 'swipe', getMessage: swipeText });
         }
 
+        stampVersionOnLiveRow(lastMessage, targetMessageVersion);
         return {
             ok: true,
             jobId: String(status?.jobId || ''),
@@ -190,6 +208,13 @@ function ensureSwipeShape(message) {
     if (!message.extra || typeof message.extra !== 'object') {
         message.extra = {};
     }
+}
+
+function stampVersionOnLiveRow(message, version) {
+    if (!message.extra || typeof message.extra !== 'object') {
+        message.extra = {};
+    }
+    message.extra.retryMobileTargetVersion = Number(version) || 0;
 }
 
 function stampAnchorOnLiveRow(message, anchorId) {

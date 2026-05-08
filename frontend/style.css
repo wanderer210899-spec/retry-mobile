@@ -843,3 +843,13 @@
         max-width: 100%;
     }
 }
+
+/* Lockdown: hide send button and swipe arrows independently of ST's body.dataset.generating.
+ * This guards against the timing window where ST clears its own flag before the
+ * MutationObserver can re-enforce it. */
+body[data-retry-mobile-lockdown] #send_but,
+body[data-retry-mobile-lockdown] .swipe_right,
+body[data-retry-mobile-lockdown] .swipe_left {
+    pointer-events: none;
+    opacity: 0.4;
+}

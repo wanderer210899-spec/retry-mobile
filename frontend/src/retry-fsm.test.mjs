@@ -1774,3 +1774,56 @@ test('jobFailed without auto-rearm into IDLE keeps terminalError so the user see
     assert.equal(failed.terminalError?.code, 'retry_job_failed');
     assert.equal(failed.lastTerminalResult?.outcome, 'failed');
 });
+
+// E8: Toggle mode is global and persistent across chat switches.
+// After a job completes in chat A, the FSM re-arms into ARMED. When a generation
+// fires in chat B (different chatId), the FSM accepts the capture with the new
+// chat identity and intent.engaged remains true throughout.
+test('toggle mode: after job completes in chat A, capture in chat B starts a fresh job with engaged intent (E8)', async () => {
+    const { fsm, emitPolledStatus, getIntent } = createHarness({
+        initialIntent: {
+            mode: 'toggle',
+            engaged: true,
+            singleTarget: null,
+            settings: { targetAcceptedCount: 1, nativeGraceSeconds: 30 },
+        },
+    });
+
+    const chatA = { kind: 'character', chatId: 'chat-A', groupId: null };
+    const chatB = { kind: 'character', chatId: 'chat-B', groupId: null };
+    const targetA = { chatIdentity: chatA, assistantAnchorId: 'anchor-A' };
+    const targetB = { chatIdentity: chatB, assistantAnchorId: 'anchor-B' };
+
+    // Run a full job in chat A.
+    fsm.arm({ chatIdentity: chatA, intent: { mode: 'toggle' }, target: targetA });
+    assert.equal(fsm.getContext().state, RetryState.ARMED);
+
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity: chatA, userMessageText: 'hi' }, target: targetA });
+    fsm.jobStarted({ jobId: 'job-A', target: targetA });
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+
+    // Complete the job — FSM should re-arm in toggle mode.
+    await emitPolledStatus({ jobId: 'job-A', state: 'completed', targetMessageVersion: 1 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().state, RetryState.ARMED, 'toggle mode must re-arm after job completion');
+
+    // Intent must still be engaged after the job completes and re-arms.
+    assert.equal(getIntent().engaged, true, 'intent.engaged must remain true across the re-arm');
+    assert.equal(getIntent().mode, 'toggle');
+
+    // User switches to chat B and triggers a generation there.
+    // In real usage, the capture subscriber passes chatIdentity from the live ST context.
+    fsm.capture({ chatIdentity: chatB, request: { messages: ['hello'] }, fingerprint: { chatIdentity: chatB, userMessageText: 'hello' }, target: targetB });
+    assert.equal(fsm.getContext().state, RetryState.CAPTURING, 'FSM must enter CAPTURING in chat B');
+
+    // Job starts in chat B.
+    fsm.jobStarted({ jobId: 'job-B', chatIdentity: chatB, target: targetB });
+    const runningCtx = fsm.getContext();
+    assert.equal(runningCtx.state, RetryState.RUNNING);
+    assert.equal(runningCtx.chatIdentity?.chatId, 'chat-B', 'RUNNING job must be bound to chat B');
+    assert.equal(runningCtx.jobId, 'job-B');
+
+    // Intent stays engaged throughout.
+    assert.equal(getIntent().engaged, true, 'intent.engaged must remain true in chat B run');
+    assert.equal(getIntent().mode, 'toggle');
+});

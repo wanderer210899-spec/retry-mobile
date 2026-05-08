@@ -626,3 +626,348 @@ test('resolveNativeAttempt marks pre-existing progress as resolved without repla
     assert.equal(job.nativeAttemptResolved, true);
     assert.equal(job.attemptLog.length, 0);
 });
+
+function buildRunJobNativeBase(overrides = {}) {
+    const now = new Date().toISOString();
+    return {
+        jobId: 'job-runjob-native-test',
+        runId: 'run-runjob-native-test',
+        state: 'running',
+        phase: 'native_confirmed',
+        createdAt: now,
+        updatedAt: now,
+        nativeState: 'confirmed',
+        nativeAttemptResolved: false,
+        recoveryMode: 'top_up_existing',
+        acceptedCount: 0,
+        targetAcceptedCount: 1,
+        attemptCount: 0,
+        maxAttempts: 3,
+        acceptedResults: [],
+        attemptLog: [],
+        targetMessage: {
+            mes: 'A long enough native reply to pass character validation easily.',
+            swipes: ['A long enough native reply to pass character validation easily.'],
+            swipe_id: 0,
+            extra: {},
+        },
+        runConfig: {
+            validationMode: 'characters',
+            minCharacters: 10,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+        capturedRequest: { prompt: 'hello' },
+        jobController: new AbortController(),
+        ...overrides,
+    };
+}
+
+test('runJob goal=1 native-confirmed-accepted: completes without any backend fetch', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ text: 'backend result' }] }); } };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-accept-goal1-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-native-accept-goal1',
+        targetAcceptedCount: 1,
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null });
+
+        assert.equal(job.state, 'completed');
+        assert.equal(job.acceptedCount, 1);
+        assert.equal(job.attemptCount, 1);
+        assert.equal(job.nativeAttemptResolved, true);
+        assert.equal(fetchCalls.length, 0, 'no backend fetch when native accepted meets goal=1');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('runJob goal=1 native-confirmed-rejected at maxAttempts=1: sets replace_rejected_native and fails', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return { ok: true, status: 200, async text() { return JSON.stringify({ choices: [{ text: 'backend result' }] }); } };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-reject-goal1-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-native-reject-goal1',
+        targetAcceptedCount: 1,
+        maxAttempts: 1,
+        targetMessage: {
+            mes: 'short',
+            swipes: ['short'],
+            swipe_id: 0,
+            extra: {},
+        },
+        runConfig: {
+            validationMode: 'characters',
+            minCharacters: 50,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null });
+
+        assert.equal(job.state, 'failed');
+        assert.equal(job.acceptedCount, 0);
+        assert.equal(job.attemptCount, 1);
+        assert.equal(job.nativeAttemptResolved, true);
+        assert.equal(job.recoveryMode, 'replace_rejected_native');
+        assert.equal(fetchCalls.length, 0, 'no backend fetch — maxAttempts exhausted after native rejection');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('runJob goal=2 native-confirmed-accepted: enters backend retry loop for second accepted result', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify({ choices: [{ text: 'Backend retry result long enough to be accepted by validation.' }] }); },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-accept-goal2-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-native-accept-goal2',
+        targetAcceptedCount: 2,
+        maxAttempts: 3,
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        // writeAcceptedResult will throw (no chat file on disk) — swallow and inspect intermediate state
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }).catch(() => {});
+
+        assert.equal(job.nativeAttemptResolved, true);
+        assert.equal(job.acceptedResults.length >= 1, true, 'native result was counted before write failure');
+        assert.equal(job.acceptedResults[0].source, 'native');
+        assert.equal(job.attemptCount >= 2, true, 'at least one backend retry was attempted after native accepted');
+        assert.equal(fetchCalls.length >= 1, true, 'backend fetch was called for the retry loop');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('runJob goal=2 native-confirmed-rejected: enters backend retry loop with replace_rejected_native mode', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify({ choices: [{ text: 'Backend retry result long enough to be accepted by validation.' }] }); },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-reject-goal2-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-native-reject-goal2',
+        targetAcceptedCount: 2,
+        maxAttempts: 4,
+        targetMessage: {
+            mes: 'short',
+            swipes: ['short'],
+            swipe_id: 0,
+            extra: {},
+        },
+        runConfig: {
+            validationMode: 'characters',
+            minCharacters: 50,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        // writeAcceptedResult throws (no chat file) once backend accepts — swallow and inspect
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }).catch(() => {});
+
+        assert.equal(job.nativeAttemptResolved, true, 'native attempt was resolved');
+        assert.equal(job.recoveryMode, 'replace_rejected_native', 'recovery mode set to overwrite rejected native');
+        assert.equal(job.attemptCount >= 2, true, 'at least one backend retry was attempted after native rejection');
+        assert.equal(fetchCalls.length >= 1, true, 'backend fetch was called for the retry loop');
+        assert.equal(job.acceptedResults.filter((r) => r.source === 'native').length, 0, 'rejected native is not in acceptedResults');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('runJob goal=3 native-confirmed-accepted: counts native as first, enters backend loop for remaining 2', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify({ choices: [{ text: 'Backend retry result long enough to be accepted by validation.' }] }); },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-accept-goal3-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-native-accept-goal3',
+        targetAcceptedCount: 3,
+        maxAttempts: 5,
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }).catch(() => {});
+
+        assert.equal(job.nativeAttemptResolved, true, 'native attempt was resolved');
+        assert.equal(job.acceptedResults.length >= 1, true, 'native result counted before write failure');
+        assert.equal(job.acceptedResults[0].source, 'native', 'first accepted result source is native');
+        assert.equal(job.acceptedCount >= 1, true, 'acceptedCount includes native');
+        assert.equal(fetchCalls.length >= 1, true, 'backend fetch was called for remaining goal');
+        assert.equal(job.attemptCount >= 2, true, 'at least one backend retry attempt after native');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('runJob goal=3 native-confirmed-rejected: enters backend retry loop, native not in acceptedResults', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify({ choices: [{ text: 'Backend retry result long enough to be accepted by validation.' }] }); },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-reject-goal3-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-native-reject-goal3',
+        targetAcceptedCount: 3,
+        maxAttempts: 5,
+        targetMessage: {
+            mes: 'short',
+            swipes: ['short'],
+            swipe_id: 0,
+            extra: {},
+        },
+        runConfig: {
+            validationMode: 'characters',
+            minCharacters: 50,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }).catch(() => {});
+
+        assert.equal(job.nativeAttemptResolved, true, 'native attempt was resolved');
+        assert.equal(job.recoveryMode, 'replace_rejected_native', 'recovery mode set to overwrite rejected native for goal=3');
+        assert.equal(fetchCalls.length >= 1, true, 'backend fetch called after native rejection');
+        assert.equal(job.acceptedResults.filter((r) => r.source === 'native').length, 0, 'rejected native not in acceptedResults');
+        assert.equal(job.attemptCount >= 2, true, 'attemptCount covers native + at least one retry');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
+test('runJob mid-run rejected attempt does not increment acceptedCount', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    let backendCallCount = 0;
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        backendCallCount++;
+        // First backend call returns short text (rejected), second returns long text (accepted, write will throw)
+        const text = backendCallCount === 1
+            ? 'short'
+            : 'Backend retry result long enough to be accepted by validation.';
+        return {
+            ok: true,
+            status: 200,
+            async text() { return JSON.stringify({ choices: [{ text }] }); },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-midrun-reject-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-midrun-reject',
+        targetAcceptedCount: 2,
+        maxAttempts: 5,
+        runConfig: {
+            validationMode: 'characters',
+            minCharacters: 50,
+            minWords: 0,
+            minTokens: 0,
+            allowHeuristicTokenFallback: false,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        // Native accepted (long enough by default), then 1 rejected backend retry, then 1 accepted backend retry (write throws)
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }).catch(() => {});
+
+        assert.equal(job.nativeAttemptResolved, true, 'native resolved');
+        assert.equal(job.acceptedResults[0].source, 'native', 'native counted as first accepted result');
+        assert.equal(job.acceptedCount, 1, 'rejected mid-run retry did not increment acceptedCount');
+        assert.equal(backendCallCount >= 2, true, 'at least one rejected retry + one accepted retry were attempted');
+        const rejectedEntries = job.attemptLog.filter((e) => e.outcome === 'rejected');
+        assert.equal(rejectedEntries.length >= 1, true, 'at least one rejected attempt logged');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});

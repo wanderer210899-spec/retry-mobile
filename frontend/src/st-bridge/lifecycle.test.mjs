@@ -450,3 +450,88 @@ test('waitForNativeCompletion confirms live chat instead of timing out when gene
         globalThis.document = originalDocument;
     }
 });
+
+// E4: GENERATION_ENDED alone (no CHARACTER_MESSAGE_RENDERED) must be sufficient to confirm native completion.
+// This covers streaming providers where CHARACTER_MESSAGE_RENDERED may fire asynchronously or out-of-order,
+// since GENERATION_ENDED is always emitted at the end of any generation path.
+test('waitForNativeCompletion confirms via GENERATION_ENDED alone when CHARACTER_MESSAGE_RENDERED never fires (E4)', async () => {
+    const originalWindow = globalThis.window;
+    const originalDocument = globalThis.document;
+
+    const handlers = new Map();
+    const eventSource = {
+        on(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            bucket.push(handler);
+            handlers.set(eventName, bucket);
+        },
+        removeListener(eventName, handler) {
+            const bucket = handlers.get(eventName) || [];
+            handlers.set(eventName, bucket.filter((h) => h !== handler));
+        },
+        emit(eventName, ...args) {
+            const bucket = handlers.get(eventName) || [];
+            for (const handler of [...bucket]) handler(...args);
+        },
+    };
+
+    const context = {
+        chatId: 'chat-e4-streaming',
+        groupId: null,
+        characterId: null,
+        characters: [],
+        name2: 'Iris',
+        getCurrentChatId() { return 'chat-e4-streaming'; },
+        chat: [
+            { is_user: true, mes: 'Hello.' },
+            { is_user: false, mes: 'Streaming native reply.', swipes: ['Streaming native reply.'], swipe_id: 0 },
+        ],
+        eventTypes: {
+            GENERATION_ENDED: 'generation_ended',
+            CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
+            GENERATION_STOPPED: 'generation_stopped',
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_DELETED: 'chat_deleted',
+        },
+        eventSource,
+    };
+
+    globalThis.window = {
+        SillyTavern: { getContext() { return context; } },
+        setTimeout,
+        clearTimeout,
+        setInterval,
+        clearInterval,
+    };
+    globalThis.document = {
+        visibilityState: 'visible',
+        body: { dataset: {} },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        addEventListener() {},
+        removeEventListener() {},
+    };
+
+    try {
+        const resultPromise = waitForNativeCompletion({
+            fingerprint: {
+                chatIdentity: { kind: 'character', chatId: 'chat-e4-streaming', groupId: null },
+                userIndexAtCapture: 0,
+                userMessageText: 'Hello.',
+                precedingMessageText: '',
+                messageIdHint: 0,
+            },
+            timeoutMs: 3000,
+        });
+
+        // Emit ONLY generation_ended — no character_message_rendered.
+        eventSource.emit('generation_ended', 1);
+
+        const result = await resultPromise;
+        assert.equal(result?.outcome, 'succeeded', 'must confirm without CHARACTER_MESSAGE_RENDERED');
+        assert.equal(result?.assistantMessageIndex, 1);
+    } finally {
+        globalThis.window = originalWindow;
+        globalThis.document = originalDocument;
+    }
+});

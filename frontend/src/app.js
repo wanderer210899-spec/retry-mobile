@@ -376,6 +376,16 @@ export async function bootRetryMobile() {
         }
 
         try {
+            // Flush ST's chat to disk before posting frontend_confirmed.
+            // ST's saveReply/generation path is async; the .jsonl may not yet
+            // contain the native assistant turn when the backend's disk inspector
+            // runs. saveChat() is a best-effort pre-flush — the backend already
+            // retries with FRONTEND_CONFIRMED_PERSIST_DELAYS_MS, but flushing
+            // first reduces the chance of hitting those retries.
+            const stCtx = getContext();
+            if (typeof stCtx?.saveChat === 'function') {
+                try { await stCtx.saveChat(); } catch {}
+            }
             await backendPort.confirmNative(context.jobId, {
                 runId: context.runId,
                 assistantMessageIndex: result?.assistantMessageIndex ?? null,

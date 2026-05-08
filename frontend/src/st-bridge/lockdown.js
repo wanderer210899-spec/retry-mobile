@@ -47,6 +47,9 @@ export function createSessionLockdown({
                 return true;
             }
             active = true;
+            // Set our own lockdown marker on body independent of ST's body.dataset.generating.
+            // This makes the visual lockdown robust against ST clearing its own flag.
+            setLockdownClass(true);
             // Cooperate with ST's send-button mechanism: set body.dataset.generating
             // so ST's own CSS gates new sends, and call deactivateSendButtons() to
             // also hide swipe navigation and show the stop indicator.
@@ -63,6 +66,7 @@ export function createSessionLockdown({
             stopGeneratingObserver();
             // Restore ST's send UI: clear body.dataset.generating and show swipe buttons.
             getContext?.()?.activateSendButtons?.();
+            setLockdownClass(false);
             unbindListeners();
             return true;
         },
@@ -70,6 +74,18 @@ export function createSessionLockdown({
             return active;
         },
     };
+
+    function setLockdownClass(on) {
+        const body = documentRef.body ?? documentRef.querySelector?.('body');
+        if (!body || !body.dataset) {
+            return;
+        }
+        if (on) {
+            body.dataset.retryMobileLockdown = 'true';
+        } else {
+            delete body.dataset.retryMobileLockdown;
+        }
+    }
 
     function startGeneratingObserver() {
         if (typeof MutationObserver === 'undefined') {
@@ -84,12 +100,16 @@ export function createSessionLockdown({
                 return;
             }
             // ST cleared body.dataset.generating (e.g. native generation completed during
-            // CAPTURING phase). Re-enforce while lockdown is still active.
+            // CAPTURING phase). Re-enforce both the cooperative flag and our own
+            // lockdown class while lockdown is still active.
             if (body.dataset.generating !== 'true') {
                 getContext?.()?.deactivateSendButtons?.();
             }
+            if (body.dataset.retryMobileLockdown !== 'true') {
+                setLockdownClass(true);
+            }
         });
-        generatingObserver.observe(body, { attributes: true, attributeFilter: ['data-generating'] });
+        generatingObserver.observe(body, { attributes: true, attributeFilter: ['data-generating', 'data-retry-mobile-lockdown'] });
     }
 
     function stopGeneratingObserver() {

@@ -266,3 +266,95 @@ test('click on .last_mes .swipe_right is NOT blocked when next swipe exists (no 
     assert.equal(calls.length, 0, 'navigating to an existing candidate must not be blocked');
     lockdown.disable();
 });
+
+// ─── parallel CSS lockdown class (E3) ─────────────────────────────────────────
+
+test('enable() sets body.dataset.retryMobileLockdown', () => {
+    const doc = makeDocument();
+    const calls = [];
+    const lockdown = createSessionLockdown({
+        getContext: makeContextWith({
+            deactivateSendButtons() { calls.push('deactivate'); },
+            activateSendButtons() { calls.push('activate'); },
+        }),
+        documentRef: doc,
+    });
+    lockdown.enable();
+    assert.equal(doc.body.dataset.retryMobileLockdown, 'true', 'enable() must set body.dataset.retryMobileLockdown');
+    lockdown.disable();
+});
+
+test('disable() removes body.dataset.retryMobileLockdown', () => {
+    const doc = makeDocument();
+    const lockdown = createSessionLockdown({
+        getContext: makeContextWith({
+            deactivateSendButtons() {},
+            activateSendButtons() {},
+        }),
+        documentRef: doc,
+    });
+    lockdown.enable();
+    lockdown.disable();
+    assert.equal(doc.body.dataset.retryMobileLockdown, undefined, 'disable() must remove body.dataset.retryMobileLockdown');
+});
+
+test('MutationObserver re-enforces retryMobileLockdown when ST clears body.dataset.generating during lockdown', () => {
+    let capturedObserver = null;
+    const bodyDataset = {};
+    const body = {
+        dataset: bodyDataset,
+        observe: undefined,
+    };
+    const doc = {
+        body,
+        addEventListener() {},
+        removeEventListener() {},
+        getElementById() { return null; },
+    };
+
+    const OriginalMutationObserver = globalThis.MutationObserver;
+    globalThis.MutationObserver = class {
+        constructor(cb) {
+            this._cb = cb;
+            capturedObserver = this;
+        }
+        observe(target, opts) {
+            this._target = target;
+            this._opts = opts;
+        }
+        disconnect() {
+            capturedObserver = null;
+        }
+    };
+
+    try {
+        const lockdown = createSessionLockdown({
+            getContext: makeContextWith({
+                deactivateSendButtons() {
+                    bodyDataset.generating = 'true';
+                },
+                activateSendButtons() {
+                    delete bodyDataset.generating;
+                },
+            }),
+            documentRef: doc,
+        });
+
+        lockdown.enable();
+        assert.equal(bodyDataset.retryMobileLockdown, 'true', 'retryMobileLockdown set on enable');
+
+        // Simulate ST clearing body.dataset.generating and retryMobileLockdown
+        delete bodyDataset.generating;
+        delete bodyDataset.retryMobileLockdown;
+
+        // Fire the observer
+        capturedObserver._cb([{ type: 'attributes' }]);
+
+        assert.equal(bodyDataset.retryMobileLockdown, 'true', 'retryMobileLockdown re-enforced after observer fires');
+
+        lockdown.disable();
+        assert.equal(bodyDataset.retryMobileLockdown, undefined, 'retryMobileLockdown cleared on disable');
+    } finally {
+        globalThis.MutationObserver = OriginalMutationObserver;
+    }
+});

@@ -169,6 +169,7 @@ export function createRestoreController({
     windowRef = globalThis.window || globalThis,
 }) {
     let chatChangedStop = null;
+    let chatLoadedStop = null;
     let restoreRetryCount = 0;
     let chatChangedDebounceHandle = 0;
 
@@ -437,13 +438,18 @@ export function createRestoreController({
     }
 
     function subscribeChatChangedRestore() {
-        if (!subscribeEvent || !eventTypes?.CHAT_CHANGED || chatChangedStop) {
+        if (!subscribeEvent || chatChangedStop) {
             return;
         }
-        chatChangedStop = subscribeEvent(eventTypes.CHAT_CHANGED, () => {
+        // Shared handler for CHAT_CHANGED (group / neutral chats) and CHAT_LOADED
+        // (character chat reloads). ST emits CHAT_LOADED from getChat() which is
+        // gated on this_chid != undefined, while CHAT_CHANGED fires in all other
+        // reload paths. Subscribing to both ensures a chat identity change is never
+        // silently missed during reloadCurrentChat().
+        const onChatIdentityChanged = () => {
             const liveChatIdentity = getCurrentChatIdentity?.() || getChatIdentity();
             if (wasInternalChatReloadRecentlyTriggered(liveChatIdentity)) {
-                void logEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED triggered by Retry Mobile refreshing the current chat.', null);
+                void logEvent?.('CHAT_IDENTITY_CHANGED_IGNORED', 'Ignored chat identity change triggered by Retry Mobile refreshing the current chat.', null);
                 return;
             }
             if (retryFsm.getState() !== RetryState.IDLE) {
@@ -459,7 +465,14 @@ export function createRestoreController({
                 chatChangedDebounceHandle = 0;
                 void restoreControlState();
             }, 400);
-        });
+        };
+
+        if (eventTypes?.CHAT_CHANGED) {
+            chatChangedStop = subscribeEvent(eventTypes.CHAT_CHANGED, onChatIdentityChanged);
+        }
+        if (eventTypes?.CHAT_LOADED) {
+            chatLoadedStop = subscribeEvent(eventTypes.CHAT_LOADED, onChatIdentityChanged);
+        }
     }
 
     function unsubscribeChatChangedRestore() {
@@ -467,6 +480,10 @@ export function createRestoreController({
             chatChangedStop();
         }
         chatChangedStop = null;
+        if (typeof chatLoadedStop === 'function') {
+            chatLoadedStop();
+        }
+        chatLoadedStop = null;
         if (chatChangedDebounceHandle) {
             windowRef.clearTimeout(chatChangedDebounceHandle);
             chatChangedDebounceHandle = 0;

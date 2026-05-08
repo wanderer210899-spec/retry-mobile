@@ -366,3 +366,90 @@ test('reconcileLatestForCurrentChat can force a guarded reload for manual Sync',
         'reconcileAfterRestore',
     ]);
 });
+
+// E5: restore controller subscribes to CHAT_LOADED (character chat reloads) in addition to CHAT_CHANGED.
+test('restore controller subscribes to CHAT_LOADED when available (E5)', async () => {
+    const subscribedNames = [];
+    let capturedHandler = null;
+    const controller = createRestoreController({
+        runtime: {},
+        retryFsm: { getState() { return 'idle'; } },
+        intentPort: {},
+        baseBackendPort: {},
+        stPort: {},
+        updateActiveJob() {},
+        render() {},
+        syncRuntimeFromFsm() {},
+        getCurrentChatIdentity() { return { kind: 'character', chatId: 'chat-1', groupId: null }; },
+        toStructuredError(e) { return e; },
+        subscribeEvent(eventName, callback) {
+            subscribedNames.push(eventName);
+            capturedHandler = callback;
+            return () => {};
+        },
+        eventTypes: {
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_LOADED: 'chat_loaded',
+        },
+    });
+
+    controller.subscribeChatChangedRestore();
+    assert.ok(subscribedNames.includes('chat_changed'), 'must subscribe to CHAT_CHANGED');
+    assert.ok(subscribedNames.includes('chat_loaded'), 'must subscribe to CHAT_LOADED');
+    assert.equal(typeof capturedHandler, 'function');
+});
+
+test('restore controller CHAT_LOADED fires same handler as CHAT_CHANGED (E5)', async () => {
+    const handlers = {};
+    const controller = createRestoreController({
+        runtime: {},
+        retryFsm: { getState() { return 'idle'; } },
+        intentPort: {},
+        baseBackendPort: {},
+        stPort: {},
+        updateActiveJob() {},
+        render() {},
+        syncRuntimeFromFsm() {},
+        getCurrentChatIdentity() { return { kind: 'character', chatId: 'chat-2', groupId: null }; },
+        toStructuredError(e) { return e; },
+        subscribeEvent(eventName, callback) {
+            handlers[eventName] = callback;
+            return () => {};
+        },
+        eventTypes: {
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_LOADED: 'chat_loaded',
+        },
+    });
+
+    controller.subscribeChatChangedRestore();
+    assert.equal(handlers['chat_changed'], handlers['chat_loaded'], 'CHAT_CHANGED and CHAT_LOADED must share the same handler function');
+});
+
+test('restore controller unsubscribes both CHAT_CHANGED and CHAT_LOADED (E5)', () => {
+    const stopped = [];
+    const controller = createRestoreController({
+        runtime: {},
+        retryFsm: { getState() { return 'idle'; } },
+        intentPort: {},
+        baseBackendPort: {},
+        stPort: {},
+        updateActiveJob() {},
+        render() {},
+        syncRuntimeFromFsm() {},
+        getCurrentChatIdentity() { return null; },
+        toStructuredError(e) { return e; },
+        subscribeEvent(eventName) {
+            return () => { stopped.push(eventName); };
+        },
+        eventTypes: {
+            CHAT_CHANGED: 'chat_changed',
+            CHAT_LOADED: 'chat_loaded',
+        },
+    });
+
+    controller.subscribeChatChangedRestore();
+    controller.unsubscribeChatChangedRestore();
+    assert.ok(stopped.includes('chat_changed'), 'must unsubscribe CHAT_CHANGED');
+    assert.ok(stopped.includes('chat_loaded'), 'must unsubscribe CHAT_LOADED');
+});
