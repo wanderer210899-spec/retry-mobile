@@ -970,7 +970,7 @@ function shouldTriggerHiddenTakeover(job) {
         return false;
     }
 
-    return (Date.now() - hiddenSinceMs) >= (Math.max(10, Number(job?.nativeGraceSeconds) || 30) * 1000);
+    return (Date.now() - hiddenSinceMs) >= getHiddenTakeoverDelayMs(job);
 }
 
 function shouldTriggerFrontendStaleTakeover(job) {
@@ -979,7 +979,24 @@ function shouldTriggerFrontendStaleTakeover(job) {
         return false;
     }
 
-    return (Date.now() - lastSeenMs) >= FRONTEND_STALE_FAILSAFE_MS;
+    return (Date.now() - lastSeenMs) >= getFrontendStaleTakeoverMs(job);
+}
+
+function getFrontendStaleTakeoverMs(job) {
+    if (String(job?.nativeState || '') === 'pending') {
+        return getHiddenTakeoverDelayMs(job);
+    }
+
+    return FRONTEND_STALE_FAILSAFE_MS;
+}
+
+function getHiddenTakeoverDelayMs(job) {
+    const configuredSeconds = Number(job?.nativeGraceSeconds);
+    if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
+        return Math.round(configuredSeconds) * 1000;
+    }
+
+    return 30 * 1000;
 }
 
 async function ensureNativeWriteReady(job, attemptRecord) {

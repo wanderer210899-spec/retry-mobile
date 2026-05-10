@@ -78,6 +78,7 @@ test('buildFingerprint captures the assistant slot baseline so the backend can r
     assert.equal(fingerprint.userMessageIndex, 0);
     assert.deepEqual(fingerprint.assistantBaseline, {
         messageText: 'Prior assistant reply',
+        swipes: ['Prior assistant reply', 'Earlier swipe'],
         swipeCount: 2,
         swipeId: 0,
         genFinished: '2026-05-03T22:00:00.000Z',

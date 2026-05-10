@@ -297,6 +297,53 @@ test('inspectNativeAssistantState returns target_pending when the assistant slot
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
 });
 
+test('inspectNativeAssistantState treats a persisted pre-swipe prefix as target_pending when capture saw a new empty swipe slot', () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-baseline-prefix-'));
+    const directories = createDirectories(sandboxRoot);
+    const chatPath = path.join(directories.chats, 'hero', 'session-1.jsonl');
+    writeJsonl(chatPath, [
+        {
+            chat_metadata: {
+                integrity: 'integrity-a',
+            },
+        },
+        {
+            name: 'You',
+            is_user: true,
+            mes: 'Hello there',
+        },
+        {
+            name: 'Hero',
+            is_user: false,
+            mes: 'Second prior swipe',
+            swipes: ['First prior swipe', 'Second prior swipe'],
+            swipe_id: 1,
+            gen_finished: '2026-05-03T22:00:00.000Z',
+        },
+    ]);
+
+    const job = createJob(directories, {
+        acceptedCount: 0,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: 'Hello there',
+            assistantBaseline: {
+                messageText: '',
+                swipes: ['First prior swipe', 'Second prior swipe', ''],
+                swipeCount: 3,
+                swipeId: 2,
+                genFinished: '2026-05-03T22:00:00.000Z',
+            },
+        },
+    });
+
+    const inspection = inspectNativeAssistantState(job);
+    assert.equal(inspection.kind, 'target_pending');
+    assert.equal(inspection.baselineMatch, true);
+
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+});
+
 test('inspectNativeAssistantState returns filled once the assistant slot diverges from the baseline', () => {
     const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-baseline-'));
     const directories = createDirectories(sandboxRoot);

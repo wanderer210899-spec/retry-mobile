@@ -4,6 +4,7 @@ import { createStructuredError } from './retry-error.js';
 import { writeSettings, readSettings } from './settings.js';
 import {
     createStPort,
+    getCapabilityReport,
     getChatIdentity,
     getContext,
     getEventTypes,
@@ -540,8 +541,13 @@ function getClientTimeZone() {
 }
 
 function getArmValidationError(runtime) {
-    if (!runtime.diagnostics?.startEnabled) {
-        const diagnosticsDetail = formatDiagnosticsBlock(runtime.diagnostics);
+    const diagnostics = runtime.diagnostics || buildSynchronousDiagnostics();
+    if (!runtime.diagnostics && diagnostics) {
+        runtime.diagnostics = diagnostics;
+    }
+
+    if (!diagnostics?.startEnabled) {
+        const diagnosticsDetail = formatDiagnosticsBlock(diagnostics);
         return createStructuredError(
             'capture_missing_payload',
             [
@@ -589,6 +595,19 @@ function getArmValidationError(runtime) {
     }
 
     return createStructuredError('validation_config_invalid', invalidMessage);
+}
+
+function buildSynchronousDiagnostics() {
+    const capabilities = getCapabilityReport(getContext());
+    return {
+        timestamp: new Date().toISOString(),
+        capabilities,
+        dryRun: null,
+        startEnabled: capabilities.hasContext
+            && capabilities.hasEventSource
+            && capabilities.hasGenerate
+            && capabilities.requiredEvents.every((item) => item.present),
+    };
 }
 
 function formatDiagnosticsBlock(diagnostics) {

@@ -74,6 +74,9 @@ function captureAssistantBaseline(chat, userMessageIndex) {
 
     return {
         messageText: String(candidate.mes ?? ''),
+        swipes: Array.isArray(candidate.swipes)
+            ? candidate.swipes.map((swipe) => String(swipe ?? ''))
+            : [],
         swipeCount: Array.isArray(candidate.swipes) ? candidate.swipes.length : 0,
         swipeId: Number.isFinite(Number(candidate.swipe_id)) ? Number(candidate.swipe_id) : 0,
         genFinished: typeof candidate.gen_finished === 'string' ? candidate.gen_finished : '',

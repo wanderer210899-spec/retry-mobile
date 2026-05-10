@@ -1037,6 +1037,77 @@ test('runJob retries transient provider failures before consuming a later succes
     }
 });
 
+test('runJob uses the configured hidden-tab takeover delay when pending native loses frontend polling', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return {
+            ok: true,
+            status: 200,
+            async text() {
+                return JSON.stringify({
+                    choices: [{
+                        text: 'Recovered backend response after the browser stopped polling during native generation.',
+                    }],
+                });
+            },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-configured-hidden-takeover-'));
+    const fixture = createRunJobChatFixture(tempRoot, {
+        chatId: 'configured-hidden-takeover',
+        integrity: 'integrity-configured-hidden-takeover',
+        userAnchorId: 'user-configured-hidden-takeover',
+    });
+    const configuredDelaySeconds = 12;
+    const job = buildRunJobNativeBase({
+        jobId: 'job-configured-hidden-takeover',
+        runId: 'run-configured-hidden-takeover',
+        phase: 'pending_native',
+        nativeState: 'pending',
+        nativeAttemptResolved: false,
+        recoveryMode: '',
+        targetMessage: null,
+        targetAcceptedCount: 1,
+        maxAttempts: 2,
+        nativeGraceSeconds: configuredDelaySeconds,
+        lastFrontendSeenAt: new Date(Date.now() - ((configuredDelaySeconds + 1) * 1000)).toISOString(),
+        frontendVisibilityState: 'visible',
+        targetUserAnchorId: fixture.userAnchorId,
+        targetAssistantAnchorId: 'assistant-configured-hidden-takeover',
+        capturedChatIntegrity: fixture.integrity,
+        capturedChatLength: 1,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: fixture.userMessageText,
+        },
+        chatIdentity: {
+            kind: 'character',
+            avatarUrl: 'hero.png',
+            chatId: fixture.chatId,
+            fileName: fixture.chatId,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: fixture.directories,
+        },
+    });
+
+    try {
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null });
+
+        assert.equal(job.nativeState, 'abandoned');
+        assert.equal(job.nativeResolutionCause, 'frontend_stale');
+        assert.equal(job.recoveryMode, 'create_missing_turn');
+        assert.equal(fetchCalls.length, 1);
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('runJob goal=1 native-confirmed-accepted: completes without any backend fetch', async () => {
     const originalFetch = global.fetch;
     const fetchCalls = [];

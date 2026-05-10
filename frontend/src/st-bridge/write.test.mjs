@@ -9,8 +9,8 @@ const WRITE_SOURCE_PATH = fileURLToPath(new URL('./write.js', import.meta.url));
 const WRITE_SOURCE = readFileSync(WRITE_SOURCE_PATH, 'utf8');
 
 // ---------------------------------------------------------------------------
-// Phase 3 source-shape assertions: the legacy saveReply+DOM-mutation path must be
-// gone; writes go through direct push + saveChat(). Static, no-runtime checks.
+// Source-shape assertions: the legacy saveReply/full-message mutation path must
+// be gone; writes go through direct push + saveChat() plus swipe-control refresh.
 // ---------------------------------------------------------------------------
 
 test('write.js does not splice the live chat array directly (chat[i] = patched is gone)', () => {
@@ -28,16 +28,11 @@ test('write.js does not splice the live chat array directly (chat[i] = patched i
     );
 });
 
-test('write.js does not call updateMessageBlock or swipe.refresh in the apply path', () => {
+test('write.js does not call updateMessageBlock in the apply path', () => {
     assert.equal(
         /\bupdateMessageBlock\s*\?\.\s*\(/.test(WRITE_SOURCE),
         false,
         'updateMessageBlock must not appear (Phase 3: direct push; no DOM re-render).',
-    );
-    assert.equal(
-        /\bswipe\s*\?\.\s*refresh\s*\?\.\s*\(/.test(WRITE_SOURCE),
-        false,
-        'swipe.refresh must not appear (Phase 3: no DOM re-render on background append).',
     );
 });
 
@@ -58,12 +53,17 @@ test('write.js appends swipes directly and persists via context.saveChat (no sav
     assert.match(
         WRITE_SOURCE,
         /context\.saveChat\?\.\(\)/,
-        'Phase 3: applyAcceptedOutput must persist via saveChat() for a silent background append.',
+        'applyAcceptedOutput must persist via saveChat() for a silent background append.',
     );
     assert.match(
         WRITE_SOURCE,
         /lastMessage\.swipes\.push/,
-        'Phase 3: applyAcceptedOutput must push swipe text directly into the live array.',
+        'applyAcceptedOutput must push swipe text directly into the live array.',
+    );
+    assert.match(
+        WRITE_SOURCE,
+        /\bswipe\s*\?\.\s*refresh\s*\?\.\s*\(\s*true\s*\)/,
+        'applyAcceptedOutput must refresh ST swipe controls after appending so the live counter/navigation updates.',
     );
 });
 
@@ -214,7 +214,7 @@ test('applyAcceptedOutput appends missing backend swipes directly and calls save
         assert.equal(result.targetMessageVersion, 3);
         assert.equal(env.saveChatCalls.length, 1, 'saveChat called exactly once after all swipes are appended');
         assert.equal(env.updateMessageBlockCalls.length, 0, 'updateMessageBlock must not be called in the apply path');
-        assert.equal(env.swipeRefreshCalls.length, 0, 'swipe.refresh must not be called in the apply path');
+        assert.deepEqual(env.swipeRefreshCalls, [[true]], 'swipe.refresh(true) updates the visible counter/navigation without changing swipe_id');
 
         const lastMessage = chat[chat.length - 1];
         assert.equal(lastMessage.swipes.length, 4, 'live chat now has all backend swipes');

@@ -1,9 +1,9 @@
 // st-bridge/write.js
 // Applies accepted-output writes onto the live SillyTavern chat host.
-// Phase 3: swipes are appended directly into the in-memory chat array and
-// persisted via context.saveChat() — no foreground saveReply, no DOM mutation,
-// no scroll, no MESSAGE_RECEIVED / CHARACTER_MESSAGE_RENDERED emission.
-// The user's current swipe position is never touched.
+// Swipes are appended directly into the in-memory chat array, persisted via
+// context.saveChat(), then ST's swipe controls are refreshed. This avoids the
+// foreground saveReply/addOneMessage path that scrolls and changes swipe_id,
+// while still keeping the visible swipe counter/navigation current.
 
 import { createStructuredError } from '../retry-error.js';
 import { getChatIdentity, getContext } from './internal/ctx.js';
@@ -155,6 +155,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
 
         // Persist the in-memory swipes array to disk via ST's normal save path.
         await context.saveChat?.();
+        context.swipe?.refresh?.(true);
 
         return {
             ok: true,

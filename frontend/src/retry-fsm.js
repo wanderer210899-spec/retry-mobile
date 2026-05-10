@@ -58,6 +58,7 @@ export function createRetryFsm({
 } = {}) {
     const abortedCaptureRuns = new Map();
     let flushInFlight = false;
+    let visibleApplyInFlight = false;
     let context = createInitialRetryContext({
         intent: readIntentSnapshot(intentPort, null),
     });
@@ -795,51 +796,69 @@ export function createRetryFsm({
             return;
         }
 
-        logEvent?.('reconcile_apply_started', `Applying accepted output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
-        Promise.resolve(stPort.reconciler?.apply?.(renderPayload))
-            .then((result) => {
-                if (!isState(context, RetryState.RUNNING)) {
-                    return;
-                }
-                if (result?.ok === false) {
-                    if (result?.recoveryRequired && context.jobId && !context.reloadAttempted) {
-                        const jobId = context.jobId;
-                        context = createContextForState({
-                            ...context,
-                            reloadAttempted: true,
-                        });
-                        logEvent?.('reconcile_apply_failed', `Apply failed [${result?.error?.code || 'unknown'}] — triggering chat reload.`, { errorCode: result?.error?.code, targetMessageVersion: nextVersion });
-                        Promise.resolve(stPort.guardedReload?.())
-                            .then(() => {
-                                logEvent?.('chat_reload_completed', 'Chat reload after apply failure completed.', null);
-                                return backendPort.pollStatus?.(jobId);
-                            })
-                            .then((fresh) => {
-                                if (!fresh || !isState(context, RetryState.RUNNING)) {
-                                    return;
-                                }
-                                return handlePollingStatus(fresh);
-                            })
-                            .catch(() => {});
-                        return;
-                    }
-                    logEvent?.('reconcile_apply_failed', `Apply failed [${result?.error?.code || 'unknown'}] — run error set.`, { errorCode: result?.error?.code, targetMessageVersion: nextVersion });
-                    handleVisibleApplyFailure(result?.error);
-                    return;
-                }
-                logEvent?.('reconcile_apply_succeeded', `Applied accepted output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
-                context = createContextForState({
-                    ...context,
-                    lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
-                    lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
-                    pendingVisibleRender: null,
-                    runError: null,
-                });
-            })
-            .catch((error) => {
-                logEvent?.('reconcile_apply_failed', `Apply threw an exception — run error set.`, { errorCode: error?.code, targetMessageVersion: nextVersion });
-                handleVisibleApplyFailure(error);
+        if (visibleApplyInFlight) {
+            const pendingVersion = numberOrNull(context.pendingVisibleRender?.status?.targetMessageVersion) || 0;
+            context = createContextForState({
+                ...context,
+                pendingVisibleRender: nextVersion >= pendingVersion
+                    ? clonePlain(renderPayload)
+                    : context.pendingVisibleRender,
+                runError: null,
             });
+            return;
+        }
+
+        visibleApplyInFlight = true;
+        logEvent?.('reconcile_apply_started', `Applying accepted output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
+        try {
+            const result = await stPort.reconciler?.apply?.(renderPayload);
+            if (!isState(context, RetryState.RUNNING)) {
+                return;
+            }
+            if (result?.ok === false) {
+                if (result?.recoveryRequired && context.jobId && !context.reloadAttempted) {
+                    const jobId = context.jobId;
+                    context = createContextForState({
+                        ...context,
+                        reloadAttempted: true,
+                    });
+                    logEvent?.('reconcile_apply_failed', `Apply failed [${result?.error?.code || 'unknown'}] — triggering chat reload.`, { errorCode: result?.error?.code, targetMessageVersion: nextVersion });
+                    try {
+                        await stPort.guardedReload?.();
+                        logEvent?.('chat_reload_completed', 'Chat reload after apply failure completed.', null);
+                        const fresh = await backendPort.pollStatus?.(jobId);
+                        if (fresh && isState(context, RetryState.RUNNING)) {
+                            await handlePollingStatus(fresh);
+                        }
+                    } catch {}
+                    return;
+                }
+                logEvent?.('reconcile_apply_failed', `Apply failed [${result?.error?.code || 'unknown'}] — run error set.`, { errorCode: result?.error?.code, targetMessageVersion: nextVersion });
+                handleVisibleApplyFailure(result?.error);
+                return;
+            }
+            logEvent?.('reconcile_apply_succeeded', `Applied accepted output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
+            const queuedRender = clonePlain(context.pendingVisibleRender);
+            const queuedVersion = numberOrNull(queuedRender?.status?.targetMessageVersion) || 0;
+            context = createContextForState({
+                ...context,
+                lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
+                lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), nextVersion),
+                pendingVisibleRender: queuedVersion > nextVersion ? queuedRender : null,
+                runError: null,
+            });
+        } catch (error) {
+            logEvent?.('reconcile_apply_failed', `Apply threw an exception — run error set.`, { errorCode: error?.code, targetMessageVersion: nextVersion });
+            handleVisibleApplyFailure(error);
+        } finally {
+            visibleApplyInFlight = false;
+            if (isState(context, RetryState.RUNNING)
+                && context.pendingVisibleRender
+                && stPort.isVisible?.() !== false
+                && stPort.isStreaming?.() !== true) {
+                await flushPendingVisibleRender('visible_apply_settled');
+            }
+        }
     }
 
     async function flushPendingVisibleRender(reason) {

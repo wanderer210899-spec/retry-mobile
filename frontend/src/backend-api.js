@@ -62,6 +62,7 @@ export async function reportFrontendPresence(jobId, payload) {
 
     return requestJson(`${BASE_URL}/frontend-presence/${encodeURIComponent(jobId)}`, {
         method: 'POST',
+        keepalive: true,
         body: JSON.stringify(payload),
     });
 }
@@ -196,6 +197,7 @@ export async function postJobLogEvent(jobId, payload) {
 
     return requestJson(`${BASE_URL}/log-event/${encodeURIComponent(jobId)}`, {
         method: 'POST',
+        keepalive: true,
         body: JSON.stringify(payload || {}),
     });
 }

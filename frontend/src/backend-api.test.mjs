@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { fetchJobStatus, startBackendJob } from './backend-api.js';
+import { fetchJobStatus, reportFrontendPresence, startBackendJob } from './backend-api.js';
 
 test('startBackendJob uses SillyTavern request headers when available', async (t) => {
     const originalFetch = global.fetch;
@@ -226,4 +226,41 @@ test('fetchJobStatus disables browser caching for polling requests', async (t) =
     assert.equal(seen[0].method, 'GET');
     assert.equal(seen[0].cache, 'no-store');
     assert.equal(seen[0].headers['X-CSRF-Token'], 'csrf-123');
+});
+
+test('reportFrontendPresence uses keepalive so hidden-tab updates can outlive backgrounding', async (t) => {
+    const originalFetch = global.fetch;
+    const originalGetRequestHeaders = global.getRequestHeaders;
+
+    const seen = [];
+    global.getRequestHeaders = () => ({
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': 'csrf-123',
+    });
+    global.fetch = async (_url, options = {}) => {
+        seen.push(options);
+        return new Response(JSON.stringify({
+            ok: true,
+            job: { jobId: 'job-presence', state: 'running' },
+        }), {
+            status: 200,
+            headers: {
+                'Content-Type': 'application/json',
+            },
+        });
+    };
+
+    t.after(() => {
+        global.fetch = originalFetch;
+        global.getRequestHeaders = originalGetRequestHeaders;
+    });
+
+    await reportFrontendPresence('job-presence', {
+        runId: 'run-presence',
+        visibilityState: 'hidden',
+    });
+
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].method, 'POST');
+    assert.equal(seen[0].keepalive, true);
 });

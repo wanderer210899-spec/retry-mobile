@@ -406,9 +406,39 @@ function assistantMatchesBaseline(job, message) {
     const currentSwipeCount = Array.isArray(message?.swipes) ? message.swipes.length : 0;
     const currentGenFinished = typeof message?.gen_finished === 'string' ? message.gen_finished : '';
 
-    return currentText === baselineText
+    if (currentText === baselineText
         && currentSwipeCount === baselineSwipeCount
-        && currentGenFinished === baselineGenFinished;
+        && currentGenFinished === baselineGenFinished) {
+        return true;
+    }
+
+    return assistantMatchesPreparedSwipeBaseline(baseline, message);
+}
+
+function assistantMatchesPreparedSwipeBaseline(baseline, message) {
+    const baselineSwipes = Array.isArray(baseline?.swipes)
+        ? baseline.swipes.map((swipe) => String(swipe ?? ''))
+        : [];
+    const currentSwipes = Array.isArray(message?.swipes)
+        ? message.swipes.map((swipe) => String(swipe ?? ''))
+        : [];
+
+    if (baselineSwipes.length === 0 || currentSwipes.length === 0) {
+        return false;
+    }
+    if (currentSwipes.length >= baselineSwipes.length) {
+        return false;
+    }
+
+    for (let index = 0; index < currentSwipes.length; index += 1) {
+        if (currentSwipes[index] !== baselineSwipes[index]) {
+            return false;
+        }
+    }
+
+    const preparedSwipes = baselineSwipes.slice(currentSwipes.length);
+    return preparedSwipes.length > 0
+        && preparedSwipes.every((swipe) => normalizeText(swipe) === '');
 }
 
 function ensureTargetUserMessage(job, chat) {

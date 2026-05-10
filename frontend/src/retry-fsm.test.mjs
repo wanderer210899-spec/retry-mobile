@@ -763,6 +763,40 @@ test('running poll status does not advance applied version when applyAcceptedOut
     assert.deepEqual(lastCall(calls, 'clearGeneratingIndicator')?.args[0], chatIdentity);
 });
 
+test('running poll status coalesces duplicate visible apply while the first patch is in flight', async () => {
+    const { fsm, calls, emitPolledStatus, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
+    let resolveApply;
+    const slowApply = new Promise((resolve) => {
+        resolveApply = resolve;
+    });
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({
+        request: { messages: ['hello'] },
+        fingerprint: { chatIdentity, userMessageText: 'hello' },
+        target,
+    });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    setApplyAcceptedOutputResult(slowApply);
+    const firstPoll = emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+    const duplicatePoll = emitPolledStatus({ jobId: 'job-1', state: 'running', targetMessageVersion: 2 });
+    await Promise.resolve();
+
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+
+    resolveApply({ ok: true });
+    await firstPoll;
+    await duplicatePoll;
+
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+    assert.equal(fsm.getContext().lastAppliedVersion, 2);
+    assert.equal(fsm.getContext().pendingVisibleRender, null);
+});
+
 test('running poll status triggers a single guarded reload on recoveryRequired apply failure (browser-resume disk mismatch)', async () => {
     const { fsm, calls, emitPolledStatus, setApplyAcceptedOutputResult, setPollStatusResult } = createHarness();
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };

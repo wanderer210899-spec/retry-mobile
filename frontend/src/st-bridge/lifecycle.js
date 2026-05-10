@@ -371,7 +371,7 @@ export function waitForNativeCompletion({
                     'Retry Mobile stopped waiting for native completion because the browser remained hidden during native completion.',
                     describeObservedEvents() || 'The tab remained hidden for more than the debounce window while native completion was pending.',
                 );
-            }, Math.min(timeoutMs, Math.max(10, Number(nativeGraceSeconds) || 30) * 1000));
+            }, Math.min(timeoutMs, resolveHiddenTakeoverDelayMs(nativeGraceSeconds)));
         }
 
         function clearHiddenTimeout() {
@@ -609,6 +609,15 @@ export function waitForNativeCompletion({
 
 function delay(ms) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function resolveHiddenTakeoverDelayMs(nativeGraceSeconds) {
+    const configuredSeconds = Number(nativeGraceSeconds);
+    if (Number.isFinite(configuredSeconds) && configuredSeconds > 0) {
+        return Math.round(configuredSeconds) * 1000;
+    }
+
+    return 30 * 1000;
 }
 
 function normalizeMessageId(messageId) {
