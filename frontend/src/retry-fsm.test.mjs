@@ -39,8 +39,6 @@ function createHarness({
     let streaming = false;
     let applyAcceptedOutputResult = { ok: true };
     let applyAcceptedOutputError = null;
-    let flushPendingVisibleRenderResult = { ok: true };
-    let flushPendingVisibleRenderError = null;
     let intentState = {
         mode: initialIntent.mode || 'off',
         engaged: Boolean(initialIntent.engaged),
@@ -135,34 +133,12 @@ function createHarness({
                 calls.push({ port: 'st', method: 'reconciler.isActive', args: [] });
                 return reconcilerActive;
             },
-            queue(payload) {
-                calls.push({ port: 'st', method: 'queueVisibleRender', args: [payload] });
-                return payload;
-            },
-            applyStatus(payload) {
+            apply(payload) {
                 calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
                 if (applyAcceptedOutputError) {
                     return Promise.reject(applyAcceptedOutputError);
                 }
                 return Promise.resolve(applyAcceptedOutputResult);
-            },
-            applyTerminal(payload) {
-                calls.push({ port: 'st', method: 'applyTerminal', args: [payload] });
-                calls.push({ port: 'st', method: 'applyAcceptedOutput', args: [payload] });
-                if (applyAcceptedOutputError) {
-                    return Promise.reject(applyAcceptedOutputError);
-                }
-                if (applyAcceptedOutputResult?.ok === false) {
-                    calls.push({ port: 'st', method: 'guardedReload', args: [] });
-                }
-                return Promise.resolve(applyAcceptedOutputResult);
-            },
-            flushPending(payload) {
-                calls.push({ port: 'st', method: 'flushPendingVisibleRender', args: [payload] });
-                if (flushPendingVisibleRenderError) {
-                    return Promise.reject(flushPendingVisibleRenderError);
-                }
-                return Promise.resolve(flushPendingVisibleRenderResult);
             },
         },
     };
@@ -183,6 +159,9 @@ function createHarness({
         },
         stopPolling(pollingToken) {
             calls.push({ port: 'backend', method: 'stopPolling', args: [pollingToken] });
+        },
+        stopAllExcept(activeToken) {
+            calls.push({ port: 'backend', method: 'stopAllExcept', args: [activeToken] });
         },
         reportFrontendPresence(jobId, payload) {
             calls.push({ port: 'backend', method: 'reportFrontendPresence', args: [jobId, payload] });
@@ -239,10 +218,10 @@ function createHarness({
             applyAcceptedOutputError = nextError;
         },
         setFlushPendingVisibleRenderResult(nextResult) {
-            flushPendingVisibleRenderResult = nextResult;
+            applyAcceptedOutputResult = nextResult;
         },
         setFlushPendingVisibleRenderError(nextError) {
-            flushPendingVisibleRenderError = nextError;
+            applyAcceptedOutputError = nextError;
         },
         setPollStatusResult(nextResult) {
             pollStatusResult = nextResult;
@@ -727,7 +706,7 @@ test('streaming guard queues a visible pending render and flushes it once stream
     await Promise.resolve();
     await Promise.resolve();
 
-    assert.equal(calls.filter((entry) => entry.method === 'flushPendingVisibleRender').length >= 1, true);
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length >= 1, true);
     assert.equal(fsm.getContext().pendingVisibleRender, null);
     assert.equal(fsm.getContext().lastAppliedVersion >= 2, true);
 });
@@ -890,7 +869,7 @@ test('resume is an internal RUNNING self-transition that does not churn polling 
     assert.equal(fsm.getContext().pendingVisibleRender, null);
     assert.equal(calls.filter((entry) => entry.method === 'startPolling').length, pollingStartsBeforeResume);
     assert.equal(calls.filter((entry) => entry.method === 'setGeneratingIndicator').length, indicatorSetsBeforeResume);
-    assert.deepEqual(lastCall(calls, 'flushPendingVisibleRender')?.args[0], {
+    assert.deepEqual(lastCall(calls, 'applyAcceptedOutput')?.args[0], {
         targetVersion: 3,
     });
     assert.deepEqual(lastCall(calls, 'reportFrontendPresence')?.args, [
@@ -1026,7 +1005,7 @@ test('resume keeps pending renders queued while the tab is still hidden', () => 
     assert.deepEqual(resumed.pendingVisibleRender, {
         targetVersion: 4,
     });
-    assert.equal(calls.some((entry) => entry.method === 'flushPendingVisibleRender'), false);
+    assert.equal(calls.some((entry) => entry.method === 'applyAcceptedOutput'), false);
 });
 
 test('resume triggers immediate pollStatus when visible and no pendingVisibleRender is queued', async () => {
@@ -1632,9 +1611,9 @@ test('CURRENTLY FAILING (pre-fix): queued final render payload does not carry te
         targetMessageVersion: 1,
         status: 'done',
     });
-    const queuedCall = calls.filter((entry) => entry.method === 'queueVisibleRender').at(-1);
-    assert.equal(Boolean(queuedCall), true);
-    assert.equal(Object.prototype.hasOwnProperty.call(queuedCall.args[0], 'terminalOutcome'), false);
+    const queuedRender = fsm.getContext().pendingVisibleRender;
+    assert.equal(Boolean(queuedRender), true);
+    assert.equal(Object.prototype.hasOwnProperty.call(queuedRender, 'terminalOutcome'), false);
 });
 
 test('toast scope lifecycle resets at running entry and clears on terminal transition', () => {
@@ -1826,4 +1805,121 @@ test('toggle mode: after job completes in chat A, capture in chat B starts a fre
     // Intent stays engaged throughout.
     assert.equal(getIntent().engaged, true, 'intent.engaged must remain true in chat B run');
     assert.equal(getIntent().mode, 'toggle');
+});
+
+test('handlePollingStatus ignores a completed status whose jobId does not match the active job', async () => {
+    const { fsm, emitPolledStatus } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hello'] }, fingerprint: { chatIdentity, userMessageText: 'hello' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+    assert.equal(fsm.getContext().jobId, 'job-1');
+
+    await emitPolledStatus({ jobId: 'job-STALE', state: 'completed', targetMessageVersion: 0 });
+    await Promise.resolve();
+
+    assert.equal(fsm.getContext().state, RetryState.RUNNING, 'mismatched jobId must not transition FSM to terminal');
+    assert.equal(fsm.getContext().jobId, 'job-1');
+});
+
+test('stale completed status from a prior job does not affect a newly started job', async () => {
+    const { fsm, emitPolledStatus } = createHarness({
+        initialIntent: { mode: 'toggle', engaged: true, settings: { targetAcceptedCount: 2, nativeGraceSeconds: 30 } },
+    });
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-A', target });
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+
+    await emitPolledStatus({ jobId: 'job-A', state: 'completed', targetMessageVersion: 1 });
+    await Promise.resolve();
+    assert.equal(fsm.getContext().state, RetryState.ARMED, 'toggle mode must re-arm after job-A completes');
+
+    fsm.capture({ request: { messages: ['hello'] }, fingerprint: { chatIdentity, userMessageText: 'hello' }, target });
+    fsm.jobStarted({ jobId: 'job-B', target });
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+    assert.equal(fsm.getContext().jobId, 'job-B');
+
+    await emitPolledStatus({ jobId: 'job-A', state: 'completed', targetMessageVersion: 0 });
+    await Promise.resolve();
+
+    assert.equal(fsm.getContext().state, RetryState.RUNNING, 'stale job-A completed poll must not terminate job-B');
+    assert.equal(fsm.getContext().jobId, 'job-B');
+});
+
+test('enterRunning calls stopAllExcept with the newly allocated polling token', () => {
+    const { fsm, calls } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+    const stopAllExceptCall = lastCall(calls, 'stopAllExcept');
+    assert.ok(stopAllExceptCall, 'stopAllExcept must be called on enterRunning');
+    assert.equal(stopAllExceptCall.args[0], 'poll:job-1', 'stopAllExcept must receive the new polling token');
+});
+
+test('goal=1 native-accepted completion produces lastTerminalResult.kind === native_accepted', async () => {
+    const { fsm, emitPolledStatus } = createHarness({
+        initialIntent: {
+            mode: 'toggle',
+            engaged: true,
+            singleTarget: null,
+            settings: { targetAcceptedCount: 1, nativeGraceSeconds: 30 },
+        },
+    });
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    await emitPolledStatus({
+        jobId: 'job-1',
+        state: 'completed',
+        acceptedCount: 1,
+        targetAcceptedCount: 1,
+        targetMessageVersion: 0,
+    });
+
+    const ctx = fsm.getContext();
+    assert.equal(ctx.lastTerminalResult?.kind, 'native_accepted', 'goal=1 native-accepted must produce kind=native_accepted');
+});
+
+test('multi-attempt completion where output is written (targetMessageVersion > 0) produces lastTerminalResult.kind === completed', async () => {
+    const { fsm, emitPolledStatus } = createHarness({
+        initialIntent: {
+            mode: 'toggle',
+            engaged: true,
+            singleTarget: null,
+            settings: { targetAcceptedCount: 2, nativeGraceSeconds: 30 },
+        },
+    });
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    await emitPolledStatus({
+        jobId: 'job-1',
+        state: 'completed',
+        acceptedCount: 2,
+        targetAcceptedCount: 2,
+        targetMessageVersion: 2,
+    });
+
+    const ctx = fsm.getContext();
+    assert.equal(ctx.lastTerminalResult?.kind, 'completed', 'multi-attempt completion with written output must produce kind=completed');
 });

@@ -76,6 +76,7 @@ export function createRetryFsm({
         adoptStatus,
         resume,
         userStop,
+        observeBackendStatus,
     };
 
     function getState() {
@@ -255,6 +256,7 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
+            reloadAttempted: false,
             runError: null,
             lastTerminalResult: createTerminalResult('completed', payload, previous, null, now),
             terminalError: null,
@@ -307,6 +309,7 @@ export function createRetryFsm({
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
+            reloadAttempted: false,
             runError: null,
             lastTerminalResult: createTerminalResult('failed', payload, previous, normalizedError, now),
             // On auto-rearm (toggle/single mode pulls us back to ARMED) the
@@ -400,7 +403,7 @@ export function createRetryFsm({
             const pendingRender = clonePlain(context.pendingVisibleRender);
             const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
             logEvent?.('reconcile_flush_started', `Flushing pending render version ${pendingVersion} on page visible.`, { targetMessageVersion: pendingVersion });
-            Promise.resolve(stPort.reconciler?.flushPending?.(pendingRender))
+            Promise.resolve(stPort.reconciler?.apply?.(pendingRender))
                 .then(async (result) => {
                     if (!isState(context, RetryState.RUNNING)) {
                         return;
@@ -627,6 +630,9 @@ export function createRetryFsm({
     }
 
     function enterRunning(nextContext) {
+        if (context.pollingToken) {
+            backendPort.stopPolling?.(context.pollingToken);
+        }
         const nativeGraceSeconds = numberOrNull(nextContext.intent?.settings?.nativeGraceSeconds);
         const attemptTimeoutSeconds = numberOrNull(nextContext.intent?.settings?.attemptTimeoutSeconds);
         if (nextContext.captureFingerprint) {
@@ -646,6 +652,7 @@ export function createRetryFsm({
             (error) => handlePollingError(error),
             () => resolvePollingCadence(context, stPort.isVisible?.()),
         ) || null;
+        backendPort.stopAllExcept?.(pollingToken);
 
         backendPort.reportFrontendPresence?.(nextContext.jobId, {
             reason: 'running_entry',
@@ -761,8 +768,58 @@ export function createRetryFsm({
         return true;
     }
 
+    // Single render-strategy gate: called before any apply/queue decision.
+    // Returns 'queue' when the output must be deferred, 'apply' otherwise.
+    function decideRenderStrategy(ctx, port) {
+        if (port.isVisible?.() === false) {
+            return 'queue';
+        }
+        if (port.isStreaming?.() === true) {
+            return 'queue';
+        }
+        return 'apply';
+    }
+
+    // Public entry point for all backend status updates. Validates the status
+    // (jobId presence, valid state) and defensively lifts lockdown on terminal
+    // states before delegating to handlePollingStatus.
+    function observeBackendStatus(status) {
+        if (!status) {
+            return { accepted: false, reason: 'no_status' };
+        }
+
+        const statusJobId = stringOrNull(status.jobId);
+        if (!statusJobId) {
+            logEvent?.('status_ingest_rejected', 'Status has no job ID.', { reason: 'missing_job_id' });
+            return { accepted: false, reason: 'missing_job_id' };
+        }
+
+        const VALID_STATUS_STATES = new Set(['running', 'completed', 'failed', 'cancelled']);
+        const state = String(status.state || '').trim();
+        if (!VALID_STATUS_STATES.has(state)) {
+            logEvent?.('status_ingest_rejected', `Invalid status state "${state}".`, { state, reason: 'invalid_state' });
+            return { accepted: false, reason: 'invalid_state' };
+        }
+
+        // Defensive lockdown lift: when backend confirms terminal state, clear
+        // the lockdown immediately — do not wait for the FSM's jobCompleted
+        // transition, which depends on the render path completing first.
+        if (state !== 'running') {
+            stPort.setLockdown?.(false);
+        }
+
+        void handlePollingStatus(status);
+        return { accepted: true, reason: 'ok' };
+    }
+
     async function handlePollingStatus(status) {
         if (!isState(context, RetryState.RUNNING)) {
+            return;
+        }
+
+        const statusJobId = stringOrNull(status?.jobId);
+        if (statusJobId && statusJobId !== context.jobId) {
+            logEvent?.('polling_status_jobid_mismatch', `Ignored status for job ${statusJobId}; active job is ${context.jobId}.`, { statusJobId, contextJobId: context.jobId });
             return;
         }
 
@@ -828,27 +885,18 @@ export function createRetryFsm({
             chatIdentity: clonePlain(context.chatIdentity),
             status: clonePlain(status),
         };
-        if (stPort.isVisible?.() !== false && stPort.isStreaming?.() === true) {
-            const queued = stPort.reconciler?.queue?.(renderPayload) || renderPayload;
+        const strategy = decideRenderStrategy(context, stPort);
+        if (strategy === 'queue') {
             context = createContextForState({
                 ...context,
-                pendingVisibleRender: clonePlain(queued),
-                runError: null,
-            });
-            return;
-        }
-        if (stPort.isVisible?.() === false) {
-            const queued = stPort.reconciler?.queue?.(renderPayload) || renderPayload;
-            context = createContextForState({
-                ...context,
-                pendingVisibleRender: clonePlain(queued),
+                pendingVisibleRender: clonePlain(renderPayload),
                 runError: null,
             });
             return;
         }
 
         logEvent?.('reconcile_apply_started', `Applying accepted output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
-        Promise.resolve(stPort.reconciler?.applyStatus?.(renderPayload))
+        Promise.resolve(stPort.reconciler?.apply?.(renderPayload))
             .then((result) => {
                 if (!isState(context, RetryState.RUNNING)) {
                     return;
@@ -906,7 +954,7 @@ export function createRetryFsm({
         const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
         logEvent?.('reconcile_flush_started', `Flushing pending render version ${pendingVersion} (${reason}).`, { targetMessageVersion: pendingVersion });
         try {
-            const result = await stPort.reconciler?.flushPending?.(pendingRender);
+            const result = await stPort.reconciler?.apply?.(pendingRender);
             if (!isState(context, RetryState.RUNNING)) {
                 return;
             }
@@ -961,18 +1009,22 @@ export function createRetryFsm({
             status: clonePlain(status),
         };
 
-        if (stPort.isVisible?.() === false) {
-            const queued = stPort.reconciler?.queue?.(renderPayload) || renderPayload;
+        const strategy = decideRenderStrategy(context, stPort);
+        if (strategy === 'queue') {
+            if (stPort.isStreaming?.() === true) {
+                logEvent?.('reconcile_terminal_deferred', `Terminal output version ${nextVersion} deferred — native still streaming.`, { targetMessageVersion: nextVersion });
+            }
             context = createContextForState({
                 ...context,
-                pendingVisibleRender: clonePlain(queued),
+                lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
+                pendingVisibleRender: clonePlain(renderPayload),
             });
             return;
         }
 
         logEvent?.('reconcile_terminal_started', `Applying terminal output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
         try {
-            const result = await stPort.reconciler?.applyTerminal?.(renderPayload);
+            const result = await stPort.reconciler?.apply?.(renderPayload);
             if (!isState(context, RetryState.RUNNING)) {
                 return;
             }
@@ -1383,9 +1435,27 @@ function resolveTargetChatIdentity(context) {
     return context?.chatIdentity || null;
 }
 
+// Fallback: derive kind locally when the server doesn't supply it.
+// Prefer reading status.kind (added to serializeJob in server/state.js, B8).
+function resolveTerminalKind(outcome, status) {
+    if (outcome !== 'completed') {
+        return String(outcome || 'completed');
+    }
+    const accepted = Number(status?.acceptedCount || 0);
+    const version = Number(status?.targetMessageVersion || 0);
+    if (accepted > 0 && version === 0) {
+        return 'native_accepted';
+    }
+    return 'completed';
+}
+
 function createTerminalResult(outcome, payload, previous, error, now) {
+    const status = payload?.status;
+    const serverKind = typeof status?.kind === 'string' && status.kind ? status.kind : null;
+    const kind = serverKind || resolveTerminalKind(outcome, status);
     return {
         outcome: String(outcome || 'completed'),
+        kind,
         at: typeof now === 'function' ? now() : defaultNow(),
         runId: previous?.runId || null,
         jobId: stringOrNull(payload?.jobId) || previous?.jobId || null,

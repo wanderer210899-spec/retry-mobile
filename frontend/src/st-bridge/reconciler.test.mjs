@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createChatReconciler } from './reconciler.js';
 
-test('applyStatus forwards accepted-output payloads', async () => {
+test('apply forwards accepted-output payloads', async () => {
     const calls = [];
     const reconciler = createChatReconciler({
         async applyAcceptedOutputFn(payload) {
@@ -12,8 +12,7 @@ test('applyStatus forwards accepted-output payloads', async () => {
         },
     });
 
-    const result = await reconciler.applyStatus({
-        kind: 'accepted_output',
+    const result = await reconciler.apply({
         status: { targetMessageVersion: 3 },
     });
     assert.equal(result.ok, true);
@@ -21,18 +20,18 @@ test('applyStatus forwards accepted-output payloads', async () => {
     assert.equal(calls[0].status.targetMessageVersion, 3);
 });
 
-test('flushPending returns not-ok for empty payloads', async () => {
+test('apply returns not-ok for null payloads', async () => {
     const reconciler = createChatReconciler({
         async applyAcceptedOutputFn() {
             return { ok: true };
         },
     });
 
-    const result = await reconciler.flushPending(null);
+    const result = await reconciler.apply(null);
     assert.deepEqual(result, { ok: false });
 });
 
-test('applyTerminal does not reload on failed apply (FSM owns last-resort reload)', async () => {
+test('apply returns not-ok when applyAcceptedOutput fails (FSM owns last-resort reload)', async () => {
     const calls = [];
     const reconciler = createChatReconciler({
         async applyAcceptedOutputFn() {
@@ -40,8 +39,7 @@ test('applyTerminal does not reload on failed apply (FSM owns last-resort reload
         },
     });
 
-    const result = await reconciler.applyTerminal({
-        kind: 'accepted_output',
+    const result = await reconciler.apply({
         status: { state: 'completed' },
     });
     assert.equal(result.ok, false);

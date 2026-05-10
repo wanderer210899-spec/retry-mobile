@@ -47,6 +47,7 @@ export function createSessionLockdown({
                 return true;
             }
             active = true;
+            lastToastAt = 0;
             // Set our own lockdown marker on body independent of ST's body.dataset.generating.
             // This makes the visual lockdown robust against ST clearing its own flag.
             setLockdownClass(true);
@@ -147,98 +148,105 @@ export function createSessionLockdown({
             }
         };
 
-        touchStartHandler = (event) => {
-            const point = getEventPoint(event);
-            const element = toElement(event?.target);
-            if (!point || !element) {
-                return;
-            }
-            gesture.active = true;
-            gesture.startX = point.x;
-            gesture.startY = point.y;
-            gesture.startedOnLastMessage = Boolean(element.closest?.('.last_mes'));
-            gesture.pointerId = null;
-        };
+        // Use exactly one gesture-tracking family to avoid double-firing on devices
+        // that emit both touch and pointer events. PointerEvent API is preferred
+        // (modern, handles pointerId, works on desktop mouse and touch alike).
+        // Fall back to legacy touch events only when PointerEvent is not available.
+        const usePointerEvents = typeof documentRef.defaultView?.PointerEvent !== 'undefined';
 
-        touchEndHandler = (event) => {
-            if (!gesture.active) {
-                return;
-            }
-            const point = getEventPoint(event);
-            const element = toElement(event?.target);
-            const startX = gesture.startX;
-            const startY = gesture.startY;
-            const startedOnLastMessage = gesture.startedOnLastMessage;
-            gesture.active = false;
-            gesture.pointerId = null;
-            if (!point || !element) {
-                return;
-            }
-            if (!isOverswipeRightGesture(point, startX, startY, startedOnLastMessage)) {
-                return;
-            }
-            if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
-                return;
-            }
-            blockEvent(event);
-            emitBlockedToast({ source: 'blocked_swipe' });
-        };
+        if (usePointerEvents) {
+            pointerDownHandler = (event) => {
+                if (!event || typeof event !== 'object') {
+                    return;
+                }
+                const element = toElement(event?.target);
+                const point = getEventPoint(event);
+                if (!element || !point) {
+                    return;
+                }
+                gesture.active = true;
+                gesture.startX = point.x;
+                gesture.startY = point.y;
+                gesture.startedOnLastMessage = Boolean(element.closest?.('.last_mes'));
+                gesture.pointerId = typeof event.pointerId === 'number' ? event.pointerId : null;
+            };
 
-        pointerDownHandler = (event) => {
-            if (!event || typeof event !== 'object') {
-                return;
-            }
-            const element = toElement(event?.target);
-            const point = getEventPoint(event);
-            if (!element || !point) {
-                return;
-            }
-            gesture.active = true;
-            gesture.startX = point.x;
-            gesture.startY = point.y;
-            gesture.startedOnLastMessage = Boolean(element.closest?.('.last_mes'));
-            gesture.pointerId = typeof event.pointerId === 'number' ? event.pointerId : null;
-        };
+            pointerUpHandler = (event) => {
+                if (!gesture.active) {
+                    return;
+                }
+                if (gesture.pointerId != null
+                    && typeof event?.pointerId === 'number'
+                    && event.pointerId !== gesture.pointerId) {
+                    return;
+                }
+                const element = toElement(event?.target);
+                const point = getEventPoint(event);
+                const startX = gesture.startX;
+                const startY = gesture.startY;
+                const startedOnLastMessage = gesture.startedOnLastMessage;
+                gesture.active = false;
+                gesture.pointerId = null;
+                if (!element || !point) {
+                    return;
+                }
+                if (!isOverswipeRightGesture(point, startX, startY, startedOnLastMessage)) {
+                    return;
+                }
+                if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
+                    return;
+                }
+                blockEvent(event);
+                emitBlockedToast({ source: 'blocked_swipe' });
+            };
+        } else {
+            touchStartHandler = (event) => {
+                const point = getEventPoint(event);
+                const element = toElement(event?.target);
+                if (!point || !element) {
+                    return;
+                }
+                gesture.active = true;
+                gesture.startX = point.x;
+                gesture.startY = point.y;
+                gesture.startedOnLastMessage = Boolean(element.closest?.('.last_mes'));
+                gesture.pointerId = null;
+            };
 
-        pointerUpHandler = (event) => {
-            if (!gesture.active) {
-                return;
-            }
-            if (gesture.pointerId != null
-                && typeof event?.pointerId === 'number'
-                && event.pointerId !== gesture.pointerId) {
-                return;
-            }
-            const element = toElement(event?.target);
-            const point = getEventPoint(event);
-            const startX = gesture.startX;
-            const startY = gesture.startY;
-            const startedOnLastMessage = gesture.startedOnLastMessage;
-            gesture.active = false;
-            gesture.pointerId = null;
-            if (!element || !point) {
-                return;
-            }
-            if (!isOverswipeRightGesture(point, startX, startY, startedOnLastMessage)) {
-                return;
-            }
-            if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
-                return;
-            }
-            blockEvent(event);
-            emitBlockedToast({ source: 'blocked_swipe' });
-        };
+            touchEndHandler = (event) => {
+                if (!gesture.active) {
+                    return;
+                }
+                const point = getEventPoint(event);
+                const element = toElement(event?.target);
+                const startX = gesture.startX;
+                const startY = gesture.startY;
+                const startedOnLastMessage = gesture.startedOnLastMessage;
+                gesture.active = false;
+                gesture.pointerId = null;
+                if (!point || !element) {
+                    return;
+                }
+                if (!isOverswipeRightGesture(point, startX, startY, startedOnLastMessage)) {
+                    return;
+                }
+                if (!wouldLastMessageRightSwipeCauseGeneration(getContext?.())) {
+                    return;
+                }
+                blockEvent(event);
+                emitBlockedToast({ source: 'blocked_swipe' });
+            };
+        }
 
         documentRef.addEventListener?.('click', clickHandler, true);
         documentRef.addEventListener?.('keydown', keydownHandler, true);
-        // passive: true — these handlers only record gesture state, never call preventDefault().
-        documentRef.addEventListener?.('touchstart', touchStartHandler, { capture: true, passive: true });
-        // passive: false required — touchend/pointerup call preventDefault() to cancel overswipe generation.
-        documentRef.addEventListener?.('touchend', touchEndHandler, { capture: true, passive: false });
-        // passive: true — pointerdown only records start coords.
-        documentRef.addEventListener?.('pointerdown', pointerDownHandler, { capture: true, passive: true });
-        // passive: false required — pointerup calls preventDefault() to cancel overswipe generation.
-        documentRef.addEventListener?.('pointerup', pointerUpHandler, { capture: true, passive: false });
+        if (usePointerEvents) {
+            documentRef.addEventListener?.('pointerdown', pointerDownHandler, { capture: true, passive: true });
+            documentRef.addEventListener?.('pointerup', pointerUpHandler, { capture: true, passive: false });
+        } else {
+            documentRef.addEventListener?.('touchstart', touchStartHandler, { capture: true, passive: true });
+            documentRef.addEventListener?.('touchend', touchEndHandler, { capture: true, passive: false });
+        }
     }
 
     function unbindListeners() {

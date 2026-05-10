@@ -9,9 +9,8 @@ const WRITE_SOURCE_PATH = fileURLToPath(new URL('./write.js', import.meta.url));
 const WRITE_SOURCE = readFileSync(WRITE_SOURCE_PATH, 'utf8');
 
 // ---------------------------------------------------------------------------
-// Phase 2 source-shape assertions: the legacy chat[i] = patched + updateMessageBlock
-// path must be gone from write.js. These are static, no-runtime checks so they
-// survive future refactors that change the saveReply call site.
+// Phase 3 source-shape assertions: the legacy saveReply+DOM-mutation path must be
+// gone; writes go through direct push + saveChat(). Static, no-runtime checks.
 // ---------------------------------------------------------------------------
 
 test('write.js does not splice the live chat array directly (chat[i] = patched is gone)', () => {
@@ -25,7 +24,7 @@ test('write.js does not splice the live chat array directly (chat[i] = patched i
     assert.equal(
         directChatSplice.test(sourceWithoutComments),
         false,
-        'Phase 2 forbids direct chat[i] = patched mutation; saveReply must own swipe writes.',
+        'Phase 3 forbids direct chat[i] = patched mutation; direct push + saveChat() must own swipe writes.',
     );
 });
 
@@ -33,12 +32,12 @@ test('write.js does not call updateMessageBlock or swipe.refresh in the apply pa
     assert.equal(
         /\bupdateMessageBlock\s*\?\.\s*\(/.test(WRITE_SOURCE),
         false,
-        'updateMessageBlock should disappear in Phase 2 (saveReply re-renders via addOneMessage).',
+        'updateMessageBlock must not appear (Phase 3: direct push; no DOM re-render).',
     );
     assert.equal(
         /\bswipe\s*\?\.\s*refresh\s*\?\.\s*\(/.test(WRITE_SOURCE),
         false,
-        'swipe.refresh should disappear in Phase 2 (saveReply re-renders via addOneMessage).',
+        'swipe.refresh must not appear (Phase 3: no DOM re-render on background append).',
     );
 });
 
@@ -50,11 +49,21 @@ test('write.js drops the manual scroll-restore hack (addOneMessage handles scrol
     );
 });
 
-test('write.js routes accepted-output writes through context.saveReply({type: swipe})', () => {
+test('write.js appends swipes directly and persists via context.saveChat (no saveReply)', () => {
+    assert.doesNotMatch(
+        WRITE_SOURCE,
+        /context\.saveReply/,
+        'Phase 3: applyAcceptedOutput must not call saveReply (foreground API causes DOM mutation + scroll).',
+    );
     assert.match(
         WRITE_SOURCE,
-        /context\.saveReply\(\{\s*type:\s*['"]swipe['"]\s*,\s*getMessage:\s*swipeText\s*\}\s*\)/,
-        'applyAcceptedOutput must replay accepted text via saveReply({type: swipe, getMessage}).',
+        /context\.saveChat\?\.\(\)/,
+        'Phase 3: applyAcceptedOutput must persist via saveChat() for a silent background append.',
+    );
+    assert.match(
+        WRITE_SOURCE,
+        /lastMessage\.swipes\.push/,
+        'Phase 3: applyAcceptedOutput must push swipe text directly into the live array.',
     );
 });
 
@@ -102,7 +111,7 @@ function buildMessageElementHost(targetIndex) {
 }
 
 function installFakeStEnvironment({ chat, contextOverrides = {}, identity = CHAT_IDENTITY }) {
-    const saveReplyCalls = [];
+    const saveChatCalls = [];
     const updateMessageBlockCalls = [];
     const swipeRefreshCalls = [];
 
@@ -124,25 +133,8 @@ function installFakeStEnvironment({ chat, contextOverrides = {}, identity = CHAT
             MESSAGE_RECEIVED: 'MESSAGE_RECEIVED',
         },
         eventSource: { on() {}, removeListener() {} },
-        async saveReply(payload) {
-            saveReplyCalls.push(payload);
-            // Mirror SillyTavern's saveReply({type:swipe}) behavior: extend
-            // swipes array; if swipe_id == new last index, stamp mes/extra.
-            const lastMessage = context.chat[context.chat.length - 1];
-            if (!Array.isArray(lastMessage.swipes)) lastMessage.swipes = [];
-            if (!Array.isArray(lastMessage.swipe_info)) lastMessage.swipe_info = [];
-            lastMessage.swipes.length += 1;
-            if (lastMessage.swipe_id === lastMessage.swipes.length - 1) {
-                lastMessage.mes = String(payload?.getMessage ?? '');
-            } else {
-                lastMessage.mes = String(payload?.getMessage ?? '');
-            }
-            const swipeId = lastMessage.swipe_id;
-            lastMessage.swipes[swipeId] = lastMessage.mes;
-            lastMessage.swipe_info[swipeId] = {
-                send_date: 'now',
-                extra: structuredClone(lastMessage.extra || {}),
-            };
+        async saveChat() {
+            saveChatCalls.push({ swipesSnapshot: chat.map((m) => ({ swipes: m.swipes?.slice() })) });
         },
         updateMessageBlock(...args) {
             updateMessageBlockCalls.push(args);
@@ -165,7 +157,7 @@ function installFakeStEnvironment({ chat, contextOverrides = {}, identity = CHAT
 
     return {
         context,
-        saveReplyCalls,
+        saveChatCalls,
         updateMessageBlockCalls,
         swipeRefreshCalls,
         teardown() {
@@ -175,7 +167,7 @@ function installFakeStEnvironment({ chat, contextOverrides = {}, identity = CHAT
     };
 }
 
-test('applyAcceptedOutput replays each missing backend swipe through saveReply', async () => {
+test('applyAcceptedOutput appends missing backend swipes directly and calls saveChat once', async () => {
     const chat = [
         {
             is_user: true,
@@ -220,22 +212,18 @@ test('applyAcceptedOutput replays each missing backend swipe through saveReply',
 
         assert.equal(result.ok, true, 'apply should succeed when anchor matches');
         assert.equal(result.targetMessageVersion, 3);
-        assert.equal(env.saveReplyCalls.length, 3, 'one saveReply call per missing swipe');
-        assert.deepEqual(
-            env.saveReplyCalls.map((call) => call.type),
-            ['swipe', 'swipe', 'swipe'],
-            'every replay must use the swipe type',
-        );
-        assert.deepEqual(
-            env.saveReplyCalls.map((call) => call.getMessage),
-            ['Accepted retry 1', 'Accepted retry 2', 'Accepted retry 3'],
-            'replay must drain backend swipes in order from the first missing slot',
-        );
+        assert.equal(env.saveChatCalls.length, 1, 'saveChat called exactly once after all swipes are appended');
         assert.equal(env.updateMessageBlockCalls.length, 0, 'updateMessageBlock must not be called in the apply path');
         assert.equal(env.swipeRefreshCalls.length, 0, 'swipe.refresh must not be called in the apply path');
 
         const lastMessage = chat[chat.length - 1];
         assert.equal(lastMessage.swipes.length, 4, 'live chat now has all backend swipes');
+        assert.deepEqual(
+            lastMessage.swipes.slice(1),
+            ['Accepted retry 1', 'Accepted retry 2', 'Accepted retry 3'],
+            'backend swipes appended in order after the native seed',
+        );
+        assert.equal(lastMessage.swipe_id, 0, 'swipe_id is never advanced (user stays on their current swipe)');
         assert.equal(
             lastMessage.swipe_info[3].extra.retryMobileAssistantAnchorId,
             ANCHOR_ID,
@@ -285,13 +273,13 @@ test('applyAcceptedOutput is idempotent when live chat already matches backend s
 
         const result = await applyAcceptedOutput({ chatIdentity: CHAT_IDENTITY, status });
         assert.equal(result.ok, true);
-        assert.equal(env.saveReplyCalls.length, 0, 'no saveReply call when no missing swipes');
+        assert.equal(env.saveChatCalls.length, 0, 'no saveChat call when no missing swipes');
     } finally {
         env.teardown();
     }
 });
 
-test('applyAcceptedOutput stamps the anchor onto the unanchored native seed before the first replay', async () => {
+test('applyAcceptedOutput stamps the anchor onto the unanchored native seed before appending swipes', async () => {
     const chat = [
         { is_user: true, mes: 'User', extra: {} },
         {
@@ -327,11 +315,11 @@ test('applyAcceptedOutput stamps the anchor onto the unanchored native seed befo
 
         const result = await applyAcceptedOutput({ chatIdentity: CHAT_IDENTITY, status });
         assert.equal(result.ok, true);
-        assert.equal(env.saveReplyCalls.length, 1);
+        assert.equal(env.saveChatCalls.length, 1, 'saveChat called once to persist the appended swipe');
 
         const lastMessage = chat[chat.length - 1];
         assert.equal(lastMessage.extra.retryMobileAssistantAnchorId, ANCHOR_ID,
-            'row-level extra must carry the anchor before saveReply runs');
+            'row-level extra must carry the anchor before swipes are appended');
         assert.equal(lastMessage.swipe_info[0].extra.retryMobileAssistantAnchorId, ANCHOR_ID,
             'existing swipe_info[0] must be back-stamped with the anchor');
         assert.equal(lastMessage.swipe_info[1].extra.retryMobileAssistantAnchorId, ANCHOR_ID,
@@ -361,7 +349,7 @@ test('applyAcceptedOutput surfaces a client_chat_changed structured error when c
         assert.equal(result.ok, false);
         assert.equal(result.recoveryRequired, false, 'chat-changed errors are non-recoverable (user navigated away)');
         assert.equal(result.error.code, 'client_chat_changed');
-        assert.equal(env.saveReplyCalls.length, 0, 'must not call saveReply when chat identity drifts');
+        assert.equal(env.saveChatCalls.length, 0, 'must not call saveChat when chat identity drifts');
     } finally {
         env.teardown();
     }
@@ -407,40 +395,13 @@ test('applyAcceptedOutput surfaces client_anchor_mismatch when the live last row
         assert.equal(result.ok, false);
         assert.equal(result.recoveryRequired, true);
         assert.equal(result.error.code, 'client_anchor_mismatch');
-        assert.equal(env.saveReplyCalls.length, 0, 'must not call saveReply when anchor drifts');
+        assert.equal(env.saveChatCalls.length, 0, 'must not call saveChat when anchor drifts');
     } finally {
         env.teardown();
     }
 });
 
-test('applyAcceptedOutput surfaces client_save_reply_unavailable when ST does not expose saveReply', async () => {
-    const chat = [
-        { is_user: false, mes: 'Native', swipe_id: 0, swipes: ['Native'], swipe_info: [{ extra: {} }],
-          extra: { retryMobileAssistantAnchorId: ANCHOR_ID } },
-    ];
-    const env = installFakeStEnvironment({ chat, contextOverrides: { saveReply: undefined } });
-
-    try {
-
-        const result = await applyAcceptedOutput({
-            chatIdentity: CHAT_IDENTITY,
-            status: {
-                targetAssistantAnchorId: ANCHOR_ID,
-                targetMessageIndex: 0,
-                targetMessageVersion: 1,
-                targetMessage: { is_user: false, mes: 'Native', swipe_id: 0, swipes: ['Native', 'New'], swipe_info: [], extra: {} },
-            },
-        });
-
-        assert.equal(result.ok, false);
-        assert.equal(result.recoveryRequired, true);
-        assert.equal(result.error.code, 'client_save_reply_unavailable');
-    } finally {
-        env.teardown();
-    }
-});
-
-test('applyAcceptedOutput surfaces client_patch_failed when saveReply throws', async () => {
+test('applyAcceptedOutput surfaces client_patch_failed when saveChat throws', async () => {
     const chat = [
         { is_user: true, mes: 'U', extra: {} },
         {
@@ -456,8 +417,8 @@ test('applyAcceptedOutput surfaces client_patch_failed when saveReply throws', a
     const env = installFakeStEnvironment({
         chat,
         contextOverrides: {
-            async saveReply() {
-                throw new Error('simulated saveReply failure');
+            async saveChat() {
+                throw new Error('simulated saveChat failure');
             },
         },
     });
@@ -488,15 +449,15 @@ test('applyAcceptedOutput surfaces client_patch_failed when saveReply throws', a
         assert.equal(result.ok, false);
         assert.equal(result.recoveryRequired, true);
         assert.equal(result.error.code, 'client_patch_failed');
-        assert.match(result.error.message, /simulated saveReply failure/);
+        assert.match(result.error.message, /simulated saveChat failure/);
     } finally {
         env.teardown();
     }
 });
 
 // ---------------------------------------------------------------------------
-// Pure helper coverage retained from Phase 1 — assistantTargetMatches stays
-// the load-bearing anchor-verification gate that protects saveReply replay.
+// Pure helper coverage — assistantTargetMatches stays the load-bearing anchor-
+// verification gate that protects in-memory swipe appends.
 // ---------------------------------------------------------------------------
 
 test('assistantTargetMatches accepts a live turn that already carries the expected anchor', () => {

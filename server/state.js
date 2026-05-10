@@ -191,6 +191,21 @@ function updateJobLogState(job, patch = {}) {
     return job;
 }
 
+// Mirrors the frontend's computeTerminalKind so the frontend can read job.kind
+// directly instead of re-deriving it from acceptedCount + targetMessageVersion.
+function computeJobKind(job) {
+    const state = job.state;
+    if (state !== 'completed') {
+        return String(state || 'completed');
+    }
+    const accepted = Number(job.acceptedCount || 0);
+    const version = Number(job.targetMessageVersion || 0);
+    if (accepted > 0 && version === 0) {
+        return 'native_accepted';
+    }
+    return 'completed';
+}
+
 function serializeJob(job) {
     if (!job) {
         return null;
@@ -200,6 +215,7 @@ function serializeJob(job) {
         jobId: job.jobId,
         runId: job.runId,
         state: job.state,
+        kind: computeJobKind(job),
         phase: job.phase,
         phaseText: describePhase(job),
         createdAt: job.createdAt,

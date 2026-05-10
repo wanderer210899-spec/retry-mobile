@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const appPortsSource = readFileSync(new URL('./app-ports.js', import.meta.url), 'utf8');
-const appRuntimeSyncSource = readFileSync(new URL('./app-runtime-sync.js', import.meta.url), 'utf8');
+const projectorSource = readFileSync(new URL('./core/projector.js', import.meta.url), 'utf8');
 const appRecoverySource = readFileSync(new URL('./app-recovery.js', import.meta.url), 'utf8');
 const sessionLockdownSource = readFileSync(new URL('./st-bridge/lockdown.js', import.meta.url), 'utf8');
 
@@ -24,16 +24,16 @@ test('app-ports stays isolated from concrete adapter factories', () => {
     );
 });
 
-test('app-runtime-sync stays isolated from concrete adapter factories', () => {
+test('core/projector stays isolated from concrete adapter factories', () => {
     assert.doesNotMatch(
-        appRuntimeSyncSource,
+        projectorSource,
         /\bcreateStPort\b/,
-        'app-runtime-sync.js must not import createStPort',
+        'core/projector.js must not import createStPort',
     );
     assert.doesNotMatch(
-        appRuntimeSyncSource,
+        projectorSource,
         /\bcreateBackendPort\b/,
-        'app-runtime-sync.js must not import createBackendPort',
+        'core/projector.js must not import createBackendPort',
     );
 });
 
@@ -65,14 +65,15 @@ test('only st-bridge/lockdown owns blocked click and keydown interception', () =
     }
 });
 
-test('runtime active job mirrors are only written in app-runtime-sync', () => {
+test('runtime active job mirrors are only written in core/projector', () => {
     const runtimeWritePattern = /runtime\.(activeJobStatus|activeJobId|activeRunBinding)\s*=/;
-    const sources = collectFrontendSources().filter((entry) => !entry.filePath.endsWith('app-runtime-sync.js'));
+    const projectorSuffix = path.join('core', 'projector.js');
+    const sources = collectFrontendSources().filter((entry) => !entry.filePath.endsWith(projectorSuffix));
     for (const entry of sources) {
         assert.doesNotMatch(
             entry.source,
             runtimeWritePattern,
-            `Only app-runtime-sync.js may write runtime active mirrors (${entry.filePath})`,
+            `Only core/projector.js may write runtime active mirrors (${entry.filePath})`,
         );
     }
 });

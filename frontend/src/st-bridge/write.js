@@ -1,14 +1,9 @@
 // st-bridge/write.js
-// Applies accepted-output writes onto the live SillyTavern chat host. Phase 2
-// of the bridge plan: backend chat-writer.js still owns the disk-truth path,
-// but the frontend replay now goes through ST's canonical
-// `saveReply({type: 'swipe'})` so other extensions react to the resulting
-// MESSAGE_RECEIVED / CHARACTER_MESSAGE_RENDERED emissions natively. The
-// liveChat[i] = patched + updateMessageBlock + swipe.refresh path has been
-// retired here, the scroll-restore hack is dropped (addOneMessage handles
-// scroll), and status.targetMessage.swipes[] is now informational only —
-// the bridge derives one accepted-text per missing slot and replays via
-// saveReply, one swipe per tick.
+// Applies accepted-output writes onto the live SillyTavern chat host.
+// Phase 3: swipes are appended directly into the in-memory chat array and
+// persisted via context.saveChat() — no foreground saveReply, no DOM mutation,
+// no scroll, no MESSAGE_RECEIVED / CHARACTER_MESSAGE_RENDERED emission.
+// The user's current swipe position is never touched.
 
 import { createStructuredError } from '../retry-error.js';
 import { getChatIdentity, getContext } from './internal/ctx.js';
@@ -37,17 +32,6 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    if (typeof context.saveReply !== 'function') {
-        return {
-            ok: false,
-            recoveryRequired: true,
-            error: createStructuredError(
-                'client_save_reply_unavailable',
-                'Retry Mobile could not apply an accepted output because SillyTavern saveReply is unavailable.',
-            ),
-        };
-    }
-
     const targetMessageVersion = Number(status?.targetMessageVersion) || 0;
     const targetMessage = cloneValue(status?.targetMessage);
     const targetAssistantAnchorId = String(
@@ -67,8 +51,7 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
         };
     }
 
-    // saveReply only operates on `chat[chat.length - 1]`. The target assistant
-    // turn must be the live last row; anchor matching guards against drift.
+    // The target assistant turn must be the live last row; anchor matching guards against drift.
     const lastIndex = liveChat.length - 1;
     const lastMessage = liveChat[lastIndex];
     if (!lastMessage || lastMessage.is_user === true || targetMessage.is_user === true) {
@@ -141,6 +124,11 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
     }
 
     try {
+        // Append swipes directly into memory without touching swipe_id or mes.
+        // saveReply({type:'swipe'}) is a foreground API — it overwrites mes and
+        // calls addOneMessage which scrolls and re-renders, jumping the user to
+        // the new slot on every iteration. Direct push + saveChat() keeps the
+        // user's current swipe position intact (silent background append).
         for (const swipeText of missingSwipes) {
             if (signal?.aborted) {
                 return {
@@ -153,16 +141,21 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
                 };
             }
 
-            // Move swipe_id onto the slot saveReply will populate, and
-            // re-stamp the anchor so the new swipe_info entry inherits it via
-            // ST's `extra: structuredClone(item.extra)` capture.
-            lastMessage.swipe_id = lastMessage.swipes.length;
-            stampAnchorOnLiveRow(lastMessage, targetAssistantAnchorId);
-
-            await context.saveReply({ type: 'swipe', getMessage: swipeText });
+            lastMessage.swipes.push(swipeText);
+            lastMessage.swipe_info.push({
+                send_date: new Date().toISOString(),
+                gen_started: null,
+                gen_finished: new Date().toISOString(),
+                extra: { retryMobileAssistantAnchorId: targetAssistantAnchorId },
+            });
         }
 
+        stampAnchorOnLiveRow(lastMessage, targetAssistantAnchorId);
         stampVersionOnLiveRow(lastMessage, targetMessageVersion);
+
+        // Persist the in-memory swipes array to disk via ST's normal save path.
+        await context.saveChat?.();
+
         return {
             ok: true,
             jobId: String(status?.jobId || ''),
@@ -342,9 +335,7 @@ function normalizeComparableText(value) {
 
 export async function finishTerminalUi({ outcome, status, chatIdentity, signal }) {
     const applyResult = await applyFinalMessageIfNeeded({ chatIdentity, status, signal });
-    const context = getContext();
     try {
-        context?.activateSendButtons?.();
         const settled = await waitForTerminalUiWithRetry(signal);
         if (!settled) {
             return {
@@ -445,8 +436,6 @@ async function waitForTerminalUiWithRetry(signal) {
         return true;
     }
 
-    const context = getContext();
-    context?.activateSendButtons?.();
     settled = await waitForUiSettled({
         signal,
         timeoutMs: TERMINAL_UI_SETTLE_RETRY_TIMEOUT_MS,

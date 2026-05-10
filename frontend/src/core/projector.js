@@ -1,9 +1,16 @@
-import { clearActiveRunBinding, writeActiveRunBinding } from './job/run-binding.js';
-import { RetryState } from './retry-fsm.js';
-import { resolveCaptureSubscriptionChatIdentity } from './app-recovery.js';
+// core/projector.js
+// Replaces app-runtime-sync.js. Single owner of runtime field projection from
+// FSM context snapshots. All runtime writes flow through projectRuntime or
+// writeStatusMirror — no other module mutates runtime directly.
 
-export function syncRuntimeFromFsm(runtime, fsm) {
-    const context = fsm.getContext();
+import { clearActiveRunBinding, writeActiveRunBinding } from '../job/run-binding.js';
+import { RetryState } from '../retry-fsm.js';
+import { resolveCaptureSubscriptionChatIdentity } from '../app-recovery.js';
+
+// Maps an FSM context snapshot onto the runtime object.
+// Call once per FSM tick (or after any FSM transition).
+export function projectRuntime(runtime, fsmContext) {
+    const context = fsmContext;
     runtime.controlError = context.state === RetryState.RUNNING
         ? null
         : (context.terminalError || null);
@@ -17,11 +24,10 @@ export function syncRuntimeFromFsm(runtime, fsm) {
     }
 
     // The runtime mirror caches the live backend status only. Pushing
-    // `lastTerminalResult.status` back into `activeJobStatus` here would stomp
-    // the freshly written start/poll status with a previous run's terminal
-    // snapshot and re-fire its terminal toast on the next render. The terminal
-    // snapshot stays addressable through `context.lastTerminalResult` for UI
-    // derivation; it must not be confused with a live status.
+    // lastTerminalResult.status back into activeJobStatus here would stomp
+    // the freshly written poll status with a previous run's terminal snapshot
+    // and re-fire its terminal toast on the next render. The terminal snapshot
+    // stays addressable through context.lastTerminalResult for UI derivation.
     if (context.state !== RetryState.RUNNING
         && !contextOwnsRuntimeStatus(context, runtime.activeJobStatus)) {
         runtime.activeJobStatus = null;
@@ -34,34 +40,15 @@ export function syncRuntimeFromFsm(runtime, fsm) {
     }
 }
 
-export function updateRuntimeActiveJob(runtime, status, fallbackJobId = '') {
-    if (status) {
-        const statusChanged = buildActiveJobStatusRenderKey(runtime.activeJobStatus)
-            !== buildActiveJobStatusRenderKey(status);
-        runtime.activeJobStatus = status;
-        runtime.activeJobId = status.jobId || fallbackJobId || runtime.activeJobId || null;
-        runtime.activeJobStatusObservedAt = status.updatedAt || new Date().toISOString();
-        return statusChanged;
-    }
-
-    if (fallbackJobId) {
-        runtime.activeJobId = fallbackJobId;
-    }
-    return false;
+// Writes a backend status object directly into the runtime mirror.
+// Called from the polling callback after observeBackendStatus accepts a status.
+export function writeStatusMirror(runtime, status) {
+    runtime.activeJobStatus = status;
+    runtime.activeJobId = String(status.jobId || '').trim();
+    runtime.activeJobStatusObservedAt = status.updatedAt || new Date().toISOString();
 }
 
-function contextOwnsRuntimeStatus(context, runtimeStatus) {
-    if (!runtimeStatus) {
-        return false;
-    }
-    const runtimeJobId = String(runtimeStatus.jobId || '').trim();
-    if (!runtimeJobId) {
-        return false;
-    }
-    const terminalJobId = String(context.lastTerminalResult?.jobId || '').trim();
-    return Boolean(terminalJobId) && runtimeJobId === terminalJobId;
-}
-
+// Manages the session-storage active-run binding from FSM context.
 export function syncActiveRunBinding(runtime, context, {
     resolveBindingChatIdentity = resolveCaptureSubscriptionChatIdentity,
     writeBinding = writeActiveRunBinding,
@@ -99,6 +86,41 @@ export function syncActiveRunBinding(runtime, context, {
     return null;
 }
 
+export function buildActiveJobStatusRenderKey(status) {
+    if (!status) {
+        return '';
+    }
+
+    return JSON.stringify({
+        jobId: String(status.jobId || ''),
+        runId: String(status.runId || ''),
+        state: String(status.state || ''),
+        acceptedCount: Number(status.acceptedCount || 0),
+        attemptCount: Number(status.attemptCount || 0),
+        targetMessageVersion: Number(status.targetMessageVersion || 0),
+        targetMessageIndex: Number(status.targetMessageIndex ?? -1),
+        structuredError: status.structuredError
+            ? {
+                code: String(status.structuredError.code || ''),
+                message: String(status.structuredError.message || ''),
+                detail: String(status.structuredError.detail || ''),
+            }
+            : null,
+    });
+}
+
+function contextOwnsRuntimeStatus(context, runtimeStatus) {
+    if (!runtimeStatus) {
+        return false;
+    }
+    const runtimeJobId = String(runtimeStatus.jobId || '').trim();
+    if (!runtimeJobId) {
+        return false;
+    }
+    const terminalJobId = String(context.lastTerminalResult?.jobId || '').trim();
+    return Boolean(terminalJobId) && runtimeJobId === terminalJobId;
+}
+
 function hasMaterialBindingChange(previous, nextBinding) {
     if (!previous) {
         return true;
@@ -127,27 +149,4 @@ function cloneValue(value) {
     }
 
     return JSON.parse(JSON.stringify(value));
-}
-
-function buildActiveJobStatusRenderKey(status) {
-    if (!status) {
-        return '';
-    }
-
-    return JSON.stringify({
-        jobId: String(status.jobId || ''),
-        runId: String(status.runId || ''),
-        state: String(status.state || ''),
-        acceptedCount: Number(status.acceptedCount || 0),
-        attemptCount: Number(status.attemptCount || 0),
-        targetMessageVersion: Number(status.targetMessageVersion || 0),
-        targetMessageIndex: Number(status.targetMessageIndex ?? -1),
-        structuredError: status.structuredError
-            ? {
-                code: String(status.structuredError.code || ''),
-                message: String(status.structuredError.message || ''),
-                detail: String(status.structuredError.detail || ''),
-            }
-            : null,
-    });
 }

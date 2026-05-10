@@ -160,7 +160,7 @@ test('deriveUiState in ARMED phase shows clean stats even when runtime cache and
                 outcome: 'completed',
                 status: { state: 'completed', acceptedCount: 2, targetAcceptedCount: 2 },
             },
-            toastScope: { jobId: 'job-1', lastTerminalState: 'completed' },
+            toastScope: { jobId: 'job-1', lastTerminalState: 'completed:completed' },
         },
         {
             activeJobStatus: {
@@ -209,7 +209,7 @@ test('deriveUiState fires the one-shot terminal toast on auto-rearm transition (
     assert.equal(snapshot.activeStatus, null);
     assert.equal(snapshot.toastsToFire.length, 1);
     assert.equal(snapshot.toastsToFire[0].kind, 'success');
-    assert.equal(snapshot.nextToastScope?.lastTerminalState, 'completed');
+    assert.equal(snapshot.nextToastScope?.lastTerminalState, 'completed:completed');
 });
 
 test('deriveUiState in ARMED with a cleared terminalError does not light the error box (regression for leftover errors after auto-rearm-from-failure)', () => {
@@ -228,7 +228,7 @@ test('deriveUiState in ARMED with a cleared terminalError does not light the err
                     structuredError: { code: 'retry_job_failed', message: 'died' },
                 },
             },
-            toastScope: { jobId: 'job-1', lastTerminalState: 'failed' },
+            toastScope: { jobId: 'job-1', lastTerminalState: 'failed:failed' },
         },
         {
             activeJobStatus: null,
@@ -237,4 +237,96 @@ test('deriveUiState in ARMED with a cleared terminalError does not light the err
     );
     assert.equal(snapshot.errorVisible, false);
     assert.equal(snapshot.errorText, '');
+});
+
+test('deriveUiState fires toasts.nativeAccepted for a goal=1 native-accepted completion', () => {
+    const snapshot = deriveUiState(
+        {
+            state: 'idle',
+            lastTerminalResult: {
+                outcome: 'completed',
+                kind: 'native_accepted',
+                jobId: 'job-1',
+                status: {
+                    jobId: 'job-1',
+                    state: 'completed',
+                    acceptedCount: 1,
+                    targetAcceptedCount: 1,
+                    attemptCount: 1,
+                    maxAttempts: 1,
+                    targetMessageVersion: 0,
+                },
+            },
+            toastScope: null,
+        },
+        { activeJobStatus: null, controlError: null },
+    );
+
+    assert.equal(snapshot.toastsToFire.length, 1);
+    assert.equal(snapshot.toastsToFire[0].kind, 'success');
+    assert.match(snapshot.toastsToFire[0].message, /nativeAccepted/);
+    assert.equal(snapshot.nextToastScope?.lastTerminalState, 'completed:native_accepted');
+});
+
+test('deriveUiState fires toasts.jobComplete for a multi-attempt completion (not native-accepted)', () => {
+    const snapshot = deriveUiState(
+        {
+            state: 'idle',
+            lastTerminalResult: {
+                outcome: 'completed',
+                kind: 'completed',
+                jobId: 'job-1',
+                status: {
+                    jobId: 'job-1',
+                    state: 'completed',
+                    acceptedCount: 3,
+                    targetAcceptedCount: 3,
+                    attemptCount: 5,
+                    maxAttempts: 10,
+                    targetMessageVersion: 3,
+                },
+            },
+            toastScope: null,
+        },
+        { activeJobStatus: null, controlError: null },
+    );
+
+    assert.equal(snapshot.toastsToFire.length, 1);
+    assert.equal(snapshot.toastsToFire[0].kind, 'success');
+    assert.match(snapshot.toastsToFire[0].message, /jobComplete/);
+    assert.equal(snapshot.nextToastScope?.lastTerminalState, 'completed:completed');
+});
+
+test('completed:native_accepted followed by completed:completed both fire distinct toasts', () => {
+    const baseContext = (kind, terminalMsgVersion) => ({
+        state: 'idle',
+        lastTerminalResult: {
+            outcome: 'completed',
+            kind,
+            jobId: 'job-1',
+            status: {
+                jobId: 'job-1',
+                state: 'completed',
+                acceptedCount: 1,
+                targetAcceptedCount: 1,
+                attemptCount: 1,
+                maxAttempts: 1,
+                targetMessageVersion: terminalMsgVersion,
+            },
+        },
+    });
+    const runtime = { activeJobStatus: null, controlError: null };
+
+    const first = deriveUiState({ ...baseContext('native_accepted', 0), toastScope: null }, runtime);
+    assert.equal(first.toastsToFire.length, 1);
+    assert.match(first.toastsToFire[0].message, /nativeAccepted/);
+
+    // Second render with the scope from the first — toast must not re-fire
+    const second = deriveUiState({ ...baseContext('native_accepted', 0), toastScope: first.nextToastScope }, runtime);
+    assert.equal(second.toastsToFire.length, 0);
+
+    // New run completes with a regular completed kind — distinct key fires again
+    const third = deriveUiState({ ...baseContext('completed', 1), toastScope: first.nextToastScope }, runtime);
+    assert.equal(third.toastsToFire.length, 1);
+    assert.match(third.toastsToFire[0].message, /jobComplete/);
 });

@@ -1,7 +1,5 @@
 // st-bridge/reconciler.js
 // Single owner of accepted-output apply / fallback reload reconciliation.
-// Lifted from the former frontend/src/render/reconciler.js with no
-// behavioural change. Public surface is exposed via stPort.reconciler.
 
 import { cloneValue } from '../core/clone.js';
 import { applyAcceptedOutput, reloadSessionUi } from './write.js';
@@ -19,19 +17,12 @@ export function createChatReconciler({
         isActive() {
             return active;
         },
-        queue(renderPayload) {
-            return cloneValue(renderPayload);
-        },
-        async applyStatus(renderPayload) {
-            return applyAcceptedOutputFn?.(cloneValue(renderPayload));
-        },
-        async flushPending(renderPayload) {
+        // Single entry point for all apply paths (status, terminal, flush).
+        // Returns {ok} result from applyAcceptedOutput; null payload is a no-op.
+        async apply(renderPayload) {
             if (!renderPayload) {
                 return { ok: false };
             }
-            return applyAcceptedOutputFn?.(cloneValue(renderPayload));
-        },
-        async applyTerminal(renderPayload) {
             return applyAcceptedOutputFn?.(cloneValue(renderPayload));
         },
         async guardedReload(signal) {

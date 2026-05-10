@@ -63,6 +63,31 @@ test('handleJobPortResponse renders once when a backend response materially chan
     ]);
 });
 
+test('handlePollingPortStatus silently drops a status whose jobId does not match the polling jobId', async () => {
+    const calls = [];
+
+    await handlePollingPortStatus({
+        status: { jobId: 'job-STALE', state: 'completed' },
+        jobId: 'job-CURRENT',
+        updateActiveJob(nextStatus, nextJobId) {
+            calls.push(['updateActiveJob', nextStatus, nextJobId]);
+            return true;
+        },
+        async onStatus(nextStatus) {
+            calls.push(['onStatus', nextStatus]);
+        },
+        syncRuntimeFromFsm(fsm) {
+            calls.push(['syncRuntimeFromFsm', fsm]);
+        },
+        retryFsm: {},
+        render() {
+            calls.push(['render']);
+        },
+    });
+
+    assert.equal(calls.length, 0, 'all downstream calls must be skipped when status jobId does not match polling jobId');
+});
+
 test('handleJobPortResponse skips rendering when the backend response does not change visible job state', () => {
     const calls = [];
     const result = {

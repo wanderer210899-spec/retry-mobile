@@ -971,3 +971,77 @@ test('runJob mid-run rejected attempt does not increment acceptedCount', async (
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
 });
+
+test('resolveNativeAttempt + goal=2: native counts as first accepted, exactly one backend retry is needed', async () => {
+    // Validates goal arithmetic: when native is confirmed+accepted, acceptedCount=1 after
+    // resolveNativeAttempt, so the backend loop should run exactly once to reach goal=2.
+    // Regression guard against the 3-swipe bug (native + 2 backend retries instead of 1).
+    const job = buildResolveAttemptJob({
+        targetAcceptedCount: 2,
+        maxAttempts: 5,
+        nativeState: 'confirmed',
+    });
+
+    await resolveNativeAttempt(job);
+
+    assert.equal(job.acceptedCount, 1, 'native counts as first accepted result (acceptedCount=1)');
+    assert.equal(job.attemptCount, 1, 'native counts as first attempt');
+    assert.equal(job.acceptedResults.length, 1, 'exactly one entry in acceptedResults after native');
+    assert.equal(job.acceptedResults[0].source, 'native', 'native result is correctly sourced');
+    // The loop condition is: acceptedCount < targetAcceptedCount. With acceptedCount=1 and
+    // targetAcceptedCount=2, the loop runs exactly once more — not twice.
+    assert.equal(
+        job.acceptedCount < job.targetAcceptedCount,
+        true,
+        'loop will run: still one more accepted result needed',
+    );
+    assert.equal(
+        job.targetAcceptedCount - job.acceptedCount,
+        1,
+        'exactly 1 more backend retry needed to reach goal=2',
+    );
+});
+
+test('runJob goal=2 native-confirmed-accepted: exactly one backend fetch is made after native acceptance', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        return {
+            ok: true,
+            status: 200,
+            async text() {
+                return JSON.stringify({ choices: [{ text: 'Backend retry result that is long enough to be accepted by character validation.' }] });
+            },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-goal2-exact-fetch-'));
+    const job = buildRunJobNativeBase({
+        jobId: 'job-goal2-exact-fetch',
+        targetAcceptedCount: 2,
+        maxAttempts: 5,
+        userContext: {
+            handle: 'default-user',
+            directories: { root: tempRoot, chats: path.join(tempRoot, 'chats'), groupChats: path.join(tempRoot, 'group chats') },
+        },
+    });
+
+    try {
+        // writeAcceptedResult throws (no chat file) after the backend retry accepts —
+        // swallow the exception and inspect the state at the point of failure.
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }).catch(() => {});
+
+        assert.equal(job.nativeAttemptResolved, true, 'native was resolved');
+        assert.equal(job.acceptedResults[0].source, 'native', 'first accepted result is from native');
+        assert.equal(
+            fetchCalls.length,
+            1,
+            'exactly one backend fetch — native fills slot 1, backend fills slot 2, loop stops',
+        );
+        assert.equal(job.attemptCount, 2, 'exactly 2 total attempts: native (1) + backend retry (2)');
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});

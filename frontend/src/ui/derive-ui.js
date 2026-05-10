@@ -8,13 +8,9 @@ export function deriveUiState(context, runtime) {
     // only the *current* phase. ARMED/CAPTURING are user-facing "fresh" states
     // and must not project any prior terminal numbers; RUNNING uses the live
     // backend cache; IDLE may surface the last terminal snapshot for display.
-    const activeStatus = resolveActiveStatusForDisplay(phase, context, runtime);
-    // `toastStatus` is what `deriveToasts` matches against to fire one-shot
-    // terminal notifications. Even when the panel hides stats during ARMED
-    // (auto-rearm path), the FSM still needs to fire "Completed N/T" once.
-    const toastStatus = resolveStatusForToasts(phase, context, runtime);
+    const { activeStatus, toastStatus, terminalKind } = resolveCanonicalStatus(phase, context, runtime);
     const transport = resolveTransportState(runtime, context, phase);
-    const toastDerivation = deriveToasts(phase, toastStatus, context?.toastScope || null);
+    const toastDerivation = deriveToasts(phase, toastStatus, terminalKind, context?.toastScope || null);
 
     if (globalThis?.__RM_DEV__ && phase === 'running' && context?.terminalError) {
         throw new Error('[INVARIANT] terminalError in running state — this is a bug in the FSM transition, not a backend error');
@@ -108,43 +104,39 @@ function resolveStatusLabel(phase, activeStatus, transport, context, runtime) {
     return formatVisibleStateLabel(phase, activeStatus, transport);
 }
 
-function resolveActiveStatusForDisplay(phase, context, runtime) {
+function resolveCanonicalStatus(phase, context, runtime) {
     if (phase === 'running') {
-        // Trust the runtime mirror unless its jobId is known to disagree with
-        // the FSM's current jobId. This filters a stale-but-untouched runtime
-        // status from a previous run as a defense in depth, even though the
-        // FSM contract clears `lastTerminalResult` on `jobStarted`.
+        // With ingest in place, FSM jobId and runtime jobId should always agree.
+        // Guard retained as a dev-mode invariant; safe null-return in production.
         const fsmJobId = String(context?.jobId || '').trim();
         const runtimeJobId = String(runtime?.activeJobStatus?.jobId || '').trim();
         if (fsmJobId && runtimeJobId && fsmJobId !== runtimeJobId) {
-            return null;
+            if (globalThis?.__RM_DEV__) {
+                throw new Error(`[INVARIANT] FSM jobId ${fsmJobId} !== runtime jobId ${runtimeJobId}`);
+            }
+            return { activeStatus: null, toastStatus: null, terminalKind: null };
         }
-        return runtime?.activeJobStatus || null;
+        const status = runtime?.activeJobStatus || null;
+        return { activeStatus: status, toastStatus: status, terminalKind: null };
     }
-    if (phase === 'idle') {
-        // After Stop / no-rearm completion, the panel surfaces the last
-        // terminal snapshot so the user can still see the resulting counts.
-        return runtime?.activeJobStatus || context?.lastTerminalResult?.status || null;
-    }
-    // ARMED / CAPTURING: fresh "ready for next request" / in-flight handoff.
-    // These phases must show clean defaults; never project a previous run's
-    // counts or error into them.
-    return null;
-}
 
-function resolveStatusForToasts(phase, context, runtime) {
-    if (phase === 'running') {
-        const fsmJobId = String(context?.jobId || '').trim();
-        const runtimeJobId = String(runtime?.activeJobStatus?.jobId || '').trim();
-        if (fsmJobId && runtimeJobId && fsmJobId !== runtimeJobId) {
-            return null;
-        }
-        return runtime?.activeJobStatus || null;
+    const terminalResult = context?.lastTerminalResult || null;
+    const terminalStatus = terminalResult?.status || null;
+    const terminalKind = terminalResult?.kind || null;
+
+    if (phase === 'idle') {
+        // After Stop / no-rearm completion, surface the live mirror if present,
+        // falling back to the terminal snapshot for display only.
+        return {
+            activeStatus: runtime?.activeJobStatus || terminalStatus,
+            toastStatus: terminalStatus,
+            terminalKind,
+        };
     }
-    // Non-running phases fire the one-shot terminal toast from the recorded
-    // terminal snapshot. `toastScope.lastTerminalState` already prevents
-    // re-fires across renders within the same scope.
-    return context?.lastTerminalResult?.status || null;
+
+    // ARMED / CAPTURING: show clean defaults; never project a previous run's
+    // counts into them. Toasts still fire from the terminal snapshot.
+    return { activeStatus: null, toastStatus: terminalStatus, terminalKind };
 }
 
 function selectUiError({ phase, context, runtime }) {
@@ -172,7 +164,7 @@ function resolveTransportState(runtime, context, phase) {
     return 'healthy';
 }
 
-function deriveToasts(phase, status, toastScope) {
+function deriveToasts(phase, status, terminalKind, toastScope) {
     if (!status || typeof status !== 'object') {
         return {
             toastsToFire: [],
@@ -235,8 +227,10 @@ function deriveToasts(phase, status, toastScope) {
     }
 
     if (state === 'completed' || state === 'failed' || state === 'cancelled') {
-        if (nextScope.lastTerminalState !== state) {
-            nextScope.lastTerminalState = state;
+        const kind = String(terminalKind || (state === 'completed' ? 'completed' : state));
+        const terminalKey = `${state}:${kind}`;
+        if (nextScope.lastTerminalState !== terminalKey) {
+            nextScope.lastTerminalState = terminalKey;
             const summaryParts = [];
             if (acceptedCount != null && targetAcceptedCount != null) {
                 summaryParts.push(`${acceptedCount}/${targetAcceptedCount} accepted`);
@@ -246,7 +240,11 @@ function deriveToasts(phase, status, toastScope) {
             }
             const summary = summaryParts.length ? ` (${summaryParts.join(', ')})` : '';
             if (state === 'completed') {
-                toastsToFire.push({ kind: 'success', title: t('toasts.title'), message: t('toasts.jobComplete', { summary }) });
+                if (kind === 'native_accepted') {
+                    toastsToFire.push({ kind: 'success', title: t('toasts.title'), message: t('toasts.nativeAccepted') });
+                } else {
+                    toastsToFire.push({ kind: 'success', title: t('toasts.title'), message: t('toasts.jobComplete', { summary }) });
+                }
             } else if (state === 'cancelled') {
                 toastsToFire.push({ kind: 'warning', title: t('toasts.title'), message: t('toasts.jobCancelled', { summary }) });
             } else {

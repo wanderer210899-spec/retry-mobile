@@ -31,7 +31,10 @@ export function createAppPorts({
                         );
                     }
 
-                    updateActiveJob(result.job || null, result.jobId);
+                    updateActiveJob(
+                        result.job?.state === 'running' ? result.job : null,
+                        result.jobId,
+                    );
                     retryFsm.jobStarted({
                         runId: payload.runId,
                         jobId: result.jobId,
@@ -174,6 +177,11 @@ export async function handlePollingPortStatus({
     retryFsm,
     render,
 }) {
+    const statusJobId = String(status?.jobId || '').trim();
+    const expectedJobId = String(jobId || '').trim();
+    if (statusJobId && expectedJobId && statusJobId !== expectedJobId) {
+        return;
+    }
     updateActiveJob(status || null, jobId);
     await onStatus?.(status);
     syncRuntimeFromFsm(retryFsm);

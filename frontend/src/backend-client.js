@@ -25,6 +25,7 @@ export function createBackendPort() {
         pollStatus,
         startPolling,
         stopPolling,
+        stopAllExcept,
         cancelJob,
         fetchActiveJob,
         fetchLatestJob,
@@ -81,7 +82,8 @@ export function createBackendPort() {
                     }
                     consecutiveFailures = 0;
                     await onStatus?.(status);
-                    if (isTerminalStatus(status)) {
+                    const terminalStates = ['completed', 'failed', 'cancelled'];
+                    if (status && terminalStates.includes(status.state)) {
                         stopPolling(token);
                         return;
                     }
@@ -113,17 +115,19 @@ export function createBackendPort() {
         return true;
     }
 
+    function stopAllExcept(activeToken) {
+        for (const [token, controller] of pollControllers) {
+            if (token !== activeToken) {
+                controller.abort();
+                pollControllers.delete(token);
+            }
+        }
+    }
+
     async function cancelJob(jobId, payload = {}) {
         await cancelBackendJob(jobId, payload);
         return { ok: true };
     }
-}
-
-function isTerminalStatus(status) {
-    return Boolean(status)
-        && (status.state === 'completed'
-            || status.state === 'failed'
-            || status.state === 'cancelled');
 }
 
 function computeFailureBackoffMs(consecutiveFailures) {

@@ -292,6 +292,7 @@
     "retryAttempt": { "en": "Retry attempt {attempt}/{max}.", "zh": "重试轮次 {attempt}/{max}。" },
     "acceptedProgress": { "en": "Accepted {accepted}/{target}.", "zh": "已通过 {accepted}/{target}。" },
     "jobComplete": { "en": "Job complete{summary}.", "zh": "任务完成{summary}。" },
+    "nativeAccepted": { "en": "Native reply accepted.", "zh": "原生回复已通过。" },
     "jobCancelled": { "en": "Job cancelled{summary}.", "zh": "任务已取消{summary}。" },
     "jobFailedFallback": { "en": "Retry Mobile failed.", "zh": "Retry Mobile 任务失败。" },
     "nativeOutcomeReportFailed": {

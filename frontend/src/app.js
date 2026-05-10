@@ -21,7 +21,7 @@ import { createIntentPort } from './intent.js';
 import { createRetryFsm, RetryState } from './retry-fsm.js';
 import { createBackendPort } from './backend-client.js';
 import { createAppPorts } from './app-ports.js';
-import { syncRuntimeFromFsm, updateRuntimeActiveJob } from './app-runtime-sync.js';
+import { projectRuntime, writeStatusMirror } from './core/projector.js';
 import { chooseOperationalChatIdentity, resolveExpectedPreviousGeneration } from './start-payload.js';
 import { initializeI18n, setLanguage, t } from './i18n.js';
 import { shouldToastPluginOff, shouldToastPluginOn } from './plugin-toggle-toast.js';
@@ -60,7 +60,7 @@ export async function bootRetryMobile() {
         baseBackendPort,
         getRetryFsm: () => retryFsm,
         updateActiveJob,
-        syncRuntimeFromFsm: (fsm) => syncRuntimeFromFsm(runtime, fsm),
+        syncRuntimeFromFsm: (fsm) => projectRuntime(runtime, fsm.getContext()),
         render,
         buildStartPayload,
         flushPendingNativeOutcome,
@@ -178,7 +178,7 @@ export async function bootRetryMobile() {
         logEvent: (event, summary, detail) => window.__rmLogEvent?.(event, summary, detail),
     });
     runtime.retryFsm = retryFsm;
-    const syncRuntime = () => syncRuntimeFromFsm(runtime, retryFsm);
+    const syncRuntime = () => projectRuntime(runtime, retryFsm.getContext());
     syncRuntime();
 
     const armPluginFromUi = async () => {
@@ -275,7 +275,7 @@ export async function bootRetryMobile() {
         stPort,
         updateActiveJob,
         render,
-        syncRuntimeFromFsm: (fsm) => syncRuntimeFromFsm(runtime, fsm),
+        syncRuntimeFromFsm: (fsm) => projectRuntime(runtime, fsm.getContext()),
         getCurrentChatIdentity: () => getChatIdentity(getContext()),
         toStructuredError,
         subscribeEvent,
@@ -560,7 +560,13 @@ export async function bootRetryMobile() {
     }
 
     function updateActiveJob(status, fallbackJobId = '') {
-        return updateRuntimeActiveJob(runtime, status, fallbackJobId);
+        void fallbackJobId;
+        if (!status) {
+            return false;
+        }
+        writeStatusMirror(runtime, status);
+        retryFsm?.observeBackendStatus?.(status);
+        return true;
     }
 
     async function buildStartPayload(payload) {
