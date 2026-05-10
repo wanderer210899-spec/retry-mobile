@@ -175,14 +175,24 @@ test('a burst of visibility/focus/online signals only triggers one reconcile', a
     assert.equal(reconcileCalls.length, 2);
 });
 
-test('RUNNING return path calls retryFsm.resume and an explicit stats-only poll', async () => {
+test('RUNNING return path awaits retryFsm.resume before the explicit return poll', async () => {
     const pollCalls = [];
+    const order = [];
     const fsm = createFsmStub({
         state: RetryState.RUNNING,
         context: { jobId: 'job-2', chatIdentity: { chatId: 'c1' }, pendingVisibleRender: null },
     });
     let resumeArgs = null;
-    fsm.resume = (args) => { resumeArgs = args; };
+    let releaseResume;
+    const resumeBlocker = new Promise((resolve) => {
+        releaseResume = resolve;
+    });
+    fsm.resume = async (args) => {
+        resumeArgs = args;
+        order.push('resume-start');
+        await resumeBlocker;
+        order.push('resume-finish');
+    };
 
     const updateActiveJobCalls = [];
     const renderCalls = [];
@@ -191,6 +201,7 @@ test('RUNNING return path calls retryFsm.resume and an explicit stats-only poll'
         runtime: { controlError: null },
         backendPort: {
             pollStatus: (jobId) => {
+                order.push('poll');
                 pollCalls.push(jobId);
                 return Promise.resolve({ jobId, state: 'running', acceptedCount: 1 });
             },
@@ -198,15 +209,25 @@ test('RUNNING return path calls retryFsm.resume and an explicit stats-only poll'
         stPort: { isVisible: () => true },
         restoreController: { reconcileLatestForCurrentChat: () => Promise.resolve({ ok: true }) },
         ensurePanelMounted: () => {},
-        syncRuntimeFromFsm: () => {},
-        updateActiveJob: (status) => { updateActiveJobCalls.push(status); },
-        render: () => { renderCalls.push(true); },
+        syncRuntimeFromFsm: () => { order.push('sync'); },
+        updateActiveJob: (status) => {
+            order.push('update');
+            updateActiveJobCalls.push(status);
+        },
+        render: () => {
+            order.push('render');
+            renderCalls.push(true);
+        },
         getCurrentChatIdentity: () => ({ chatId: 'c1' }),
         toStructuredError: (e) => e,
         windowRef: createFakeWindow(),
     });
 
     coordinator.dispatch('page.visible');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(pollCalls, [], 'return poll must wait for resume() to finish');
+
+    releaseResume();
     await new Promise((resolve) => setImmediate(resolve));
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -215,6 +236,7 @@ test('RUNNING return path calls retryFsm.resume and an explicit stats-only poll'
     assert.deepEqual(pollCalls, ['job-2']);
     assert.equal(updateActiveJobCalls.length, 1);
     assert.ok(renderCalls.length >= 1);
+    assert.ok(order.indexOf('resume-finish') < order.indexOf('poll'));
 });
 
 test('reconcile rejection writes runtime.controlError without throwing', async () => {

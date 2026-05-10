@@ -6,9 +6,9 @@
 // * Coalesce the burst of `page.visible`, `window.focused`,
 //   `network.online`, and BFCache `pageshow` signals that mobile
 //   browsers fire within ~400 ms of each other on resume.
-// * RUNNING path: remount the panel host, call `retryFsm.resume(...)`,
-//   and trigger one explicit stats-only poll so the panel reflects
-//   backend truth without waiting for the next polling cadence tick.
+// * RUNNING path: remount the panel host, call `retryFsm.resume(...)`
+//   to flush any already-queued visible render, then trigger one explicit
+//   return poll whose status flows through the normal FSM ingest path.
 // * Non-RUNNING path: remount the panel host, then call
 //   `restoreController.reconcileLatestForCurrentChat({ allowReload: true })`
 //   so a completed retry result that arrived while the tab was hidden
@@ -76,6 +76,7 @@ export function createResumeCoordinator({
         if (state === RetryState.RUNNING && context.jobId) {
             void backendPort.reportFrontendPresence?.(context.jobId, {
                 reason: 'page.hidden',
+                runId: context.runId,
                 visibilityState: 'hidden',
                 chatIdentity: cloneValue(context.chatIdentity),
             });
@@ -122,7 +123,7 @@ export function createResumeCoordinator({
 
     async function handleRunningReturn(type) {
         const context = retryFsm.getContext();
-        retryFsm.resume({
+        await retryFsm.resume({
             reason: type,
             isVisible: Boolean(stPort.isVisible?.()),
             chatIdentity: resolveCaptureSubscriptionChatIdentity(
@@ -134,15 +135,10 @@ export function createResumeCoordinator({
         syncRuntimeFromFsm?.(retryFsm);
         render?.();
 
-        // resume()'s internal one-shot poll updates the FSM context and
-        // applies accepted output, but it calls handlePollingStatus
-        // (private) rather than going through updateActiveJob → render.
-        // That leaves runtime.activeJobStatus (and therefore the stats
-        // panel) at whatever the last regular poll reported, which can
-        // be up to 8 s stale after slow-cadence hidden-tab polling.
-        // Fire an explicit stats-only poll here so the panel reflects
-        // backend truth as soon as the user returns, without waiting
-        // for the next cadence tick.
+        // Fire one explicit return poll so accepted outputs that landed while
+        // mobile timers were paused flow through updateActiveJob ->
+        // observeBackendStatus -> projection/render before the user has to
+        // touch a manual Sync button.
         const resumeJobId = context.jobId;
         if (!resumeJobId || typeof backendPort.pollStatus !== 'function') {
             return;
@@ -153,7 +149,7 @@ export function createResumeCoordinator({
             if (!fresh) return;
             if (retryFsm.getState() !== RetryState.RUNNING) return;
             if (retryFsm.getContext().jobId !== resumeJobId) return;
-            updateActiveJob?.(fresh, resumeJobId);
+            await updateActiveJob?.(fresh, resumeJobId);
             syncRuntimeFromFsm?.(retryFsm);
             render?.();
         } catch {

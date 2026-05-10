@@ -200,7 +200,6 @@ export function createRestoreController({
                 }
                 const status = recovered?.status || null;
                 if (status?.jobId && String(status.state || '') === 'running') {
-                    updateActiveJob(status, status.jobId);
                     retryFsm.restoreRunning({
                         status,
                         runId: status.runId,
@@ -208,6 +207,7 @@ export function createRestoreController({
                         chatIdentity: status.chatIdentity || chatIdentity,
                         target: buildRestoreTarget(status, intent?.singleTarget || null),
                     });
+                    await updateActiveJob(status, status.jobId);
                     syncRuntimeFromFsm(retryFsm);
                     render();
                     if (status?.targetMessageVersion > 0 && stPort?.reconciler?.reconcileAfterRestore) {
@@ -347,7 +347,7 @@ export function createRestoreController({
             };
         }
 
-        updateActiveJob(latest, latest.jobId);
+        await updateActiveJob(latest, latest.jobId);
         render();
 
         const renderPayload = {

@@ -717,7 +717,7 @@ async function resolvePendingNativeState(job, cause) {
 
             if (inspection.kind === 'target_pending') {
                 const nextAttempts = Number(job.inspectionAttempts || 0) + 1;
-                if (nextAttempts >= MAX_TARGET_PENDING_INSPECTIONS) {
+                if (shouldForceTargetPendingRecovery(cause, inspection, nextAttempts)) {
                     // If the assistant slot already exists on disk and was
                     // only marked target_pending because its content matches
                     // the captured baseline (typical for a swipe/regenerate
@@ -780,6 +780,23 @@ async function resolvePendingNativeState(job, cause) {
         nativeResolutionByJob.set(job.jobId, { inProgress: true, promise: resolutionPromise });
     }
     return await resolutionPromise;
+}
+
+function shouldForceTargetPendingRecovery(cause, inspection, nextAttempts) {
+    if (nextAttempts >= MAX_TARGET_PENDING_INSPECTIONS) {
+        return true;
+    }
+
+    if (inspection?.baselineMatch !== true || !inspection?.assistantMessage) {
+        return false;
+    }
+
+    return [
+        'native_wait_timeout',
+        'native_attempt_timeout',
+        'hidden_timeout',
+        'frontend_stale',
+    ].includes(String(cause || '').trim());
 }
 
 async function waitForNativeResolutionIdle(job, timeoutMs) {
@@ -1101,8 +1118,10 @@ async function replayCapturedRequest(job, environment) {
                 throw payloadError;
             }
 
+            const status = Number(response.status);
+            const retryable = status === 429 || (status >= 500 && status < 600);
             throw createStructuredError(
-                'handoff_request_failed',
+                retryable ? 'attempt_upstream_retryable' : 'handoff_request_failed',
                 `Generation request failed with status ${response.status}`,
                 buildReplayFailureDetail(replayFailureContext),
             );
@@ -1373,6 +1392,10 @@ function isRetryableReplayPayloadError(descriptor, context = {}) {
         return true;
     }
 
+    if (isRetryableProviderErrorDescriptor(descriptor)) {
+        return true;
+    }
+
     const haystack = [
         descriptor?.message,
         descriptor?.detail,
@@ -1381,6 +1404,17 @@ function isRetryableReplayPayloadError(descriptor, context = {}) {
     ].filter(Boolean).join(' ').toLowerCase();
 
     return /too many requests|rate limit|rate-limit|try again later|temporarily unavailable|server busy|overloaded|timeout|timed out|请求数限制|频率限制|稍后再试/u.test(haystack);
+}
+
+function isRetryableProviderErrorDescriptor(descriptor) {
+    const haystack = [
+        descriptor?.message,
+        descriptor?.detail,
+        descriptor?.code,
+        descriptor?.type,
+    ].filter(Boolean).join(' ').toLowerCase();
+
+    return /rate[ _-]?limit|rate[ _-]?limit[ _-]?exceeded|service[ _-]?unavailable|internal[ _-]?error|server[ _-]?error/u.test(haystack);
 }
 
 function buildReplayPayloadErrorDetail(descriptor, context = {}) {

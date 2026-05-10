@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const appPortsSource = readFileSync(new URL('./app-ports.js', import.meta.url), 'utf8');
+const appSource = readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 const projectorSource = readFileSync(new URL('./core/projector.js', import.meta.url), 'utf8');
 const appRecoverySource = readFileSync(new URL('./app-recovery.js', import.meta.url), 'utf8');
 const sessionLockdownSource = readFileSync(new URL('./st-bridge/lockdown.js', import.meta.url), 'utf8');
@@ -47,6 +48,24 @@ test('app-recovery stays isolated from concrete adapter factories', () => {
         appRecoverySource,
         /\bcreateBackendPort\b/,
         'app-recovery.js must not import createBackendPort',
+    );
+});
+
+test('app.js delegates page lifecycle and resume orchestration to dedicated modules', () => {
+    assert.match(
+        appSource,
+        /from '\.\/app-page-lifecycle\.js'/,
+        'app.js must import lifecycle binding from app-page-lifecycle.js',
+    );
+    assert.match(
+        appSource,
+        /from '\.\/app-resume-coordinator\.js'/,
+        'app.js must import return recovery from app-resume-coordinator.js',
+    );
+    assert.doesNotMatch(
+        appSource,
+        /function handleExternalSignal|function scheduleLatestJobReconcile|export function bindPageObservers|export function unbindPageObservers/,
+        'app.js must not carry duplicate lifecycle/resume implementations',
     );
 });
 

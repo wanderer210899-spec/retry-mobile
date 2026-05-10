@@ -382,7 +382,7 @@ export function createRetryFsm({
         return getContext();
     }
 
-    function resume(payload = {}) {
+    async function resume(payload = {}) {
         if (!isState(context, RetryState.RUNNING)) {
             return illegalTransition('resume', [RetryState.RUNNING], payload);
         }
@@ -399,120 +399,18 @@ export function createRetryFsm({
 
         context = nextContext;
 
-        if (context.pendingVisibleRender && payload.isVisible === true) {
-            const pendingRender = clonePlain(context.pendingVisibleRender);
-            const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
-            logEvent?.('reconcile_flush_started', `Flushing pending render version ${pendingVersion} on page visible.`, { targetMessageVersion: pendingVersion });
-            Promise.resolve(stPort.reconciler?.apply?.(pendingRender))
-                .then(async (result) => {
-                    if (!isState(context, RetryState.RUNNING)) {
-                        return;
-                    }
-                    if (result?.ok === false) {
-                        const willReload = !context.reloadAttempted;
-                        logEvent?.('reconcile_flush_failed', `Flush failed [${result?.error?.code || 'unknown'}]${willReload ? ' — triggering chat reload' : ''}.`, { errorCode: result?.error?.code, targetMessageVersion: pendingVersion });
-                        if (willReload) {
-                            context = createContextForState({
-                                ...context,
-                                reloadAttempted: true,
-                            });
-                            try {
-                                await stPort.guardedReload?.();
-                                logEvent?.('chat_reload_completed', 'Chat reload after flush failure completed.', null);
-                            } catch {}
-                        }
-                        context = createContextForState({
-                            ...context,
-                            lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
-                            pendingVisibleRender: null,
-                        });
-                        if (context.jobId && isState(context, RetryState.RUNNING)) {
-                            Promise.resolve(backendPort.pollStatus?.(context.jobId))
-                                .then((fresh) => {
-                                    if (!fresh || !isState(context, RetryState.RUNNING)) return;
-                                    return handlePollingStatus(fresh);
-                                })
-                                .catch(() => {});
-                        }
-                        return;
-                    }
-                    logEvent?.('reconcile_flush_succeeded', `Flush succeeded for version ${pendingVersion}.`, { targetMessageVersion: pendingVersion });
-                    context = createContextForState({
-                        ...context,
-                        lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
-                        pendingVisibleRender: null,
-                    });
-                    if (String(pendingRender?.status?.state || '').trim() === 'completed') {
-                        // Never trust a queued "completed" snapshot blindly after a hidden-tab window.
-                        // Re-check backend truth; otherwise a cached/stale terminal snapshot could
-                        // incorrectly transition the frontend to done while the backend keeps running.
-                        try {
-                            const fresh = await backendPort.pollStatus?.(context.jobId);
-                            if (fresh?.state === 'completed') {
-                                jobCompleted({ status: fresh });
-                            }
-                        } catch {
-                            // If we cannot re-check right now, stay running and let polling resolve.
-                        }
-                    }
-                })
-                .catch(async () => {
-                    if (!isState(context, RetryState.RUNNING)) {
-                        return;
-                    }
-                    logEvent?.('reconcile_flush_failed', `Flush threw an exception${!context.reloadAttempted ? ' — triggering chat reload' : ''}.`, { targetMessageVersion: pendingVersion });
-                    if (!context.reloadAttempted) {
-                        context = createContextForState({
-                            ...context,
-                            reloadAttempted: true,
-                        });
-                        try {
-                            await stPort.guardedReload?.();
-                            logEvent?.('chat_reload_completed', 'Chat reload after flush exception completed.', null);
-                        } catch {}
-                    }
-                    context = createContextForState({
-                        ...context,
-                        lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
-                        pendingVisibleRender: null,
-                    });
-                    if (context.jobId && isState(context, RetryState.RUNNING)) {
-                        Promise.resolve(backendPort.pollStatus?.(context.jobId))
-                            .then((fresh) => {
-                                if (!fresh || !isState(context, RetryState.RUNNING)) return;
-                                return handlePollingStatus(fresh);
-                            })
-                            .catch(() => {});
-                    }
-                });
-        }
-
-        // When the page becomes visible but no pending render was queued, the
-        // polling loop may have been suspended by the mobile browser while in
-        // background and hasn't yet picked up the completed job status. The
-        // slow cadence (or a paused timer) means the user could wait a long
-        // time before the message appears. A single immediate poll here catches
-        // any terminal or intermediate status without disrupting the regular
-        // polling loop.
-        if (payload.isVisible === true && !context.pendingVisibleRender && context.jobId) {
-            Promise.resolve(backendPort.pollStatus?.(context.jobId))
-                .then((fresh) => {
-                    if (!fresh || !isState(context, RetryState.RUNNING)) {
-                        return;
-                    }
-                    return handlePollingStatus(fresh);
-                })
-                .catch(() => {
-                    // Non-fatal; the regular polling loop will catch up.
-                });
-        }
-
         if (context.jobId) {
             backendPort.reportFrontendPresence?.(context.jobId, {
                 reason: String(payload.reason || 'resume'),
+                runId: context.runId,
+                visibilityState: payload.isVisible === false ? 'hidden' : 'visible',
                 chatIdentity: clonePlain(context.chatIdentity),
                 target: clonePlain(context.target),
             });
+        }
+
+        if (context.pendingVisibleRender && payload.isVisible === true) {
+            await flushPendingVisibleRender('page_visible');
         }
 
         return getContext();
@@ -656,6 +554,8 @@ export function createRetryFsm({
 
         backendPort.reportFrontendPresence?.(nextContext.jobId, {
             reason: 'running_entry',
+            runId: nextContext.runId,
+            visibilityState: stPort.isVisible?.() === false ? 'hidden' : 'visible',
             chatIdentity: clonePlain(nextContext.chatIdentity),
             target: clonePlain(nextContext.target),
         });
@@ -783,7 +683,7 @@ export function createRetryFsm({
     // Public entry point for all backend status updates. Validates the status
     // (jobId presence, valid state) and defensively lifts lockdown on terminal
     // states before delegating to handlePollingStatus.
-    function observeBackendStatus(status) {
+    async function observeBackendStatus(status) {
         if (!status) {
             return { accepted: false, reason: 'no_status' };
         }
@@ -808,7 +708,7 @@ export function createRetryFsm({
             stPort.setLockdown?.(false);
         }
 
-        void handlePollingStatus(status);
+        await handlePollingStatus(status);
         return { accepted: true, reason: 'ok' };
     }
 
@@ -865,7 +765,7 @@ export function createRetryFsm({
         if (context.pendingVisibleRender
             && stPort.isVisible?.() !== false
             && stPort.isStreaming?.() !== true) {
-            void flushPendingVisibleRender('streaming_settled');
+            await flushPendingVisibleRender('streaming_settled');
             return;
         }
 
@@ -989,7 +889,17 @@ export function createRetryFsm({
             if (!isState(context, RetryState.RUNNING)) {
                 return;
             }
-            logEvent?.('reconcile_flush_failed', 'Flush threw an exception — run error set.', { errorCode: error?.code, targetMessageVersion: pendingVersion });
+            logEvent?.('reconcile_flush_failed', `Flush threw an exception${!context.reloadAttempted ? ' — triggering chat reload' : ''}.`, { errorCode: error?.code, targetMessageVersion: pendingVersion });
+            if (!context.reloadAttempted) {
+                context = createContextForState({
+                    ...context,
+                    reloadAttempted: true,
+                });
+                try {
+                    await stPort.guardedReload?.();
+                    logEvent?.('chat_reload_completed', 'Chat reload after flush exception completed.', null);
+                } catch {}
+            }
             handleVisibleApplyFailure(error);
         } finally {
             flushInFlight = false;

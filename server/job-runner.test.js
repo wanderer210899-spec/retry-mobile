@@ -178,6 +178,136 @@ test('replayCapturedRequest treats wrapped rate-limit payloads as retryable upst
     }
 });
 
+test('replayCapturedRequest treats plain transient HTTP failures as retryable upstream failures', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+        ok: false,
+        status: 500,
+        async text() {
+            return 'Internal Server Error';
+        },
+    });
+
+    try {
+        await assert.rejects(
+            replayCapturedRequest({
+                capturedRequest: {
+                    chat_completion_source: 'openai',
+                    messages: [{ role: 'user', content: 'hello' }],
+                },
+                runConfig: {
+                    attemptTimeoutSeconds: 5,
+                },
+            }, {
+                baseUrl: 'http://127.0.0.1:8000',
+                requestAuth: {
+                    cookieHeader: 'session-123=abc',
+                    csrfToken: 'csrf-123',
+                },
+            }),
+            (error) => {
+                assert.equal(error.code, 'attempt_upstream_retryable');
+                assert.match(error.message, /status 500/u);
+                assert.match(error.detail, /status=500/u);
+                assert.match(error.detail, /response=Internal Server Error/u);
+                return true;
+            },
+        );
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
+test('replayCapturedRequest treats wrapped internal provider errors as retryable upstream failures', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+        ok: true,
+        status: 200,
+        async text() {
+            return JSON.stringify({
+                error: {
+                    message: 'Internal Server Error',
+                    type: 'server_error',
+                    code: 'internal_error',
+                },
+            });
+        },
+    });
+
+    try {
+        await assert.rejects(
+            replayCapturedRequest({
+                capturedRequest: {
+                    chat_completion_source: 'openai',
+                    messages: [{ role: 'user', content: 'hello' }],
+                },
+                runConfig: {
+                    attemptTimeoutSeconds: 5,
+                },
+            }, {
+                baseUrl: 'http://127.0.0.1:8000',
+                requestAuth: {
+                    cookieHeader: 'session-123=abc',
+                    csrfToken: 'csrf-123',
+                },
+            }),
+            (error) => {
+                assert.equal(error.code, 'attempt_upstream_retryable');
+                assert.match(error.message, /Internal Server Error/u);
+                assert.match(error.detail, /providerCode=internal_error/u);
+                assert.match(error.detail, /providerType=server_error/u);
+                return true;
+            },
+        );
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
+test('replayCapturedRequest treats message-only internal provider errors as retryable upstream failures', async () => {
+    const originalFetch = global.fetch;
+    global.fetch = async () => ({
+        ok: true,
+        status: 200,
+        async text() {
+            return JSON.stringify({
+                error: {
+                    message: 'Internal Server Error',
+                },
+                quota_error: false,
+            });
+        },
+    });
+
+    try {
+        await assert.rejects(
+            replayCapturedRequest({
+                capturedRequest: {
+                    chat_completion_source: 'openai',
+                    messages: [{ role: 'user', content: 'hello' }],
+                },
+                runConfig: {
+                    attemptTimeoutSeconds: 5,
+                },
+            }, {
+                baseUrl: 'http://127.0.0.1:8000',
+                requestAuth: {
+                    cookieHeader: 'session-123=abc',
+                    csrfToken: 'csrf-123',
+                },
+            }),
+            (error) => {
+                assert.equal(error.code, 'attempt_upstream_retryable');
+                assert.match(error.message, /Internal Server Error/u);
+                assert.match(error.detail, /status=200/u);
+                return true;
+            },
+        );
+    } finally {
+        global.fetch = originalFetch;
+    }
+});
+
 test('extractResponseText supports responseContent.parts payloads', () => {
     const text = extractResponseText({
         responseContent: {
@@ -435,6 +565,107 @@ test('resolvePendingNativeState waits briefly for a frontend-confirmed native as
     }
 });
 
+test('resolvePendingNativeState abandons a baseline-matching assistant on explicit native timeout', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-baseline-timeout-'));
+    const chatsRoot = path.join(tempRoot, 'chats');
+    const cardDir = path.join(chatsRoot, 'Kate');
+    fs.mkdirSync(cardDir, { recursive: true });
+
+    const integrity = 'integrity-native-baseline-timeout';
+    const userAnchorId = 'user-anchor-native-baseline-timeout';
+    const chatId = 'kate-native-baseline-timeout';
+    const staleReply = 'This stale assistant reply existed before the current retry capture.';
+    const staleFinishedAt = '2026-05-03T22:00:00.000Z';
+    const chatPath = path.join(cardDir, `${chatId}.jsonl`);
+    fs.writeFileSync(chatPath, [
+        JSON.stringify({
+            chat_metadata: {
+                integrity,
+            },
+        }),
+        JSON.stringify({
+            name: 'User',
+            is_user: true,
+            is_system: false,
+            mes: 'I wait under the streetlight after class.',
+            extra: {
+                retryMobileUserAnchorId: userAnchorId,
+            },
+        }),
+        JSON.stringify({
+            name: 'Kate',
+            is_user: false,
+            is_system: false,
+            mes: staleReply,
+            swipes: [staleReply],
+            swipe_id: 0,
+            gen_finished: staleFinishedAt,
+            extra: {},
+        }),
+    ].join('\n'));
+
+    const now = new Date().toISOString();
+    const job = {
+        jobId: 'job-native-baseline-timeout',
+        runId: 'run-native-baseline-timeout',
+        state: 'running',
+        phase: 'pending_native',
+        createdAt: now,
+        updatedAt: now,
+        nativeState: 'pending',
+        nativeResolutionCause: 'native_wait_timeout',
+        recoveryMode: '',
+        acceptedCount: 0,
+        targetAcceptedCount: 1,
+        attemptCount: 0,
+        maxAttempts: 3,
+        targetMessageVersion: 0,
+        targetUserAnchorId: userAnchorId,
+        targetAssistantAnchorId: 'assistant-anchor-native-baseline-timeout',
+        capturedChatIntegrity: integrity,
+        capturedChatLength: 2,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: 'I wait under the streetlight after class.',
+            assistantBaseline: {
+                messageText: staleReply,
+                swipeCount: 1,
+                swipeId: 0,
+                genFinished: staleFinishedAt,
+            },
+        },
+        chatIdentity: {
+            kind: 'character',
+            avatarUrl: 'Kate.png',
+            chatId,
+            fileName: chatId,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: {
+                root: tempRoot,
+                chats: chatsRoot,
+                groupChats: path.join(tempRoot, 'group chats'),
+            },
+        },
+        attemptLog: [],
+    };
+
+    try {
+        const result = await resolvePendingNativeState(job, 'native_wait_timeout');
+
+        assert.equal(result.outcome, 'abandoned');
+        assert.equal(job.state, 'running');
+        assert.equal(job.phase, 'native_abandoned');
+        assert.equal(job.nativeState, 'abandoned');
+        assert.equal(job.recoveryMode, 'reuse_empty_placeholder');
+        assert.equal(job.inspectionAttempts, 1);
+        assert.equal(job.assistantMessageIndex, 1);
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('runJob treats native_attempt_timeout as a timed-out first attempt and proceeds to retry generation', async () => {
     const originalFetch = global.fetch;
     const fetchCalls = [];
@@ -663,6 +894,148 @@ function buildRunJobNativeBase(overrides = {}) {
         ...overrides,
     };
 }
+
+function createRunJobChatFixture(rootPath, options = {}) {
+    const directories = {
+        root: rootPath,
+        chats: path.join(rootPath, 'chats'),
+        groupChats: path.join(rootPath, 'group chats'),
+        backups: path.join(rootPath, 'backups'),
+    };
+    const cardName = options.cardName || 'hero';
+    const chatId = options.chatId || 'provider-error-retry';
+    const integrity = options.integrity || 'integrity-provider-error';
+    const userAnchorId = options.userAnchorId || 'user-provider-error';
+    const userMessageText = options.userMessageText || 'Hello there';
+    const chatDir = path.join(directories.chats, cardName);
+    const chatPath = path.join(chatDir, `${chatId}.jsonl`);
+
+    fs.mkdirSync(chatDir, { recursive: true });
+    fs.mkdirSync(directories.groupChats, { recursive: true });
+    fs.mkdirSync(directories.backups, { recursive: true });
+    fs.writeFileSync(chatPath, [
+        {
+            chat_metadata: {
+                integrity,
+            },
+        },
+        {
+            name: 'You',
+            is_user: true,
+            is_system: false,
+            mes: userMessageText,
+            extra: {
+                retryMobileUserAnchorId: userAnchorId,
+            },
+        },
+    ].map((row) => JSON.stringify(row)).join('\n'));
+
+    return {
+        directories,
+        chatId,
+        integrity,
+        userAnchorId,
+        userMessageText,
+    };
+}
+
+test('runJob retries transient provider failures before consuming a later success', async () => {
+    const originalFetch = global.fetch;
+    const fetchCalls = [];
+    let backendCallCount = 0;
+    global.fetch = async (url) => {
+        fetchCalls.push(url);
+        backendCallCount++;
+        if (backendCallCount === 1) {
+            return {
+                ok: true,
+                status: 200,
+                async text() {
+                    return JSON.stringify({
+                        error: {
+                            message: 'Internal Server Error',
+                            type: 'server_error',
+                            code: 'internal_error',
+                        },
+                    });
+                },
+            };
+        }
+
+        if (backendCallCount === 2) {
+            return {
+                ok: false,
+                status: 429,
+                async text() {
+                    return JSON.stringify({
+                        error: {
+                            message: 'Rate limited.',
+                            type: 'rate_limit',
+                            code: 'rate_limit_exceeded',
+                        },
+                    });
+                },
+            };
+        }
+
+        return {
+            ok: true,
+            status: 200,
+            async text() {
+                return JSON.stringify({
+                    choices: [{
+                        text: 'Recovered provider response that is long enough to be accepted by validation.',
+                    }],
+                });
+            },
+        };
+    };
+
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-provider-error-retry-'));
+    const fixture = createRunJobChatFixture(tempRoot);
+    const job = buildRunJobNativeBase({
+        jobId: 'job-provider-error-retry',
+        runId: 'run-provider-error-retry',
+        phase: 'native_abandoned',
+        nativeState: 'abandoned',
+        nativeAttemptResolved: true,
+        recoveryMode: 'create_missing_turn',
+        targetAcceptedCount: 1,
+        maxAttempts: 3,
+        targetMessage: null,
+        targetUserAnchorId: fixture.userAnchorId,
+        targetAssistantAnchorId: 'assistant-provider-error',
+        capturedChatIntegrity: fixture.integrity,
+        capturedChatLength: 1,
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: fixture.userMessageText,
+        },
+        chatIdentity: {
+            kind: 'character',
+            avatarUrl: 'hero.png',
+            chatId: fixture.chatId,
+            fileName: fixture.chatId,
+        },
+        userContext: {
+            handle: 'default-user',
+            directories: fixture.directories,
+        },
+    });
+
+    try {
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null });
+
+        assert.equal(fetchCalls.length, 3);
+        assert.equal(job.attemptCount, 3);
+        const retryableFailures = job.attemptLog.filter((entry) => entry.reason === 'attempt_upstream_retryable');
+        assert.equal(retryableFailures.length, 2);
+        assert.deepEqual(retryableFailures.map((entry) => entry.attemptNumber), [1, 2]);
+    } finally {
+        global.fetch = originalFetch;
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
 
 test('runJob goal=1 native-confirmed-accepted: completes without any backend fetch', async () => {
     const originalFetch = global.fetch;

@@ -22,7 +22,7 @@ export function createAppPorts({
             void Promise.resolve()
                 .then(() => buildStartPayload(payload))
                 .then((startPayload) => baseBackendPort.startJob(startPayload))
-                .then((result) => {
+                .then(async (result) => {
                     const retryFsm = getRetryFsm();
                     if (!result?.jobId) {
                         throw createStructuredError(
@@ -31,22 +31,22 @@ export function createAppPorts({
                         );
                     }
 
-                    updateActiveJob(
-                        result.job?.state === 'running' ? result.job : null,
-                        result.jobId,
-                    );
                     retryFsm.jobStarted({
                         runId: payload.runId,
                         jobId: result.jobId,
                         chatIdentity: payload.chatIdentity,
                         target: payload.target,
                     });
+                    await updateActiveJob(
+                        result.job?.state === 'running' ? result.job : null,
+                        result.jobId,
+                    );
                     syncRuntimeFromFsm(retryFsm);
                     render();
                     void flushPendingNativeOutcome();
                 })
                 .catch((error) => {
-                    handleStartJobFailure({
+                    void handleStartJobFailure({
                         error,
                         payload,
                         retryFsm: getRetryFsm(),
@@ -82,7 +82,7 @@ export function createAppPorts({
         },
         async confirmNative(jobId, payload) {
             const result = await baseBackendPort.confirmNative(jobId, payload);
-            return handleJobPortResponse({
+            return await handleJobPortResponse({
                 result,
                 jobId,
                 updateActiveJob,
@@ -91,7 +91,7 @@ export function createAppPorts({
         },
         async reportNativeFailure(jobId, payload) {
             const result = await baseBackendPort.reportNativeFailure(jobId, payload);
-            return handleJobPortResponse({
+            return await handleJobPortResponse({
                 result,
                 jobId,
                 updateActiveJob,
@@ -100,7 +100,7 @@ export function createAppPorts({
         },
         async reportFrontendPresence(jobId, payload) {
             const result = await baseBackendPort.reportFrontendPresence(jobId, payload);
-            return handleJobPortResponse({
+            return await handleJobPortResponse({
                 result,
                 jobId,
                 updateActiveJob,
@@ -113,7 +113,7 @@ export function createAppPorts({
     };
 }
 
-export function handleStartJobFailure({
+export async function handleStartJobFailure({
     error,
     payload,
     retryFsm,
@@ -135,7 +135,6 @@ export function handleStartJobFailure({
             current.runId,
             attachedStatus.runId,
         )) {
-            updateActiveJob(attachedStatus, attachedStatus.jobId);
             retryFsm.restoreRunning({
                 status: attachedStatus,
                 runId: attachedStatus.runId || payload.runId,
@@ -143,6 +142,7 @@ export function handleStartJobFailure({
                 chatIdentity: attachedStatus.chatIdentity || current.chatIdentity || payload.chatIdentity,
                 target: buildRestoreTarget(attachedStatus, current.target),
             });
+            await updateActiveJob(attachedStatus, attachedStatus.jobId);
             syncRuntimeFromFsm(retryFsm);
             render();
             void flushPendingNativeOutcome?.();
@@ -182,19 +182,18 @@ export async function handlePollingPortStatus({
     if (statusJobId && expectedJobId && statusJobId !== expectedJobId) {
         return;
     }
-    updateActiveJob(status || null, jobId);
-    await onStatus?.(status);
+    await updateActiveJob(status || null, jobId);
     syncRuntimeFromFsm(retryFsm);
     render();
 }
 
-export function handleJobPortResponse({
+export async function handleJobPortResponse({
     result,
     jobId,
     updateActiveJob,
     render,
 }) {
-    if (result?.job && updateActiveJob(result.job, jobId)) {
+    if (result?.job && await updateActiveJob(result.job, jobId)) {
         render();
     }
 

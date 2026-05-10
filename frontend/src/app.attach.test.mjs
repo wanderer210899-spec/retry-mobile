@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { handleStartJobFailure } from './app-ports.js';
 import { RetryState } from './retry-fsm.js';
 
-test('handleStartJobFailure surfaces rejected attach conflicts through jobFailed instead of leaving CAPTURING stuck', () => {
+test('handleStartJobFailure surfaces rejected attach conflicts through jobFailed instead of leaving CAPTURING stuck', async () => {
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
     const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
     const calls = [];
@@ -27,7 +27,7 @@ test('handleStartJobFailure surfaces rejected attach conflicts through jobFailed
         },
     };
 
-    handleStartJobFailure({
+    await handleStartJobFailure({
         error: {
             status: 409,
             payload: {

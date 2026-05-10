@@ -27,15 +27,57 @@ test('handlePollingPortStatus renders once after the status and FSM sync complet
         },
     });
 
-    assert.equal(calls.length, 4);
+    assert.equal(calls.length, 3);
     assert.deepEqual(calls[0], ['updateActiveJob', status, 'job-1']);
-    assert.deepEqual(calls[1], ['onStatus', status]);
-    assert.deepEqual(calls[2], ['syncRuntimeFromFsm', retryFsm]);
-    assert.deepEqual(calls[3], ['render']);
+    assert.deepEqual(calls[1], ['syncRuntimeFromFsm', retryFsm]);
+    assert.deepEqual(calls[2], ['render']);
+    assert.equal(calls.some(([method]) => method === 'onStatus'), false);
     assert.equal(calls.filter(([method]) => method === 'render').length, 1);
 });
 
-test('handleJobPortResponse renders once when a backend response materially changes active job status', () => {
+test('handlePollingPortStatus waits for async FSM ingestion before projecting and rendering', async () => {
+    const calls = [];
+    let releaseUpdate;
+    const updateDone = new Promise((resolve) => {
+        releaseUpdate = resolve;
+    });
+
+    const promise = handlePollingPortStatus({
+        status: { jobId: 'job-async', state: 'completed' },
+        jobId: 'job-async',
+        async updateActiveJob() {
+            calls.push(['update-start']);
+            await updateDone;
+            calls.push(['update-finish']);
+            return true;
+        },
+        async onStatus() {
+            calls.push(['onStatus']);
+        },
+        syncRuntimeFromFsm() {
+            calls.push(['sync']);
+        },
+        retryFsm: {},
+        render() {
+            calls.push(['render']);
+        },
+    });
+
+    await Promise.resolve();
+    assert.deepEqual(calls, [['update-start']]);
+
+    releaseUpdate();
+    await promise;
+
+    assert.deepEqual(calls, [
+        ['update-start'],
+        ['update-finish'],
+        ['sync'],
+        ['render'],
+    ]);
+});
+
+test('handleJobPortResponse renders once when a backend response materially changes active job status', async () => {
     const calls = [];
     const result = {
         job: {
@@ -44,7 +86,7 @@ test('handleJobPortResponse renders once when a backend response materially chan
         },
     };
 
-    const returned = handleJobPortResponse({
+    const returned = await handleJobPortResponse({
         result,
         jobId: 'job-1',
         updateActiveJob(job, jobId) {
@@ -88,7 +130,7 @@ test('handlePollingPortStatus silently drops a status whose jobId does not match
     assert.equal(calls.length, 0, 'all downstream calls must be skipped when status jobId does not match polling jobId');
 });
 
-test('handleJobPortResponse skips rendering when the backend response does not change visible job state', () => {
+test('handleJobPortResponse skips rendering when the backend response does not change visible job state', async () => {
     const calls = [];
     const result = {
         job: {
@@ -97,7 +139,7 @@ test('handleJobPortResponse skips rendering when the backend response does not c
         },
     };
 
-    const returned = handleJobPortResponse({
+    const returned = await handleJobPortResponse({
         result,
         jobId: 'job-1',
         updateActiveJob(job, jobId) {

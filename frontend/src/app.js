@@ -31,6 +31,8 @@ import {
     resolveCaptureSubscriptionChatIdentity,
 } from './app-recovery.js';
 import { applyInstallVersionGate } from './install-version-gate.js';
+import { bindPageObservers, unbindPageObservers } from './app-page-lifecycle.js';
+import { createResumeCoordinator } from './app-resume-coordinator.js';
 
 const runtime = createRuntime();
 
@@ -49,8 +51,6 @@ export async function bootRetryMobile() {
     let backendPort = null;
     let stPort = null;
     let retryFsm = null;
-    let resumeSignalHandle = 0;
-    let latestReconcileHandle = 0;
 
     const persistSettings = () => {
         writeSettings(getContext(), runtime.settings);
@@ -282,6 +282,21 @@ export async function bootRetryMobile() {
         eventTypes: getEventTypes(getContext()),
         logEvent: (event, summary, detail) => window.__rmLogEvent?.(event, summary, detail),
     });
+    const resumeCoordinator = createResumeCoordinator({
+        retryFsm,
+        runtime,
+        backendPort,
+        stPort,
+        restoreController,
+        ensurePanelMounted,
+        syncRuntimeFromFsm: syncRuntime,
+        updateActiveJob,
+        render,
+        getCurrentChatIdentity: () => getChatIdentity(getContext()),
+        toStructuredError,
+        logEvent: (event, summary, detail) => window.__rmLogEvent?.(event, summary, detail),
+        windowRef: window,
+    });
 
     window.__rmTeardown?.();
     window.__rmTeardown = () => {
@@ -297,17 +312,10 @@ export async function bootRetryMobile() {
         }
         restoreController.unsubscribeChatChangedRestore?.();
         unbindPageObservers(runtime);
-        if (resumeSignalHandle) {
-            clearTimeout(resumeSignalHandle);
-            resumeSignalHandle = 0;
-        }
-        if (latestReconcileHandle) {
-            clearTimeout(latestReconcileHandle);
-            latestReconcileHandle = 0;
-        }
+        resumeCoordinator.teardown?.();
     };
     window.__rmDispatch = (type, payload) => {
-        handleExternalSignal(type, payload);
+        resumeCoordinator.dispatch(type, payload);
     };
     window.__rmLogEvent = (event, summary, detail) => sendFrontendLogEvent(runtime, { event, summary, detail });
 
@@ -433,95 +441,6 @@ export async function bootRetryMobile() {
         await handleNativeFailed(pending.payload);
     }
 
-    function handleExternalSignal(type, payload = {}) {
-        const state = retryFsm.getState();
-        if (type === 'page.hidden') {
-            const context = retryFsm.getContext();
-            if (state === RetryState.RUNNING && context.jobId) {
-                void backendPort.reportFrontendPresence(context.jobId, {
-                    reason: 'page.hidden',
-                    visibilityState: 'hidden',
-                    chatIdentity: cloneValue(context.chatIdentity),
-                });
-            }
-            return;
-        }
-
-        if (type === 'page.visible' || type === 'window.focused' || type === 'network.online') {
-            // Coming back from a hidden/suspended browser can detach the panel host.
-            // Remount immediately rather than waiting for the periodic host observer tick.
-            ensurePanelMounted();
-            if (state !== RetryState.RUNNING) {
-                scheduleLatestJobReconcile(type);
-                return;
-            }
-
-            // RUNNING path: page.visible, window.focused, and network.online all fire
-            // within ~400ms of each other on mobile browser resume. Only the first
-            // triggers resume + poll.
-            if (resumeSignalHandle) {
-                return;
-            }
-            resumeSignalHandle = window.setTimeout(() => { resumeSignalHandle = 0; }, 500);
-            const context = retryFsm.getContext();
-            retryFsm.resume({
-                reason: type,
-                isVisible: Boolean(stPort.isVisible?.()),
-                chatIdentity: resolveCaptureSubscriptionChatIdentity(
-                    context,
-                    getChatIdentity(getContext()),
-                ),
-                pendingVisibleRender: context.pendingVisibleRender,
-            });
-            syncRuntime();
-            render();
-
-            // resume()'s internal one-shot poll updates the FSM context and applies
-            // accepted output, but it calls handlePollingStatus (private) rather than
-            // going through updateActiveJob → render. That leaves runtime.activeJobStatus
-            // (and therefore the stats panel) at whatever the last regular poll reported,
-            // which can be up to 8 s stale after slow-cadence hidden-tab polling.
-            // Fire an explicit stats-only poll here so the panel reflects backend truth
-            // as soon as the user returns, without waiting for the next cadence tick.
-            const resumeJobId = context.jobId;
-            if (resumeJobId) {
-                void backendPort.pollStatus?.(resumeJobId)
-                    .then((fresh) => {
-                        if (!fresh) return;
-                        if (retryFsm.getState() !== RetryState.RUNNING) return;
-                        if (retryFsm.getContext().jobId !== resumeJobId) return;
-                        updateActiveJob(fresh, resumeJobId);
-                        syncRuntime();
-                        render();
-                    })
-                    .catch(() => {});
-            }
-        }
-    }
-
-    function scheduleLatestJobReconcile(reason) {
-        if (latestReconcileHandle) {
-            return;
-        }
-
-        latestReconcileHandle = window.setTimeout(() => {
-            latestReconcileHandle = 0;
-            if (retryFsm.getState() === RetryState.RUNNING) {
-                return;
-            }
-            void restoreController.reconcileLatestForCurrentChat({
-                reason,
-                allowReload: false,
-            }).then(() => {
-                syncRuntime();
-                render();
-            }).catch((error) => {
-                runtime.controlError = toStructuredError(error, 'Retry Mobile could not reconcile the latest completed job.');
-                render();
-            });
-        }, 600);
-    }
-
     async function reloadChatFromUi() {
         ensurePanelMounted();
         // The user-facing "reload" action must force a full SillyTavern chat
@@ -534,8 +453,7 @@ export async function bootRetryMobile() {
             if (jobId) {
                 const fresh = await backendPort.pollStatus?.(jobId).catch(() => null);
                 if (fresh && retryFsm.getState() === RetryState.RUNNING && retryFsm.getContext().jobId === jobId) {
-                    updateActiveJob(fresh, jobId);
-                    await retryFsm.adoptStatus?.(fresh);
+                    await updateActiveJob(fresh, jobId);
                     syncRuntime();
                     render();
                 }
@@ -559,13 +477,13 @@ export async function bootRetryMobile() {
         render();
     }
 
-    function updateActiveJob(status, fallbackJobId = '') {
+    async function updateActiveJob(status, fallbackJobId = '') {
         void fallbackJobId;
         if (!status) {
             return false;
         }
         writeStatusMirror(runtime, status);
-        retryFsm?.observeBackendStatus?.(status);
+        await retryFsm?.observeBackendStatus?.(status);
         return true;
     }
 
@@ -729,70 +647,6 @@ function scheduleMountRetry(ensurePanelMounted) {
         runtime.mountRetryHandle = 0;
         ensurePanelMounted();
     }, 900);
-}
-
-export function bindPageObservers(runtime, {
-    documentRef = document,
-    windowRef = window,
-    dispatch = (type, payload) => windowRef.__rmDispatch?.(type, payload),
-    logEvent = (event, summary, detail) => windowRef.__rmLogEvent?.(event, summary, detail),
-} = {}) {
-    if (runtime.pageObserverHandles) {
-        return runtime.pageObserverHandles;
-    }
-
-    const onVisibilityChange = () => {
-        const hidden = documentRef.visibilityState === 'hidden';
-        dispatch(hidden ? 'page.hidden' : 'page.visible', {});
-        void logEvent('visibility_changed', `Frontend visibility changed to ${documentRef.visibilityState}.`, {
-            visibilityState: documentRef.visibilityState,
-        });
-    };
-    const onFocus = () => {
-        dispatch('window.focused', {});
-        void logEvent('window_focus', 'Frontend window regained focus.', null);
-    };
-    const onOnline = () => {
-        dispatch('network.online', {});
-        void logEvent('browser_online', 'Frontend browser reported an online transition.', null);
-    };
-
-    documentRef.addEventListener('visibilitychange', onVisibilityChange);
-    windowRef.addEventListener('focus', onFocus);
-    windowRef.addEventListener('online', onOnline);
-    runtime.pageObserverHandles = {
-        documentRef,
-        windowRef,
-        onVisibilityChange,
-        onFocus,
-        onOnline,
-    };
-    return runtime.pageObserverHandles;
-}
-
-export function unbindPageObservers(runtime) {
-    const handles = runtime.pageObserverHandles;
-    if (!handles) {
-        return false;
-    }
-
-    handles.documentRef.removeEventListener('visibilitychange', handles.onVisibilityChange);
-    handles.windowRef.removeEventListener('focus', handles.onFocus);
-    handles.windowRef.removeEventListener('online', handles.onOnline);
-    runtime.pageObserverHandles = null;
-    return true;
-}
-
-function cloneValue(value) {
-    if (value == null) {
-        return value ?? null;
-    }
-
-    if (typeof globalThis.structuredClone === 'function') {
-        return globalThis.structuredClone(value);
-    }
-
-    return JSON.parse(JSON.stringify(value));
 }
 
 function hasStoredUiLanguage(context) {
