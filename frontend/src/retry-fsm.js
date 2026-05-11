@@ -60,6 +60,7 @@ export function createRetryFsm({
     const abortedCaptureRuns = new Map();
     let flushInFlight = false;
     let visibleApplyInFlight = false;
+    let terminalApplyInFlight = false;
     let context = createInitialRetryContext({
         intent: readIntentSnapshot(intentPort, null),
     });
@@ -914,6 +915,7 @@ export function createRetryFsm({
         flushInFlight = true;
         const pendingRender = clonePlain(context.pendingVisibleRender);
         const pendingVersion = numberOrNull(pendingRender?.status?.targetMessageVersion) || 0;
+        const pendingStatusState = stringOrNull(pendingRender?.status?.state);
         logEvent?.('reconcile_flush_started', `Flushing pending render version ${pendingVersion} (${reason}).`, { targetMessageVersion: pendingVersion });
         try {
             const result = await stPort.reconciler?.apply?.(pendingRender);
@@ -943,6 +945,9 @@ export function createRetryFsm({
                 pendingVisibleRender: null,
                 runError: null,
             });
+            if (pendingStatusState === 'completed') {
+                jobCompleted({ status: pendingRender.status });
+            }
         } catch (error) {
             if (!isState(context, RetryState.RUNNING)) {
                 return;
@@ -977,6 +982,17 @@ export function createRetryFsm({
             status: clonePlain(status),
         };
 
+        if (visibleApplyInFlight || flushInFlight || terminalApplyInFlight) {
+            logEvent?.('reconcile_terminal_deferred', `Terminal output version ${nextVersion} deferred because another render apply is in flight.`, { targetMessageVersion: nextVersion });
+            context = createContextForState({
+                ...context,
+                lastKnownTargetMessageVersion: Math.max(Number(context.lastKnownTargetMessageVersion || 0), nextVersion),
+                pendingVisibleRender: clonePlain(renderPayload),
+                runError: null,
+            });
+            return;
+        }
+
         const strategy = decideRenderStrategy(context, stPort);
         if (strategy === 'queue') {
             if (stPort.isStreaming?.() === true) {
@@ -990,6 +1006,7 @@ export function createRetryFsm({
             return;
         }
 
+        terminalApplyInFlight = true;
         logEvent?.('reconcile_terminal_started', `Applying terminal output version ${nextVersion}.`, { targetMessageVersion: nextVersion });
         try {
             const result = await stPort.reconciler?.apply?.(renderPayload);
@@ -1011,6 +1028,14 @@ export function createRetryFsm({
         } catch {
             logEvent?.('reconcile_terminal_failed', 'Terminal apply threw an exception — triggering best-effort reload.', { targetMessageVersion: nextVersion });
             await completeAfterBestEffortReload(status);
+        } finally {
+            terminalApplyInFlight = false;
+            if (isState(context, RetryState.RUNNING)
+                && context.pendingVisibleRender
+                && stPort.isVisible?.() !== false
+                && stPort.isStreaming?.() !== true) {
+                await flushPendingVisibleRender('terminal_apply_settled');
+            }
         }
     }
 

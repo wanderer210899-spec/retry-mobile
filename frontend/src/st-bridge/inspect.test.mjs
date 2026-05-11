@@ -172,3 +172,53 @@ test('confirmTargetTurn accepts a nearby assistant index when the observed id dr
         globalThis.window = originalWindow;
     }
 });
+
+test('confirmTargetTurn waits when the assistant slot still matches the captured reswipe baseline', () => {
+    const originalWindow = globalThis.window;
+    globalThis.window = {
+        SillyTavern: {
+            getContext() {
+                return {
+                    chatId: 'chat-baseline-confirm',
+                    chat: [
+                        { is_user: true, mes: 'Try that again' },
+                        {
+                            is_user: false,
+                            mes: 'Prior swipe',
+                            swipes: ['Prior swipe', ''],
+                            swipe_id: 1,
+                            gen_finished: '2026-05-11T10:00:00.000Z',
+                        },
+                    ],
+                };
+            },
+        },
+    };
+
+    try {
+        const fingerprint = {
+            chatIdentity: {
+                kind: 'character',
+                chatId: 'chat-baseline-confirm',
+                groupId: null,
+            },
+            userMessageIndex: 0,
+            userIndexAtCapture: 0,
+            userMessageText: 'Try that again',
+            precedingMessageText: '',
+            assistantBaseline: {
+                messageText: '',
+                swipes: ['Prior swipe', ''],
+                swipeCount: 2,
+                swipeId: 1,
+                genFinished: '2026-05-11T10:00:00.000Z',
+            },
+        };
+
+        const result = confirmTargetTurn(fingerprint, 1);
+        assert.equal(result.ok, false);
+        assert.equal(result.reason, 'assistant_pending');
+    } finally {
+        globalThis.window = originalWindow;
+    }
+});

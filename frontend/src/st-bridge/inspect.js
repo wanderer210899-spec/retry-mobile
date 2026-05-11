@@ -113,6 +113,13 @@ export function confirmTargetTurn(fingerprint, assistantMessageIndex) {
             continue;
         }
 
+        if (assistantMatchesCaptureBaseline(fingerprint, assistantMessage)) {
+            return {
+                ok: false,
+                reason: 'assistant_pending',
+            };
+        }
+
         return {
             ok: true,
             chat,
@@ -278,4 +285,96 @@ function isMatchingCapturedUser(chat, fingerprint, userIndex) {
         ? String(chat[userIndex - 1]?.mes ?? '')
         : '';
     return precedingText === fingerprint.precedingMessageText;
+}
+
+function assistantMatchesCaptureBaseline(fingerprint, message) {
+    const baseline = fingerprint?.assistantBaseline;
+    if (!baseline || typeof baseline !== 'object') {
+        return false;
+    }
+
+    const baselineText = String(baseline.messageText ?? '');
+    const currentText = String(message?.mes ?? '');
+    const baselineSwipes = Array.isArray(baseline?.swipes)
+        ? baseline.swipes.map((swipe) => String(swipe ?? ''))
+        : [];
+    const currentSwipes = Array.isArray(message?.swipes)
+        ? message.swipes.map((swipe) => String(swipe ?? ''))
+        : [];
+
+    if (currentText === baselineText
+        && currentSwipes.length === (Number.isFinite(Number(baseline.swipeCount)) ? Number(baseline.swipeCount) : baselineSwipes.length)
+        && (!baselineSwipes.length || swipesMatchBaselineOrPrepared(currentSwipes, baselineSwipes))) {
+        return true;
+    }
+
+    return swipesMatchBaselineOrPrepared(currentSwipes, baselineSwipes)
+        && currentTextBelongsToBaseline(currentText, baselineText, baselineSwipes);
+}
+
+function swipesMatchBaselineOrPrepared(currentSwipes, baselineSwipes) {
+    if (!Array.isArray(currentSwipes) || !Array.isArray(baselineSwipes) || baselineSwipes.length === 0) {
+        return false;
+    }
+
+    const currentComparable = trimTrailingEmptySwipes(currentSwipes);
+    const baselineComparable = trimTrailingEmptySwipes(baselineSwipes);
+    if (arraysEqual(currentComparable, baselineComparable)) {
+        return true;
+    }
+
+    if (currentSwipes.length >= baselineSwipes.length) {
+        return false;
+    }
+
+    for (let index = 0; index < currentSwipes.length; index += 1) {
+        if (currentSwipes[index] !== baselineSwipes[index]) {
+            return false;
+        }
+    }
+
+    return baselineSwipes
+        .slice(currentSwipes.length)
+        .every((swipe) => normalizeText(swipe) === '');
+}
+
+function currentTextBelongsToBaseline(currentText, baselineText, baselineSwipes) {
+    const normalizedCurrent = normalizeText(currentText);
+    if (!normalizedCurrent) {
+        return true;
+    }
+
+    if (normalizedCurrent === normalizeText(baselineText)) {
+        return true;
+    }
+
+    return baselineSwipes.some((swipe) => normalizeText(swipe) === normalizedCurrent);
+}
+
+function trimTrailingEmptySwipes(swipes) {
+    const output = swipes.map((swipe) => String(swipe ?? ''));
+    while (output.length > 0 && normalizeText(output[output.length - 1]) === '') {
+        output.pop();
+    }
+    return output;
+}
+
+function arraysEqual(left, right) {
+    if (left.length !== right.length) {
+        return false;
+    }
+
+    for (let index = 0; index < left.length; index += 1) {
+        if (left[index] !== right[index]) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function normalizeText(value) {
+    return String(value ?? '')
+        .replace(/\r\n/g, '\n')
+        .trim();
 }

@@ -43,7 +43,11 @@ test('buildFrontendStatusSnapshot keeps a compact race-debugging snapshot', () =
                         lastStatusRevision: 7,
                         lastKnownTargetMessageVersion: 4,
                         lastAppliedVersion: 3,
-                        pendingVisibleRender: { targetMessageVersion: 4 },
+                        pendingVisibleRender: {
+                            status: {
+                                targetMessageVersion: 4,
+                            },
+                        },
                         reloadAttempted: true,
                         runError: { code: 'render_apply_failed' },
                     };

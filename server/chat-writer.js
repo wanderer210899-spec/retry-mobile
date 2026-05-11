@@ -400,15 +400,22 @@ function assistantMatchesBaseline(job, message) {
     }
 
     const baselineText = String(baseline.messageText ?? '');
-    const baselineSwipeCount = Number.isFinite(Number(baseline.swipeCount)) ? Number(baseline.swipeCount) : 0;
-    const baselineGenFinished = String(baseline.genFinished ?? '');
     const currentText = String(message?.mes ?? '');
-    const currentSwipeCount = Array.isArray(message?.swipes) ? message.swipes.length : 0;
-    const currentGenFinished = typeof message?.gen_finished === 'string' ? message.gen_finished : '';
+    const baselineSwipes = Array.isArray(baseline?.swipes)
+        ? baseline.swipes.map((swipe) => String(swipe ?? ''))
+        : [];
+    const currentSwipes = Array.isArray(message?.swipes)
+        ? message.swipes.map((swipe) => String(swipe ?? ''))
+        : [];
 
     if (currentText === baselineText
-        && currentSwipeCount === baselineSwipeCount
-        && currentGenFinished === baselineGenFinished) {
+        && currentSwipes.length === (Number.isFinite(Number(baseline.swipeCount)) ? Number(baseline.swipeCount) : baselineSwipes.length)
+        && (!baselineSwipes.length || swipesMatchBaselineOrPrepared(currentSwipes, baselineSwipes))) {
+        return true;
+    }
+
+    if (swipesMatchBaselineOrPrepared(currentSwipes, baselineSwipes)
+        && currentTextBelongsToBaseline(currentText, baselineText, baselineSwipes)) {
         return true;
     }
 
@@ -423,9 +430,21 @@ function assistantMatchesPreparedSwipeBaseline(baseline, message) {
         ? message.swipes.map((swipe) => String(swipe ?? ''))
         : [];
 
-    if (baselineSwipes.length === 0 || currentSwipes.length === 0) {
+    return currentSwipes.length < baselineSwipes.length
+        && swipesMatchBaselineOrPrepared(currentSwipes, baselineSwipes);
+}
+
+function swipesMatchBaselineOrPrepared(currentSwipes, baselineSwipes) {
+    if (!Array.isArray(currentSwipes) || !Array.isArray(baselineSwipes) || baselineSwipes.length === 0) {
         return false;
     }
+
+    const currentComparable = trimTrailingEmptySwipes(currentSwipes);
+    const baselineComparable = trimTrailingEmptySwipes(baselineSwipes);
+    if (arraysEqual(currentComparable, baselineComparable)) {
+        return true;
+    }
+
     if (currentSwipes.length >= baselineSwipes.length) {
         return false;
     }
@@ -436,9 +455,44 @@ function assistantMatchesPreparedSwipeBaseline(baseline, message) {
         }
     }
 
-    const preparedSwipes = baselineSwipes.slice(currentSwipes.length);
-    return preparedSwipes.length > 0
-        && preparedSwipes.every((swipe) => normalizeText(swipe) === '');
+    return baselineSwipes
+        .slice(currentSwipes.length)
+        .every((swipe) => normalizeText(swipe) === '');
+}
+
+function currentTextBelongsToBaseline(currentText, baselineText, baselineSwipes) {
+    const normalizedCurrent = normalizeText(currentText);
+    if (!normalizedCurrent) {
+        return true;
+    }
+
+    if (normalizedCurrent === normalizeText(baselineText)) {
+        return true;
+    }
+
+    return baselineSwipes.some((swipe) => normalizeText(swipe) === normalizedCurrent);
+}
+
+function trimTrailingEmptySwipes(swipes) {
+    const output = swipes.map((swipe) => String(swipe ?? ''));
+    while (output.length > 0 && normalizeText(output[output.length - 1]) === '') {
+        output.pop();
+    }
+    return output;
+}
+
+function arraysEqual(left, right) {
+    if (left.length !== right.length) {
+        return false;
+    }
+
+    for (let index = 0; index < left.length; index += 1) {
+        if (left[index] !== right[index]) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 function ensureTargetUserMessage(job, chat) {

@@ -115,6 +115,9 @@ export async function applyAcceptedOutput({ chatIdentity, status, signal }) {
 
     if (missingSwipes.length === 0) {
         stampVersionOnLiveRow(lastMessage, targetMessageVersion);
+        try {
+            context.swipe?.refresh?.(true);
+        } catch {}
         return {
             ok: true,
             jobId: String(status?.jobId || ''),

@@ -274,6 +274,7 @@ test('applyAcceptedOutput is idempotent when live chat already matches backend s
         const result = await applyAcceptedOutput({ chatIdentity: CHAT_IDENTITY, status });
         assert.equal(result.ok, true);
         assert.equal(env.saveChatCalls.length, 0, 'no saveChat call when no missing swipes');
+        assert.deepEqual(env.swipeRefreshCalls, [[true]], 'idempotent reconcile still refreshes the visible swipe counter/navigation');
     } finally {
         env.teardown();
     }

@@ -1914,6 +1914,113 @@ test('observeBackendStatus rejects stale terminal revisions after newer running 
     assert.equal(fsm.getContext().jobId, 'job-1');
 });
 
+test('completed status queues behind an in-flight running apply and completes after the flush', async () => {
+    const { fsm, calls, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    let resolveFirstApply;
+    const firstApply = new Promise((resolve) => {
+        resolveFirstApply = resolve;
+    });
+    setApplyAcceptedOutputResult(firstApply);
+
+    const runId = fsm.getContext().runId;
+    const runningPromise = fsm.observeBackendStatus({
+        jobId: 'job-1',
+        runId,
+        state: 'running',
+        revision: 1,
+        targetMessageVersion: 1,
+    });
+    await Promise.resolve();
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+
+    const completedResult = await fsm.observeBackendStatus({
+        jobId: 'job-1',
+        runId,
+        state: 'completed',
+        revision: 2,
+        acceptedCount: 2,
+        targetAcceptedCount: 2,
+        targetMessageVersion: 2,
+    });
+    assert.equal(completedResult.accepted, true);
+    assert.equal(
+        calls.filter((entry) => entry.method === 'applyAcceptedOutput').length,
+        1,
+        'terminal output must be queued instead of applying concurrently',
+    );
+
+    setApplyAcceptedOutputResult({ ok: true });
+    resolveFirstApply({ ok: true });
+    await runningPromise;
+
+    assert.equal(
+        calls.filter((entry) => entry.method === 'applyAcceptedOutput').length,
+        2,
+        'queued terminal output flushes after the running apply settles',
+    );
+    const context = fsm.getContext();
+    assert.equal(context.state, RetryState.ARMED);
+    assert.equal(context.lastTerminalResult?.status?.targetMessageVersion, 2);
+});
+
+test('duplicate completed statuses coalesce while terminal apply is in flight', async () => {
+    const { fsm, calls, setApplyAcceptedOutputResult } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    let resolveTerminalApply;
+    const terminalApply = new Promise((resolve) => {
+        resolveTerminalApply = resolve;
+    });
+    setApplyAcceptedOutputResult(terminalApply);
+
+    const runId = fsm.getContext().runId;
+    const first = fsm.observeBackendStatus({
+        jobId: 'job-1',
+        runId,
+        state: 'completed',
+        revision: 1,
+        acceptedCount: 2,
+        targetAcceptedCount: 2,
+        targetMessageVersion: 2,
+    });
+    await Promise.resolve();
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+
+    const second = await fsm.observeBackendStatus({
+        jobId: 'job-1',
+        runId,
+        state: 'completed',
+        revision: 2,
+        acceptedCount: 2,
+        targetAcceptedCount: 2,
+        targetMessageVersion: 2,
+    });
+    assert.equal(second.accepted, true);
+    assert.equal(
+        calls.filter((entry) => entry.method === 'applyAcceptedOutput').length,
+        1,
+        'second terminal status must not start a duplicate terminal apply',
+    );
+
+    resolveTerminalApply({ ok: true });
+    await first;
+
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+    assert.equal(fsm.getContext().state, RetryState.ARMED);
+});
+
 test('observeBackendStatus rejects active job responses for a different runId', async () => {
     const { fsm } = createHarness();
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };

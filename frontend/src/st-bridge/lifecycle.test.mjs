@@ -252,6 +252,7 @@ test('waitForNativeCompletion returns native_attempt_timeout when visible genera
         },
     };
 
+    let stopGenerationCalls = 0;
     const context = {
         chatId: 'chat-native-timeout',
         groupId: null,
@@ -267,6 +268,13 @@ test('waitForNativeCompletion returns native_attempt_timeout when visible genera
                 mes: 'I wait under the streetlight after class.',
             },
         ],
+        isGenerating() {
+            return true;
+        },
+        stopGeneration() {
+            stopGenerationCalls += 1;
+            return true;
+        },
         eventTypes: {
             GENERATION_ENDED: 'generation_ended',
             CHARACTER_MESSAGE_RENDERED: 'character_message_rendered',
@@ -334,6 +342,7 @@ test('waitForNativeCompletion returns native_attempt_timeout when visible genera
 
         assert.equal(result?.outcome, 'timed_out');
         assert.equal(result?.reason, 'native_attempt_timeout');
+        assert.equal(stopGenerationCalls, 1, 'native timeout should best-effort stop the abandoned ST generation');
     } finally {
         globalThis.window = originalWindow;
         globalThis.document = originalDocument;

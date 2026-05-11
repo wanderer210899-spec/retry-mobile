@@ -227,7 +227,7 @@ export function waitForNativeCompletion({
                     };
                 }
 
-                if (confirmation.reason === 'assistant_missing') {
+                if (confirmation.reason === 'assistant_missing' || confirmation.reason === 'assistant_pending') {
                     shouldWait = true;
                     continue;
                 }
@@ -403,6 +403,7 @@ export function waitForNativeCompletion({
 
             settled = true;
             cleanup();
+            stopNativeGeneration(reason);
             resolve({
                 outcome: 'failed',
                 reason,
@@ -556,6 +557,7 @@ export function waitForNativeCompletion({
 
             settled = true;
             cleanup();
+            stopNativeGeneration('native_attempt_timeout');
             resolve({
                 outcome: 'timed_out',
                 reason: 'native_attempt_timeout',
@@ -575,6 +577,36 @@ export function waitForNativeCompletion({
 
             const stopButtons = document.querySelectorAll?.('#mes_stop, #mes_stop_buttons, .fa-stop');
             return Boolean(stopButtons && stopButtons.length > 0);
+        }
+
+        function stopNativeGeneration(reason) {
+            const context = getContext();
+            if (typeof context?.stopGeneration !== 'function') {
+                return;
+            }
+
+            let generating = false;
+            try {
+                generating = typeof context.isGenerating === 'function'
+                    ? Boolean(context.isGenerating())
+                    : false;
+            } catch {}
+
+            const stopButtons = document.querySelectorAll?.('#mes_stop, #mes_stop_buttons, .fa-stop');
+            generating = generating
+                || Boolean(document.body?.dataset?.generating)
+                || Boolean(stopButtons && stopButtons.length > 0);
+
+            if (!generating) {
+                return;
+            }
+
+            try {
+                const stopped = context.stopGeneration();
+                if (stopped) {
+                    onEvent?.('NATIVE_STOP_REQUESTED', `Stopped native generation after ${reason}.`);
+                }
+            } catch {}
         }
 
         function confirmFromLiveChatWithoutEvents() {

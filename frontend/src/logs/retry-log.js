@@ -147,7 +147,10 @@ export function buildFrontendStatusSnapshot(runtime = {}) {
         runtimeFrontendVisibilityState: stringOrNull(activeStatus?.frontendVisibilityState),
         lastKnownTargetMessageVersion: finiteNumber(fsmContext?.lastKnownTargetMessageVersion),
         lastAppliedVersion: finiteNumber(fsmContext?.lastAppliedVersion),
-        pendingVisibleRenderVersion: finiteNumber(pendingVisibleRender?.targetMessageVersion),
+        pendingVisibleRenderVersion: finiteNumber(
+            pendingVisibleRender?.status?.targetMessageVersion
+            ?? pendingVisibleRender?.targetMessageVersion,
+        ),
         reloadAttempted: booleanOrNull(fsmContext?.reloadAttempted),
         runErrorCode: stringOrNull(fsmContext?.runError?.code),
         terminalErrorCode: stringOrNull(fsmContext?.terminalError?.code),
