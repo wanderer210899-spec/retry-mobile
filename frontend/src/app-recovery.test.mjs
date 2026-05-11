@@ -240,7 +240,7 @@ test('restore controller subscribes to CHAT_CHANGED and ignores internal reload 
     await handler();
 });
 
-test('reconcileLatestForCurrentChat applies the latest completed job output outside RUNNING state', async () => {
+test('reconcileLatestForCurrentChat routes latest completed output through FSM ingest', async () => {
     const calls = [];
     const latest = {
         jobId: 'job-complete',
@@ -266,16 +266,10 @@ test('reconcileLatestForCurrentChat applies the latest completed job output outs
                 return latest;
             },
         },
-        stPort: {
-            reconciler: {
-                async reconcileAfterRestore(payload) {
-                    calls.push({ method: 'reconcileAfterRestore', payload });
-                    return { ok: true };
-                },
-            },
-        },
-        updateActiveJob(status, jobId) {
-            calls.push({ method: 'updateActiveJob', status, jobId });
+        stPort: {},
+        updateActiveJob(status, jobId, options) {
+            calls.push({ method: 'updateActiveJob', status, jobId, options });
+            return true;
         },
         render() {
             calls.push({ method: 'render' });
@@ -294,11 +288,12 @@ test('reconcileLatestForCurrentChat applies the latest completed job output outs
     assert.equal(result.ok, true);
     assert.equal(calls[0].method, 'fetchLatestJob');
     assert.equal(calls.some((call) => call.method === 'updateActiveJob' && call.jobId === 'job-complete'), true);
-    const reconcileCall = calls.find((call) => call.method === 'reconcileAfterRestore');
-    assert.equal(reconcileCall.payload.status.targetMessageVersion, 2);
+    const updateCall = calls.find((call) => call.method === 'updateActiveJob');
+    assert.equal(updateCall.options.recoverTerminal, true);
+    assert.equal(calls.some((call) => call.method === 'reconcileAfterRestore'), false);
 });
 
-test('reconcileLatestForCurrentChat can force a guarded reload for manual Sync', async () => {
+test('reconcileLatestForCurrentChat does not patch chat outside FSM ingest', async () => {
     const calls = [];
     const latest = {
         jobId: 'job-complete',
@@ -310,7 +305,6 @@ test('reconcileLatestForCurrentChat can force a guarded reload for manual Sync',
             groupId: null,
         },
     };
-    let reconcileCount = 0;
     const controller = createRestoreController({
         runtime: {},
         retryFsm: {
@@ -324,27 +318,14 @@ test('reconcileLatestForCurrentChat can force a guarded reload for manual Sync',
                 return latest;
             },
         },
-        stPort: {
-            reconciler: {
-                async reconcileAfterRestore() {
-                    reconcileCount += 1;
-                    calls.push({ method: 'reconcileAfterRestore' });
-                    if (reconcileCount === 1) {
-                        return {
-                            ok: false,
-                            recoveryRequired: true,
-                            error: { code: 'client_anchor_mismatch' },
-                        };
-                    }
-                    return { ok: true };
-                },
-            },
-            async guardedReload() {
-                calls.push({ method: 'guardedReload' });
-            },
+        stPort: {},
+        updateActiveJob(status, jobId, options) {
+            calls.push({ method: 'updateActiveJob', status, jobId, options });
+            return true;
         },
-        updateActiveJob() {},
-        render() {},
+        render() {
+            calls.push({ method: 'render' });
+        },
         syncRuntimeFromFsm() {},
         getCurrentChatIdentity() {
             return latest.chatIdentity;
@@ -360,11 +341,8 @@ test('reconcileLatestForCurrentChat can force a guarded reload for manual Sync',
     });
 
     assert.equal(result.ok, true);
-    assert.deepEqual(calls.map((call) => call.method), [
-        'reconcileAfterRestore',
-        'guardedReload',
-        'reconcileAfterRestore',
-    ]);
+    assert.deepEqual(calls.map((call) => call.method), ['updateActiveJob', 'render']);
+    assert.equal(calls[0].options.recoverTerminal, true);
 });
 
 // E5: restore controller subscribes to CHAT_LOADED (character chat reloads) in addition to CHAT_CHANGED.

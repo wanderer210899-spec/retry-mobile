@@ -578,7 +578,9 @@ export function createRetryFsm({
     }
 
     function leaveRunning(previous) {
-        assertFrontEndContracts('running_exit');
+        if (previous.terminalRestore !== true) {
+            assertFrontEndContracts('running_exit');
+        }
         if (previous.pollingToken) {
             backendPort.stopPolling?.(previous.pollingToken);
         }
@@ -690,7 +692,7 @@ export function createRetryFsm({
     // place that may accept a backend job snapshot into frontend control
     // state; runtime mirrors are written by callers only after this returns
     // accepted:true.
-    async function observeBackendStatus(status) {
+    async function observeBackendStatus(status, options = {}) {
         if (!status) {
             return { accepted: false, reason: 'no_status' };
         }
@@ -712,6 +714,9 @@ export function createRetryFsm({
             if (state === 'running') {
                 logEvent?.('status_ingest_rejected', 'Running status arrived with no active frontend run.', { statusJobId, reason: 'no_active_run' });
                 return { accepted: false, reason: 'no_active_run' };
+            }
+            if (options?.recoverTerminal === true) {
+                return await recoverTerminalStatus(status, options);
             }
             return { accepted: true, reason: 'terminal_outside_running' };
         }
@@ -755,6 +760,34 @@ export function createRetryFsm({
 
         await handlePollingStatus(status);
         return { accepted: true, reason: 'ok' };
+    }
+
+    async function recoverTerminalStatus(status, options = {}) {
+        const statusJobId = stringOrNull(status?.jobId);
+        const nextVersion = numberOrNull(status?.targetMessageVersion) || 0;
+        context = createContextForState({
+            ...context,
+            state: RetryState.RUNNING,
+            chatIdentity: clonePlain(status?.chatIdentity)
+                || clonePlain(options?.chatIdentity)
+                || context.chatIdentity
+                || null,
+            runId: stringOrNull(status?.runId) || context.runId || createRunId(),
+            jobId: statusJobId,
+            pollingToken: null,
+            lastStatusRevision: getStatusRevision(status),
+            lastKnownTargetMessageVersion: nextVersion,
+            lastAppliedVersion: 0,
+            pendingVisibleRender: null,
+            reloadAttempted: false,
+            lastTerminalResult: null,
+            runError: null,
+            terminalError: null,
+            terminalRestore: true,
+        });
+        stPort.setLockdown?.(false);
+        await handlePollingStatus(status);
+        return { accepted: true, reason: 'terminal_recovered' };
     }
 
     async function handlePollingStatus(status) {
@@ -1174,7 +1207,7 @@ function normalizeBaseContext(nextContext) {
 }
 
 export function createIdleContext(nextContext) {
-    const { runError: _ignoredRunError, ...rest } = nextContext;
+    const { runError: _ignoredRunError, terminalRestore: _ignoredTerminalRestore, ...rest } = nextContext;
     return lockContextShape({
         ...rest,
         state: RetryState.IDLE,
@@ -1195,7 +1228,7 @@ export function createIdleContext(nextContext) {
 }
 
 export function createArmedContext(nextContext) {
-    const { runError: _ignoredRunError, ...rest } = nextContext;
+    const { runError: _ignoredRunError, terminalRestore: _ignoredTerminalRestore, ...rest } = nextContext;
     return lockContextShape({
         ...rest,
         state: RetryState.ARMED,
@@ -1214,7 +1247,7 @@ export function createArmedContext(nextContext) {
 }
 
 export function createCapturingContext(nextContext) {
-    const { runError: _ignoredRunError, ...rest } = nextContext;
+    const { runError: _ignoredRunError, terminalRestore: _ignoredTerminalRestore, ...rest } = nextContext;
     return lockContextShape({
         ...rest,
         state: RetryState.CAPTURING,
@@ -1244,8 +1277,9 @@ export function createRunningContext(nextContext) {
 }
 
 export function createTerminalContext(nextContext) {
+    const { terminalRestore: _ignoredTerminalRestore, ...rest } = nextContext;
     const normalized = {
-        ...nextContext,
+        ...rest,
         runError: null,
         toastScope: null,
     };

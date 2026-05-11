@@ -4,7 +4,7 @@ const { pruneTerminalJobUnits } = require('./job-store');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const { countTextTokensWithSt } = require('./st-runtime');
 const { validateAcceptedText } = require('./validation');
-const { appendAttemptLog, touchJob } = require('./state');
+const { appendAttemptLog, markNotificationSent, touchJob } = require('./state');
 const {
     assertWritePathReady,
     inspectNativeAssistantState,
@@ -340,6 +340,14 @@ async function runJob(job, environment) {
             job.structuredError = null;
             touchJob(job, {
                 phase: 'awaiting_retry_results',
+            }, {
+                event: 'accepted_written',
+                detail: {
+                    source: 'backend',
+                    acceptedCount: job.acceptedCount,
+                    targetAcceptedCount: job.targetAcceptedCount,
+                    targetMessageVersion: writeResult?.targetMessageVersion ?? null,
+                },
             });
             appendAttemptLog(job, {
                 ...attemptRecord,
@@ -374,14 +382,6 @@ async function runJob(job, environment) {
                 },
             });
 
-            notify(job.runConfig, 'success', {
-                acceptedCount: job.acceptedCount,
-                targetAcceptedCount: job.targetAcceptedCount,
-                attemptCount: job.attemptCount,
-                characterCount: validation.metrics.characterCount,
-                    wordCount: validation.metrics.wordCount,
-                tokenCount: validation.metrics.tokenCount,
-            });
         }
 
         if (job.cancelRequested) {
@@ -393,6 +393,13 @@ async function runJob(job, environment) {
             touchJob(job, {
                 state: 'completed',
                 phase: 'completed',
+            }, {
+                event: 'completed',
+                detail: {
+                    acceptedCount: job.acceptedCount,
+                    targetAcceptedCount: job.targetAcceptedCount,
+                    attemptCount: job.attemptCount,
+                },
             });
             appendJobLog(job, {
                 source: 'backend',
@@ -400,7 +407,7 @@ async function runJob(job, environment) {
                 summary: `Retry Mobile completed with ${job.acceptedCount}/${job.targetAcceptedCount} accepted outputs.`,
             });
             pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
-            notify(job.runConfig, 'completed', {
+            notifyTerminalOnce(job, 'completed', {
                 attemptCount: job.attemptCount,
                 acceptedCount: job.acceptedCount,
                 targetAcceptedCount: job.targetAcceptedCount,
@@ -417,6 +424,9 @@ async function runJob(job, environment) {
             phase: 'failed',
             lastError: structuredError.message,
             structuredError,
+        }, {
+            event: 'failed',
+            detail: structuredError.detail || buildAttemptSummary(job),
         });
         appendJobLog(job, {
             source: 'backend',
@@ -425,6 +435,12 @@ async function runJob(job, environment) {
             detail: structuredError.detail || buildAttemptSummary(job),
         });
         pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+        notifyTerminalOnce(job, 'failed', {
+            attemptCount: job.attemptCount,
+            acceptedCount: job.acceptedCount,
+            targetAcceptedCount: job.targetAcceptedCount,
+            reason: structuredError.code,
+        });
     } catch (error) {
         const structuredError = toStructuredError(error, 'backend_write_failed', 'Retry Mobile backend job failed.');
         touchJob(job, {
@@ -435,6 +451,9 @@ async function runJob(job, environment) {
                 ...structuredError,
                 detail: structuredError.detail || buildAttemptSummary(job),
             },
+        }, {
+            event: 'failed',
+            detail: structuredError.detail || buildAttemptSummary(job),
         });
         appendJobLog(job, {
             source: 'backend',
@@ -443,6 +462,12 @@ async function runJob(job, environment) {
             detail: structuredError.detail || buildAttemptSummary(job),
         });
         pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+        notifyTerminalOnce(job, 'failed', {
+            attemptCount: job.attemptCount,
+            acceptedCount: job.acceptedCount,
+            targetAcceptedCount: job.targetAcceptedCount,
+            reason: structuredError.code,
+        });
         console.error('[retry-mobile:backend] Job failed:', job.jobId, error);
     } finally {
         releaseWakeLock();
@@ -519,6 +544,14 @@ async function resolveNativeAttempt(job) {
         touchJob(job, {
             phase: 'awaiting_retry_results',
             nativeAttemptResolved: true,
+        }, {
+            event: 'accepted_written',
+            detail: {
+                source: 'native',
+                acceptedCount: job.acceptedCount,
+                targetAcceptedCount: job.targetAcceptedCount,
+                targetMessageVersion: Number(job.targetMessageVersion) || 0,
+            },
         });
 
         appendAttemptLog(job, {
@@ -551,14 +584,6 @@ async function resolveNativeAttempt(job) {
             },
         });
 
-        notify(job.runConfig, 'success', {
-            acceptedCount: job.acceptedCount,
-            targetAcceptedCount: job.targetAcceptedCount,
-            attemptCount: job.attemptCount,
-            characterCount: metrics.characterCount,
-            wordCount: metrics.wordCount,
-            tokenCount: metrics.tokenCount,
-        });
         return;
     }
 
@@ -861,6 +886,12 @@ function applyInspectionResolution(job, inspection, cause) {
             targetMessage: clone(inspection.assistantMessage),
             lastError: '',
             structuredError: null,
+        }, {
+            event: 'native_confirmed',
+            detail: {
+                cause: resolutionCause,
+                assistantMessageIndex: inspection.assistantMessageIndex,
+            },
         });
         appendLifecycleLog(job, 'native_confirmed', `Native first reply was confirmed at assistant message ${inspection.assistantMessageIndex}.`);
         return;
@@ -878,6 +909,13 @@ function applyInspectionResolution(job, inspection, cause) {
             targetMessage: clone(inspection.assistantMessage),
             lastError: '',
             structuredError: null,
+        }, {
+            event: 'native_abandoned',
+            detail: {
+                cause: resolutionCause,
+                recoveryMode: 'reuse_empty_placeholder',
+                assistantMessageIndex: inspection.assistantMessageIndex,
+            },
         });
         appendLifecycleLog(job, 'native_abandoned', `Native first reply was abandoned. Backend will reuse empty assistant slot ${inspection.assistantMessageIndex}.`);
         return;
@@ -906,6 +944,13 @@ function applyInspectionResolution(job, inspection, cause) {
             targetMessage: null,
             lastError: '',
             structuredError: null,
+        }, {
+            event: 'native_abandoned',
+            detail: {
+                cause: resolutionCause,
+                recoveryMode: 'create_missing_turn',
+                inspectionKind: inspection.kind,
+            },
         });
         appendLifecycleLog(job, 'native_abandoned', inspection.kind === 'missing_user_anchor'
             ? 'Native first reply was abandoned before SillyTavern saved the captured user turn. Backend will recreate the user and assistant anchor.'
@@ -1545,6 +1590,12 @@ function finalizeCancelled(job) {
     touchJob(job, {
         state: 'cancelled',
         phase: 'cancelled',
+    }, {
+        event: 'cancelled',
+        detail: {
+            acceptedCount: job.acceptedCount,
+            targetAcceptedCount: job.targetAcceptedCount,
+        },
     });
     appendJobLog(job, {
         source: 'backend',
@@ -1552,6 +1603,12 @@ function finalizeCancelled(job) {
         summary: 'Retry Mobile cancelled this backend job.',
     });
     pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+    notifyTerminalOnce(job, 'cancelled', {
+        attemptCount: job.attemptCount,
+        acceptedCount: job.acceptedCount,
+        targetAcceptedCount: job.targetAcceptedCount,
+        reason: 'cancelled',
+    });
 }
 
 function finalizeFailed(job, structuredError) {
@@ -1567,6 +1624,9 @@ function finalizeFailed(job, structuredError) {
             ...normalized,
             detail: normalized.detail || buildAttemptSummary(job),
         },
+    }, {
+        event: 'failed',
+        detail: normalized.detail || buildAttemptSummary(job),
     });
     appendJobLog(job, {
         source: 'backend',
@@ -1575,6 +1635,20 @@ function finalizeFailed(job, structuredError) {
         detail: normalized.detail || buildAttemptSummary(job),
     });
     pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+    notifyTerminalOnce(job, 'failed', {
+        attemptCount: job.attemptCount,
+        acceptedCount: job.acceptedCount,
+        targetAcceptedCount: job.targetAcceptedCount,
+        reason: normalized.code,
+    });
+}
+
+function notifyTerminalOnce(job, stage, payload = {}) {
+    const key = `terminal:${stage}`;
+    if (!markNotificationSent(job, key)) {
+        return;
+    }
+    notify(job.runConfig, stage, payload);
 }
 
 function clone(value) {

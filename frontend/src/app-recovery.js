@@ -210,14 +210,6 @@ export function createRestoreController({
                     await updateActiveJob(status, status.jobId);
                     syncRuntimeFromFsm(retryFsm);
                     render();
-                    if (status?.targetMessageVersion > 0 && stPort?.reconciler?.reconcileAfterRestore) {
-                        const reconcilePayload = {
-                            kind: 'accepted_output',
-                            chatIdentity: status.chatIdentity || chatIdentity,
-                            status,
-                        };
-                        void stPort.reconciler.reconcileAfterRestore(reconcilePayload);
-                    }
                     return;
                 }
 
@@ -225,7 +217,7 @@ export function createRestoreController({
                 // swipes, the in-memory chat can be stale even though the run is already
                 // terminal. In that case, reconcile against the latest backend snapshot for
                 // the *current* chat to avoid requiring a full page refresh.
-                if (sameChat(chatIdentity, currentChatIdentity) && baseBackendPort?.fetchLatestJob && stPort?.reconciler?.reconcileAfterRestore) {
+                if (sameChat(chatIdentity, currentChatIdentity) && baseBackendPort?.fetchLatestJob) {
                     try {
                         const latest = await baseBackendPort.fetchLatestJob(chatIdentity);
                         const latestState = String(latest?.state || '');
@@ -233,11 +225,13 @@ export function createRestoreController({
                             && latestState
                             && latestState !== 'running'
                             && Number(latest?.targetMessageVersion) > 0) {
-                            void stPort.reconciler.reconcileAfterRestore({
-                                kind: 'accepted_output',
-                                chatIdentity: latest.chatIdentity || chatIdentity,
-                                status: latest,
+                            await updateActiveJob(latest, latest.jobId, {
+                                recoverTerminal: true,
+                                reason: 'boot_restore_latest',
+                                chatIdentity,
                             });
+                            syncRuntimeFromFsm(retryFsm);
+                            render();
                             return;
                         }
                     } catch (error) {
@@ -309,7 +303,7 @@ export function createRestoreController({
         }
 
         const currentChatIdentity = getCurrentChatIdentity?.() || null;
-        if (!currentChatIdentity?.chatId || !baseBackendPort?.fetchLatestJob || !stPort?.reconciler?.reconcileAfterRestore) {
+        if (!currentChatIdentity?.chatId || !baseBackendPort?.fetchLatestJob) {
             return {
                 ok: false,
                 reason: 'latest_reconcile_unavailable',
@@ -347,22 +341,19 @@ export function createRestoreController({
             };
         }
 
-        await updateActiveJob(latest, latest.jobId);
-        render();
-
-        const renderPayload = {
-            kind: 'accepted_output',
-            chatIdentity: latest.chatIdentity || currentChatIdentity,
-            status: latest,
-        };
         await logEvent?.('reconcile_latest_started', `Reconciling latest job output version ${targetMessageVersion}.`, {
             reason: options.reason || 'latest_reconcile',
             jobId: latest.jobId,
             targetMessageVersion,
         });
 
-        let result = await stPort.reconciler.reconcileAfterRestore(renderPayload);
-        if (result?.ok !== false) {
+        const accepted = await updateActiveJob(latest, latest.jobId, {
+            recoverTerminal: true,
+            reason: options.reason || 'latest_reconcile',
+            chatIdentity: currentChatIdentity,
+        });
+        render();
+        if (accepted) {
             await logEvent?.('reconcile_latest_succeeded', `Reconciled latest job output version ${targetMessageVersion}.`, {
                 reason: options.reason || 'latest_reconcile',
                 jobId: latest.jobId,
@@ -371,54 +362,18 @@ export function createRestoreController({
             return {
                 ok: true,
                 status: latest,
-                result,
             };
         }
 
-        if (options.allowReload === true
-            && result?.recoveryRequired !== false
-            && typeof stPort.guardedReload === 'function') {
-            await logEvent?.('reconcile_latest_reload_started', `Latest output reconcile failed [${result?.error?.code || 'unknown'}]; forcing chat refresh.`, {
-                reason: options.reason || 'latest_reconcile',
-                jobId: latest.jobId,
-                errorCode: result?.error?.code,
-                targetMessageVersion,
-            });
-            try {
-                await stPort.guardedReload();
-                result = await stPort.reconciler.reconcileAfterRestore(renderPayload);
-                if (result?.ok !== false) {
-                    await logEvent?.('reconcile_latest_succeeded', `Reconciled latest job output version ${targetMessageVersion} after refresh.`, {
-                        reason: options.reason || 'latest_reconcile',
-                        jobId: latest.jobId,
-                        targetMessageVersion,
-                    });
-                    return {
-                        ok: true,
-                        status: latest,
-                        result,
-                    };
-                }
-            } catch (error) {
-                result = {
-                    ok: false,
-                    recoveryRequired: true,
-                    error,
-                };
-            }
-        }
-
-        await logEvent?.('reconcile_latest_failed', `Latest output reconcile failed [${result?.error?.code || 'unknown'}].`, {
+        await logEvent?.('reconcile_latest_failed', 'Latest output status was rejected by the FSM ingest path.', {
             reason: options.reason || 'latest_reconcile',
             jobId: latest.jobId,
-            errorCode: result?.error?.code,
             targetMessageVersion,
         });
         return {
             ok: false,
             status: latest,
-            result,
-            error: result?.error || null,
+            error: null,
         };
     }
 

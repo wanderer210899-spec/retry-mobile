@@ -9,6 +9,8 @@ const {
     getJobByChatSession,
     getLatestJobByChat,
     jobs,
+    markNotificationSent,
+    recordJobEvent,
     serializeJob,
     touchJob,
     updateJobLogState,
@@ -101,6 +103,88 @@ test('job revision is serialized and advances on every state/log mutation helper
     updateJobLogState(job, { logEntryCount: 1 });
     assert.equal(job.revision, 4);
     assert.equal(serializeJob(job).revision, 4);
+
+    jobs.clear();
+});
+
+test('job event identity serializes eventSeq and lastEvent', () => {
+    jobs.clear();
+
+    const chatIdentity = createIdentity('chat-events');
+    const job = createJob({
+        jobId: 'job-events',
+        runId: 'run-events',
+        state: 'running',
+        chatIdentity,
+        chatKey: buildChatKey(chatIdentity),
+        userContext: { handle: 'default-user', directories: {} },
+        skipPersist: true,
+    });
+
+    const started = recordJobEvent(job, 'started', { source: 'test' });
+    assert.equal(started.seq, 1);
+    assert.equal(serializeJob(job).eventSeq, 1);
+    assert.equal(serializeJob(job).lastEvent.type, 'started');
+
+    touchJob(job, { phase: 'writing_chat' }, {
+        event: 'accepted_written',
+        detail: { targetMessageVersion: 1 },
+    });
+    const serialized = serializeJob(job);
+    assert.equal(serialized.eventSeq, 2);
+    assert.equal(serialized.lastEvent.type, 'accepted_written');
+    assert.equal(serialized.lastEvent.detail.targetMessageVersion, 1);
+
+    jobs.clear();
+});
+
+test('getLatestJobByChat skips tombstoned or recovery-suppressed jobs', () => {
+    jobs.clear();
+
+    const chatIdentity = createIdentity('chat-suppressed');
+    createJob({
+        jobId: 'job-suppressed',
+        runId: 'run-suppressed',
+        state: 'completed',
+        recoverySuppressed: true,
+        updatedAt: '2026-05-11T12:00:00.000Z',
+        chatIdentity,
+        chatKey: buildChatKey(chatIdentity),
+        userContext: { handle: 'default-user', directories: {} },
+        skipPersist: true,
+    });
+    createJob({
+        jobId: 'job-visible',
+        runId: 'run-visible',
+        state: 'completed',
+        updatedAt: '2026-05-11T11:00:00.000Z',
+        chatIdentity,
+        chatKey: buildChatKey(chatIdentity),
+        userContext: { handle: 'default-user', directories: {} },
+        skipPersist: true,
+    });
+
+    assert.equal(getLatestJobByChat(chatIdentity)?.jobId, 'job-visible');
+
+    jobs.clear();
+});
+
+test('markNotificationSent dedupes terminal notification keys durably', () => {
+    jobs.clear();
+
+    const chatIdentity = createIdentity('chat-notify');
+    const job = createJob({
+        jobId: 'job-notify',
+        runId: 'run-notify',
+        state: 'completed',
+        chatIdentity,
+        chatKey: buildChatKey(chatIdentity),
+        userContext: { handle: 'default-user', directories: {} },
+        skipPersist: true,
+    });
+
+    assert.equal(markNotificationSent(job, 'terminal:completed'), true);
+    assert.equal(markNotificationSent(job, 'terminal:completed'), false);
 
     jobs.clear();
 });

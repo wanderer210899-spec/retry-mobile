@@ -9,7 +9,7 @@ const {
     waitForNativeResolutionIdle,
 } = require('./job-runner');
 const { inspectRecoverySnapshot } = require('./chat-writer');
-const { debugNotifier, getTermuxStatus, refreshTermuxStatusForStart } = require('./notifier');
+const { debugNotifier, getTermuxStatus, notify, refreshTermuxStatusForStart } = require('./notifier');
 const { MIN_SUPPORTED_PROTOCOL_VERSION, PLUGIN_ID, PLUGIN_NAME, PROTOCOL_VERSION } = require('./plugin-meta');
 const { createStructuredError, toStructuredError } = require('./retry-error');
 const {
@@ -43,6 +43,8 @@ const {
     getJobByChat,
     getJobByChatSession,
     getLatestJobByChat,
+    markNotificationSent,
+    recordJobEvent,
     serializeJob,
     setPersistenceHandler,
     touchJob,
@@ -432,6 +434,12 @@ async function init(router) {
             });
             createdStartJob = job;
             ensureJobLog(job);
+            recordJobEvent(job, 'started', {
+                runMode: normalizedRunConfig.runMode,
+                targetAcceptedCount: normalizedRunConfig.targetAcceptedCount,
+                maxAttempts: normalizedRunConfig.maxAttempts,
+                nativeGraceSeconds,
+            });
             appendJobLog(job, {
                 source: 'backend',
                 event: 'job_started',
@@ -688,6 +696,86 @@ async function init(router) {
         }
     });
 
+    router.post('/target-mutated/:jobId', async (request, response) => {
+        try {
+            const job = getJob(request.params.jobId);
+            if (!job) {
+                return response.status(404).send(buildMissingJobResponse());
+            }
+
+            const runIdMismatch = getRunIdMismatchError(job, request.body?.runId, 'The target mutation report did not match the active Retry Mobile run.');
+            if (runIdMismatch) {
+                return response.status(409).send(runIdMismatch);
+            }
+
+            const reportedChatKey = request.body?.chatIdentity
+                ? buildChatKey(request.body.chatIdentity)
+                : '';
+            if (reportedChatKey && reportedChatKey !== job.chatKey) {
+                return response.status(409).send(buildConflictResponse(
+                    job,
+                    'The target mutation report did not match the backend job chat.',
+                ));
+            }
+
+            if (job.userTombstone || job.recoverySuppressed) {
+                return response.send({
+                    ok: true,
+                    job: serializeJob(job),
+                });
+            }
+
+            const tombstone = buildUserTombstone(request.body, job);
+            const wasRunning = job.state === 'running';
+            const structuredError = toStructuredError(createStructuredError(
+                'user_target_mutated',
+                'Retry Mobile stopped because the user changed or deleted the target message.',
+                `${tombstone.sourceEvent || 'unknown'}:${tombstone.reason || 'target_mutated'}`,
+            ));
+            touchJob(job, {
+                userTombstone: tombstone,
+                recoverySuppressed: true,
+                cancelRequested: wasRunning ? true : job.cancelRequested,
+                state: wasRunning ? 'cancelled' : job.state,
+                phase: wasRunning ? 'cancelled' : job.phase,
+                lastError: wasRunning ? structuredError.message : job.lastError,
+                structuredError: wasRunning ? structuredError : job.structuredError,
+            }, {
+                event: 'user_target_mutated',
+                detail: tombstone,
+            });
+            appendJobLog(job, {
+                source: 'backend',
+                event: 'user_target_mutated',
+                summary: 'Retry Mobile suppressed recovery because the user changed or deleted the target message.',
+                detail: tombstone,
+            });
+
+            if (wasRunning) {
+                job.jobController?.abort?.();
+                pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+                notifyTerminalOnce(job, 'cancelled', {
+                    attemptCount: job.attemptCount,
+                    acceptedCount: job.acceptedCount,
+                    targetAcceptedCount: job.targetAcceptedCount,
+                    reason: 'user_target_mutated',
+                });
+            }
+
+            return response.send({
+                ok: true,
+                job: serializeJob(job),
+            });
+        } catch (error) {
+            console.error('[retry-mobile:backend] Target mutation report failed:', error);
+            const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not process the target mutation report.');
+            return response.status(500).send({
+                error: structuredError.message,
+                structuredError,
+            });
+        }
+    });
+
     router.post('/cancel/:jobId', async (request, response) => {
         const job = getJob(request.params.jobId);
         if (!job) {
@@ -709,6 +797,33 @@ async function init(router) {
             job: serializeJob(job),
         });
     });
+}
+
+function buildUserTombstone(body = {}, job) {
+    const mutationType = normalizeMutationType(body?.mutationType);
+    return {
+        at: new Date().toISOString(),
+        mutationType,
+        reason: String(body?.reason || mutationType || 'target_mutated').trim(),
+        sourceEvent: String(body?.sourceEvent || '').trim(),
+        targetMessageVersion: Number.isFinite(Number(body?.targetMessageVersion))
+            ? Number(body.targetMessageVersion)
+            : Number(job?.targetMessageVersion) || 0,
+        chatIdentity: body?.chatIdentity || job?.chatIdentity || null,
+    };
+}
+
+function normalizeMutationType(value) {
+    const normalized = String(value || '').trim();
+    return normalized || 'target_mutated';
+}
+
+function notifyTerminalOnce(job, stage, payload = {}) {
+    const key = `terminal:${stage}`;
+    if (!markNotificationSent(job, key)) {
+        return;
+    }
+    notify(job.runConfig, stage, payload);
 }
 
 async function ensureBackendReady() {

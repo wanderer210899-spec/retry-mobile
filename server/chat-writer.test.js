@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const {
     applyAcceptedResultToMessage,
+    assertWritePathReady,
     inspectNativeAssistantState,
     inspectRecoverySnapshot,
 } = require('./chat-writer');
@@ -295,6 +296,23 @@ test('inspectNativeAssistantState returns target_pending when the assistant slot
     assert.equal(inspection.assistantMessage?.mes, 'Stale prior reply');
 
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
+});
+
+test('write path refuses tombstoned jobs so user-deleted targets are not recreated', () => {
+    const job = createJob({}, {
+        nativeState: 'abandoned',
+        recoveryMode: 'create_missing_turn',
+        recoverySuppressed: true,
+        userTombstone: {
+            mutationType: 'message_deleted',
+            reason: 'assistant_missing_after_delete',
+        },
+    });
+
+    assert.throws(
+        () => assertWritePathReady(job),
+        /user changed or deleted the target message/,
+    );
 });
 
 test('inspectNativeAssistantState treats a persisted pre-swipe prefix as target_pending when capture saw a new empty swipe slot', () => {

@@ -166,6 +166,12 @@ export async function bootRetryMobile() {
         onNativeEvent(event, summary) {
             void window.__rmLogEvent?.(event, summary, null);
         },
+        onTargetMutation(payload) {
+            void handleTargetMutation(payload);
+        },
+        onTargetMutationEvent(event, summary) {
+            void window.__rmLogEvent?.(event, summary, null);
+        },
     });
 
     retryFsm = createRetryFsm({
@@ -304,6 +310,7 @@ export async function bootRetryMobile() {
     window.__rmTeardown = () => {
         stPort?.unsubscribeCapture?.();
         stPort?.unsubscribeNativeObserver?.();
+        stPort?.clearTargetMutationWatch?.();
         const pollingToken = retryFsm?.getContext?.()?.pollingToken || null;
         if (pollingToken) {
             backendPort?.stopPolling?.(pollingToken);
@@ -429,6 +436,32 @@ export async function bootRetryMobile() {
         }
     }
 
+    async function handleTargetMutation(payload) {
+        if (!payload?.jobId) {
+            return;
+        }
+
+        try {
+            await backendPort.reportTargetMutation(payload.jobId, {
+                ...payload,
+                sessionId: runtime.sessionId || '',
+            });
+            syncRuntime();
+            render();
+        } catch (error) {
+            console.warn('[retry-mobile:target-mutated] Backend rejected target mutation report:', error);
+            void window.__rmLogEvent?.(
+                'target_mutation_report_failed',
+                'Backend rejected the target mutation report.',
+                {
+                    jobId: payload.jobId,
+                    errorCode: error?.code || '',
+                    errorMessage: error?.message || String(error || ''),
+                },
+            );
+        }
+    }
+
     async function flushPendingNativeOutcome() {
         if (!runtime.pendingNativeOutcome) {
             return;
@@ -479,16 +512,21 @@ export async function bootRetryMobile() {
         render();
     }
 
-    async function updateActiveJob(status, fallbackJobId = '') {
+    async function updateActiveJob(status, fallbackJobId = '', options = {}) {
         void fallbackJobId;
         if (!status) {
             return false;
         }
-        const ingest = await retryFsm?.observeBackendStatus?.(status);
+        const ingest = await retryFsm?.observeBackendStatus?.(status, options);
         if (ingest && ingest.accepted === false) {
             return false;
         }
         writeStatusMirror(runtime, status);
+        if (status?.recoverySuppressed || status?.userTombstone) {
+            stPort?.clearTargetMutationWatch?.();
+        } else {
+            stPort?.watchTargetMutation?.(status);
+        }
         return true;
     }
 

@@ -67,6 +67,21 @@ export async function reportFrontendPresence(jobId, payload) {
     });
 }
 
+export async function reportTargetMutation(jobId, payload) {
+    if (!jobId) {
+        throw createStructuredError(
+            'handoff_request_failed',
+            'Retry Mobile could not report the target mutation because no backend job is active.',
+        );
+    }
+
+    return requestJson(`${BASE_URL}/target-mutated/${encodeURIComponent(jobId)}`, {
+        method: 'POST',
+        keepalive: true,
+        body: JSON.stringify(payload || {}),
+    });
+}
+
 export async function cancelBackendJob(jobId) {
     if (!jobId) {
         return { ok: false };

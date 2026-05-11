@@ -48,6 +48,13 @@
  * @property {(targetChat: ChatIdentity) => boolean} clearGeneratingIndicator
  *   Reverse `setGeneratingIndicator`.
  *
+ * @property {(status: object) => boolean} watchTargetMutation
+ *   Watch the active/latest Retry Mobile target for user edit/delete/swipe
+ *   mutation events and report them through the backend tombstone path.
+ *
+ * @property {() => void} clearTargetMutationWatch
+ *   Stop watching the current Retry Mobile target for user mutation events.
+ *
  * @property {(kind: 'info'|'success'|'warning'|'error', title: string, message: string) => void} notifyToast
  *   Surface a toastr notification (debug-oriented, dedupe is the caller's job).
  *
@@ -80,6 +87,8 @@ export const ST_PORT_METHOD_ALLOWLIST = Object.freeze([
     'guardedReload',
     'setGeneratingIndicator',
     'clearGeneratingIndicator',
+    'watchTargetMutation',
+    'clearTargetMutationWatch',
     'notifyToast',
     'reconciler',
 ]);

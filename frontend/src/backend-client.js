@@ -4,6 +4,7 @@ import {
     fetchActiveJob,
     fetchLatestJob as fetchLatestJobApi,
     fetchJobStatus,
+    reportTargetMutation as postTargetMutation,
     reportFrontendPresence as postFrontendPresence,
     reportNativeFailure as postNativeFailure,
     startBackendJob,
@@ -22,6 +23,7 @@ export function createBackendPort() {
         confirmNative,
         reportNativeFailure,
         reportFrontendPresence,
+        reportTargetMutation,
         pollStatus,
         startPolling,
         stopPolling,
@@ -45,6 +47,10 @@ export function createBackendPort() {
 
     async function reportFrontendPresence(jobId, payload) {
         return postFrontendPresence(jobId, payload);
+    }
+
+    async function reportTargetMutation(jobId, payload) {
+        return postTargetMutation(jobId, payload);
     }
 
     async function pollStatus(jobId) {

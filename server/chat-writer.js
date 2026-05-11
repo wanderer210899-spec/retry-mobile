@@ -136,6 +136,15 @@ function inspectNativeAssistantState(job) {
 
 function inspectRecoverySnapshot(job) {
     const persistedFloor = Number(job.acceptedCount) || 0;
+    if (isRecoverySuppressed(job)) {
+        return buildRecoveryResult(
+            'user_target_mutated',
+            persistedFloor,
+            0,
+            'Retry Mobile recovery is suppressed because the user mutated the target message.',
+        );
+    }
+
     let chat = null;
 
     try {
@@ -281,6 +290,13 @@ function assertChatStillMatches(job, chat) {
 }
 
 function assertWritePathReady(job) {
+    if (isRecoverySuppressed(job)) {
+        throw createStructuredError(
+            'user_target_mutated',
+            'Retry Mobile stopped because the user changed or deleted the target message.',
+        );
+    }
+
     if (job?.nativeResolutionInProgress === true || job?.phase === 'native_confirming_persisted') {
         throw createStructuredError(
             'native_write_not_ready',
@@ -853,7 +869,13 @@ function stampMessageAnchor(message, key, anchorId) {
 }
 
 function shouldCreateMissingUserAnchor(job) {
-    return job.nativeState === 'abandoned' && job.recoveryMode === 'create_missing_turn';
+    return !isRecoverySuppressed(job)
+        && job.nativeState === 'abandoned'
+        && job.recoveryMode === 'create_missing_turn';
+}
+
+function isRecoverySuppressed(job) {
+    return Boolean(job?.recoverySuppressed || job?.userTombstone);
 }
 
 function canCreateMissingUserAnchor(job, chat) {

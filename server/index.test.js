@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const plugin = require('./index');
-const { getJob } = require('./state');
+const { buildChatKey, createJob, getJob, jobs } = require('./state');
 
 test('extractReplayAuthContext keeps only the browser cookie and csrf token needed for server-side replay', () => {
     const request = {
@@ -215,3 +215,140 @@ test('restorePersistedJobsWith() skips a corrupt snapshot and still processes th
     assert.deepEqual(processed, ['good-1', 'good-2'],
         'restore loop must continue past the poison snapshot and still rehydrate the survivors');
 });
+
+test('target-mutated route tombstones and cancels a running job', async () => {
+    jobs.clear();
+    const posts = new Map();
+    const router = {
+        get() {},
+        post(routePath, handler) {
+            posts.set(routePath, handler);
+        },
+    };
+
+    plugin._test.bootState.ready = true;
+    plugin._test.bootState.promise = null;
+    plugin._test.bootState.lastError = '';
+    await plugin.init(router);
+
+    const identity = { kind: 'character', chatId: 'chat-target', groupId: null };
+    const job = createJob({
+        jobId: 'job-target',
+        runId: 'run-target',
+        state: 'running',
+        phase: 'awaiting_retry_results',
+        chatIdentity: identity,
+        chatKey: buildChatKey(identity),
+        targetAcceptedCount: 2,
+        runConfig: {},
+        userContext: {
+            handle: 'test-user',
+            directories: { root: path.join(os.tmpdir(), 'retry-mobile-target-route') },
+        },
+        skipPersist: true,
+    });
+    let aborted = false;
+    job.jobController = {
+        abort() {
+            aborted = true;
+        },
+    };
+
+    const response = createResponse();
+    await posts.get('/target-mutated/:jobId')({
+        params: { jobId: 'job-target' },
+        body: {
+            runId: 'run-target',
+            chatIdentity: identity,
+            mutationType: 'message_deleted',
+            reason: 'assistant_missing_after_delete',
+            sourceEvent: 'MESSAGE_DELETED',
+            targetMessageVersion: 1,
+        },
+    }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.job.state, 'cancelled');
+    assert.equal(response.body.job.recoverySuppressed, true);
+    assert.equal(response.body.job.userTombstone.reason, 'assistant_missing_after_delete');
+    assert.equal(response.body.job.lastEvent.type, 'user_target_mutated');
+    assert.equal(getJob('job-target').cancelRequested, true);
+    assert.equal(aborted, true);
+
+    jobs.clear();
+});
+
+test('target-mutated route suppresses terminal recovery without rewriting terminal outcome', async () => {
+    jobs.clear();
+    const posts = new Map();
+    const router = {
+        get() {},
+        post(routePath, handler) {
+            posts.set(routePath, handler);
+        },
+    };
+
+    plugin._test.bootState.ready = true;
+    plugin._test.bootState.promise = null;
+    plugin._test.bootState.lastError = '';
+    await plugin.init(router);
+
+    const identity = { kind: 'character', chatId: 'chat-terminal-target', groupId: null };
+    createJob({
+        jobId: 'job-terminal-target',
+        runId: 'run-terminal-target',
+        state: 'completed',
+        phase: 'completed',
+        chatIdentity: identity,
+        chatKey: buildChatKey(identity),
+        targetAcceptedCount: 2,
+        lastError: '',
+        runConfig: {},
+        userContext: {
+            handle: 'test-user',
+            directories: { root: path.join(os.tmpdir(), 'retry-mobile-terminal-target-route') },
+        },
+        skipPersist: true,
+    });
+
+    const response = createResponse();
+    await posts.get('/target-mutated/:jobId')({
+        params: { jobId: 'job-terminal-target' },
+        body: {
+            runId: 'run-terminal-target',
+            chatIdentity: identity,
+            mutationType: 'message_deleted',
+            reason: 'assistant_missing_after_delete',
+            sourceEvent: 'MESSAGE_DELETED',
+            targetMessageVersion: 2,
+        },
+    }, response);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.job.state, 'completed');
+    assert.equal(response.body.job.recoverySuppressed, true);
+    assert.equal(response.body.job.userTombstone.reason, 'assistant_missing_after_delete');
+    assert.equal(response.body.job.lastError, '');
+    assert.equal(response.body.job.lastEvent.type, 'user_target_mutated');
+    assert.equal(getJob('job-terminal-target').cancelRequested, false);
+
+    jobs.clear();
+});
+
+function createResponse() {
+    return {
+        statusCode: 200,
+        body: null,
+        set() {
+            return this;
+        },
+        status(code) {
+            this.statusCode = code;
+            return this;
+        },
+        send(payload) {
+            this.body = payload;
+            return payload;
+        },
+    };
+}

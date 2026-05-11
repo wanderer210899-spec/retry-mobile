@@ -1914,6 +1914,33 @@ test('observeBackendStatus rejects stale terminal revisions after newer running 
     assert.equal(fsm.getContext().jobId, 'job-1');
 });
 
+test('observeBackendStatus can recover latest terminal output through the FSM render queue outside RUNNING', async () => {
+    const { fsm, calls } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+
+    const result = await fsm.observeBackendStatus({
+        jobId: 'job-latest',
+        runId: 'run-latest',
+        state: 'completed',
+        revision: 7,
+        acceptedCount: 2,
+        targetAcceptedCount: 2,
+        targetMessageVersion: 2,
+        chatIdentity,
+    }, {
+        recoverTerminal: true,
+        chatIdentity,
+    });
+
+    assert.equal(result.accepted, true);
+    assert.equal(result.reason, 'terminal_recovered');
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+    const context = fsm.getContext();
+    assert.equal(context.state, RetryState.IDLE);
+    assert.equal(context.lastTerminalResult?.jobId, 'job-latest');
+    assert.equal(context.lastTerminalResult?.status?.targetMessageVersion, 2);
+});
+
 test('completed status queues behind an in-flight running apply and completes after the flush', async () => {
     const { fsm, calls, setApplyAcceptedOutputResult } = createHarness();
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };

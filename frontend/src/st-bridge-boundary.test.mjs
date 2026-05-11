@@ -53,7 +53,7 @@ test('files outside st-bridge/ may not reach into bridge internal modules', () =
 test('files outside st-bridge/ may not subscribe to ST event names directly', () => {
     // Hardcoded event-name string literals from SillyTavern's eventTypes table.
     // These strings should only appear inside the bridge.
-    const stEventLiterals = /['"](GENERATION_STARTED|GENERATION_ENDED|GENERATION_STOPPED|MESSAGE_SENT|MESSAGE_RECEIVED|MESSAGE_SWIPED|CHARACTER_MESSAGE_RENDERED|CHAT_CHANGED|CHAT_DELETED|GENERATE_AFTER_DATA|CHAT_COMPLETION_SETTINGS_READY|TEXT_COMPLETION_SETTINGS_READY)['"]/;
+    const stEventLiterals = /['"](GENERATION_STARTED|GENERATION_ENDED|GENERATION_STOPPED|MESSAGE_SENT|MESSAGE_RECEIVED|MESSAGE_DELETED|MESSAGE_EDITED|MESSAGE_UPDATED|MESSAGE_SWIPED|MESSAGE_SWIPE_DELETED|CHARACTER_MESSAGE_RENDERED|CHAT_CHANGED|CHAT_DELETED|GENERATE_AFTER_DATA|CHAT_COMPLETION_SETTINGS_READY|TEXT_COMPLETION_SETTINGS_READY)['"]/;
 
     const offenders = collectFrontendSources()
         .filter((entry) => !isInsideBridge(entry.filePath))

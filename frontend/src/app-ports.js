@@ -120,6 +120,18 @@ export function createAppPorts({
                 source: 'frontend_presence_response',
             });
         },
+        async reportTargetMutation(jobId, payload) {
+            const result = await baseBackendPort.reportTargetMutation(jobId, payload);
+            return await handleJobPortResponse({
+                result,
+                jobId,
+                runId: payload?.runId,
+                updateActiveJob,
+                render,
+                logEvent,
+                source: 'target_mutation_response',
+            });
+        },
         async cancelJob(jobId, payload) {
             return baseBackendPort.cancelJob(jobId, payload);
         },

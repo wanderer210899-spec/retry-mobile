@@ -20,6 +20,7 @@ import { createArmCaptureSession } from './capture.js';
 import { waitForNativeCompletion } from './lifecycle.js';
 import { createSessionLockdown } from './lockdown.js';
 import { createChatReconciler } from './reconciler.js';
+import { createTargetMutationGuard } from './target-mutation.js';
 import {
     getCapabilityReport,
     getChatIdentity,
@@ -76,6 +77,7 @@ export {
     wouldLastMessageRightSwipeCauseGeneration,
 } from './lockdown.js';
 export { createChatReconciler } from './reconciler.js';
+export { createTargetMutationGuard } from './target-mutation.js';
 export { ST_PORT_METHOD_ALLOWLIST } from './port.js';
 
 // ---------- StPort factory ----------
@@ -92,6 +94,8 @@ export function createStPort({
     onNativeReady,
     onNativeFailed,
     onNativeEvent,
+    onTargetMutation,
+    onTargetMutationEvent,
 } = {}) {
     let captureSession = null;
     let nativeController = null;
@@ -101,6 +105,11 @@ export function createStPort({
         translate: t,
     });
     const reconciler = createChatReconciler();
+    const targetMutationGuard = createTargetMutationGuard({
+        getContext,
+        onMutation: (payload) => onTargetMutation?.(payload),
+        onEvent: (event, summary) => onTargetMutationEvent?.(event, summary),
+    });
 
     return {
         reconciler,
@@ -188,6 +197,12 @@ export function createStPort({
             context.activateSendButtons?.();
             context.swipe?.refresh?.(true);
             return true;
+        },
+        watchTargetMutation(status) {
+            return targetMutationGuard.watch(status);
+        },
+        clearTargetMutationWatch() {
+            targetMutationGuard.clear();
         },
         notifyToast(kind, title, message) {
             showToast(kind, title, message);

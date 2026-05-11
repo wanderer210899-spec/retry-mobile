@@ -55,16 +55,9 @@ function resolveBin(name) {
 }
 
 function notify(runConfig, stage, payload = {}) {
-    const shouldNotify = stage === 'success'
-        ? Boolean(runConfig.notifyOnSuccess)
-        : stage === 'completed'
-            ? Boolean(runConfig.notifyOnComplete)
-            : false;
-    const shouldVibrate = stage === 'success'
-        ? Boolean(runConfig.vibrateOnSuccess)
-        : stage === 'completed'
-            ? Boolean(runConfig.vibrateOnComplete)
-            : false;
+    const terminalStage = isTerminalStage(stage);
+    const shouldNotify = terminalStage ? Boolean(runConfig.notifyOnComplete) : false;
+    const shouldVibrate = terminalStage ? Boolean(runConfig.vibrateOnComplete) : false;
 
     if (shouldNotify) {
         const bin = resolveBin('termux-notification');
@@ -73,7 +66,7 @@ function notify(runConfig, stage, payload = {}) {
                 '--id', nextNotificationId(),
                 '--title', 'Retry Mobile',
                 '--content', buildMessage(runConfig, stage, payload),
-                '--priority', stage === 'completed' ? 'high' : 'default',
+                '--priority', 'high',
                 '--sound',
                 '--icon', 'ic_notification_overlay',
             ], {
@@ -88,7 +81,7 @@ function notify(runConfig, stage, payload = {}) {
     if (shouldVibrate) {
         const bin = resolveBin('termux-vibrate');
         if (bin) {
-            const durationMs = stage === 'completed' ? 900 : 400;
+            const durationMs = 900;
             runTermuxCommand(bin, ['-d', String(durationMs), '-f'], {
                 kind: 'vibration',
                 stage,
@@ -99,6 +92,10 @@ function notify(runConfig, stage, payload = {}) {
             });
         }
     }
+}
+
+function isTerminalStage(stage) {
+    return stage === 'completed' || stage === 'failed' || stage === 'cancelled';
 }
 
 function acquireWakeLock() {
@@ -135,24 +132,21 @@ function buildMessage(runConfig, stage, payload) {
 
     const language = normalizeLanguage(runConfig?.uiLanguage || '');
 
-    if (stage === 'success') {
-        return translate('backendNotifier.accepted', {
-            language,
-            vars: {
-                acceptedCount: stringifyTemplateValue(payload.acceptedCount),
-                targetAcceptedCount: stringifyTemplateValue(payload.targetAcceptedCount),
-                characterCount: stringifyTemplateValue(payload.characterCount),
-                tokenCount: stringifyTemplateValue(payload.tokenCount),
-            },
-        });
-    }
-
     if (stage === 'completed') {
         return translate('backendNotifier.completed', {
             language,
             vars: {
                 acceptedCount: stringifyTemplateValue(payload.acceptedCount),
                 attemptCount: stringifyTemplateValue(payload.attemptCount),
+            },
+        });
+    }
+
+    if (stage === 'failed' || stage === 'cancelled') {
+        return translate('backendNotifier.fallback', {
+            language,
+            vars: {
+                stage: stringifyTemplateValue(stage),
             },
         });
     }
@@ -172,7 +166,7 @@ function renderCustomMessage(runConfig, stage, payload) {
     }
 
     const values = {
-        stage: stage === 'success' ? 'accepted' : stage,
+        stage,
         acceptedCount: stringifyTemplateValue(payload.acceptedCount),
         targetAcceptedCount: stringifyTemplateValue(payload.targetAcceptedCount),
         attemptCount: stringifyTemplateValue(payload.attemptCount),

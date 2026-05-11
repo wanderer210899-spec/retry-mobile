@@ -33,6 +33,12 @@ function createJob(input = {}) {
         revision: Number.isFinite(Number(input.revision)) && Number(input.revision) > 0
             ? Math.floor(Number(input.revision))
             : 1,
+        eventSeq: Number.isFinite(Number(input.eventSeq)) && Number(input.eventSeq) >= 0
+            ? Math.floor(Number(input.eventSeq))
+            : 0,
+        lastEvent: input.lastEvent && typeof input.lastEvent === 'object'
+            ? cloneValue(input.lastEvent)
+            : null,
         acceptedCount: Number(input.acceptedCount) || 0,
         attemptCount: Number(input.attemptCount) || 0,
         acceptedResults: Array.isArray(input.acceptedResults) ? input.acceptedResults : [],
@@ -40,6 +46,13 @@ function createJob(input = {}) {
         cancelRequested: Boolean(input.cancelRequested),
         lastError: typeof input.lastError === 'string' ? input.lastError : '',
         structuredError: input.structuredError ?? null,
+        userTombstone: input.userTombstone && typeof input.userTombstone === 'object'
+            ? cloneValue(input.userTombstone)
+            : null,
+        recoverySuppressed: Boolean(input.recoverySuppressed),
+        notificationLedger: input.notificationLedger && typeof input.notificationLedger === 'object'
+            ? cloneValue(input.notificationLedger)
+            : {},
         targetMessageIndex: Number.isFinite(Number(input.targetMessageIndex)) ? Number(input.targetMessageIndex) : null,
         targetMessageVersion: Number.isFinite(Number(input.targetMessageVersion)) ? Number(input.targetMessageVersion) : 0,
         targetMessage: input.targetMessage ?? null,
@@ -122,6 +135,9 @@ function getLatestJobByChat(chatIdentity) {
         if (job.chatKey !== chatKey) {
             continue;
         }
+        if (isRecoverySuppressed(job)) {
+            continue;
+        }
 
         const timestamp = getJobTimestamp(job);
         if (!latestJob || timestamp > latestTimestamp || (timestamp === latestTimestamp && job.state === 'running' && latestJob.state !== 'running')) {
@@ -154,13 +170,57 @@ function getJobByChatSession(chatIdentity, ownerSessionId) {
     return null;
 }
 
-function touchJob(job, patch = {}) {
+function touchJob(job, patch = {}, options = {}) {
+    const updatedAt = new Date().toISOString();
     Object.assign(job, patch, {
-        updatedAt: new Date().toISOString(),
+        updatedAt,
     });
+    if (typeof options.event === 'string' && options.event.trim()) {
+        applyJobEvent(job, options.event, options.detail, updatedAt);
+    }
     bumpJobRevision(job);
     persistJobSnapshot(job);
     return job;
+}
+
+function recordJobEvent(job, type, detail = null) {
+    if (!job || typeof type !== 'string' || !type.trim()) {
+        return null;
+    }
+
+    const updatedAt = new Date().toISOString();
+    job.updatedAt = updatedAt;
+    applyJobEvent(job, type, detail, updatedAt);
+    bumpJobRevision(job);
+    persistJobSnapshot(job);
+    return cloneValue(job.lastEvent);
+}
+
+function markNotificationSent(job, key) {
+    const normalizedKey = typeof key === 'string' && key.trim() ? key.trim() : '';
+    if (!job || !normalizedKey) {
+        return false;
+    }
+
+    const ledger = job.notificationLedger && typeof job.notificationLedger === 'object'
+        ? job.notificationLedger
+        : {};
+    if (ledger[normalizedKey]) {
+        return false;
+    }
+
+    job.notificationLedger = {
+        ...ledger,
+        [normalizedKey]: {
+            at: new Date().toISOString(),
+            eventSeq: Number(job.eventSeq) || 0,
+            eventType: typeof job.lastEvent?.type === 'string' ? job.lastEvent.type : '',
+        },
+    };
+    job.updatedAt = new Date().toISOString();
+    bumpJobRevision(job);
+    persistJobSnapshot(job);
+    return true;
 }
 
 function appendAttemptLog(job, entry = {}) {
@@ -239,6 +299,8 @@ function serializeJob(job) {
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
         revision: Number(job.revision) || 1,
+        eventSeq: Number(job.eventSeq) || 0,
+        lastEvent: cloneValue(job.lastEvent),
         acceptedCount: job.acceptedCount,
         attemptCount: job.attemptCount,
         targetAcceptedCount: job.targetAcceptedCount,
@@ -248,6 +310,8 @@ function serializeJob(job) {
         ownerSessionId: job.ownerSessionId,
         lastError: job.lastError,
         structuredError: job.structuredError,
+        userTombstone: cloneValue(job.userTombstone),
+        recoverySuppressed: Boolean(job.recoverySuppressed || job.userTombstone),
         cancelRequested: job.cancelRequested,
         targetMessageIndex: job.targetMessageIndex,
         targetMessageVersion: job.targetMessageVersion,
@@ -292,6 +356,8 @@ function snapshotJobForPersistence(job) {
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
         revision: Number(job.revision) || 1,
+        eventSeq: Number(job.eventSeq) || 0,
+        lastEvent: cloneValue(job.lastEvent),
         acceptedCount: job.acceptedCount,
         attemptCount: job.attemptCount,
         acceptedResults: cloneValue(job.acceptedResults),
@@ -299,6 +365,9 @@ function snapshotJobForPersistence(job) {
         cancelRequested: job.cancelRequested,
         lastError: job.lastError,
         structuredError: cloneValue(job.structuredError),
+        userTombstone: cloneValue(job.userTombstone),
+        recoverySuppressed: Boolean(job.recoverySuppressed),
+        notificationLedger: cloneValue(job.notificationLedger),
         targetMessageIndex: job.targetMessageIndex,
         targetMessageVersion: job.targetMessageVersion,
         targetMessage: cloneValue(job.targetMessage),
@@ -470,6 +539,24 @@ function pruneTerminalJobsFromMemory() {
     }
 }
 
+function applyJobEvent(job, type, detail = null, at = new Date().toISOString()) {
+    const current = Number(job.eventSeq);
+    const seq = Number.isFinite(current) && current >= 0
+        ? Math.floor(current) + 1
+        : 1;
+    job.eventSeq = seq;
+    job.lastEvent = {
+        seq,
+        type: String(type).trim(),
+        at,
+        detail: cloneValue(detail),
+    };
+}
+
+function isRecoverySuppressed(job) {
+    return Boolean(job?.recoverySuppressed || job?.userTombstone);
+}
+
 function buildOrphanPreview(orphanedAcceptedResults) {
     const rows = Array.isArray(orphanedAcceptedResults) ? orphanedAcceptedResults : [];
     return {
@@ -510,6 +597,8 @@ module.exports = {
     getLatestJobByChat,
     jobs,
     appendAttemptLog,
+    markNotificationSent,
+    recordJobEvent,
     serializeJob,
     touchJob,
     updateJobLogState,

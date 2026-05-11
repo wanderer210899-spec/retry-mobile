@@ -107,6 +107,19 @@ test('app.js accepts backend status through the FSM before writing runtime mirro
     );
 });
 
+test('app-recovery never patches accepted output outside FSM status ingest', () => {
+    assert.doesNotMatch(
+        appRecoverySource,
+        /reconcileAfterRestore|stPort\.reconciler|applyAcceptedOutput/,
+        'app-recovery.js must fetch statuses only; accepted-output projection belongs to retry-fsm.js',
+    );
+    assert.match(
+        appRecoverySource,
+        /recoverTerminal:\s*true/,
+        'terminal latest/restore statuses must be explicitly routed through FSM recovery ingest',
+    );
+});
+
 function collectFrontendSources() {
     const root = fileURLToPath(new URL('.', import.meta.url));
     const files = listFilesRecursively(root)
