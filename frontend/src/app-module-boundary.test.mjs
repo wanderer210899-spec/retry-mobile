@@ -97,6 +97,16 @@ test('runtime active job mirrors are only written in core/projector', () => {
     }
 });
 
+test('app.js accepts backend status through the FSM before writing runtime mirrors', () => {
+    const updateActiveJobBody = appSource.match(/async function updateActiveJob[\s\S]*?async function buildStartPayload/)?.[0] || '';
+    assert.match(updateActiveJobBody, /observeBackendStatus/, 'updateActiveJob must call retryFsm.observeBackendStatus');
+    assert.match(updateActiveJobBody, /writeStatusMirror/, 'updateActiveJob must write the accepted status mirror');
+    assert.ok(
+        updateActiveJobBody.indexOf('observeBackendStatus') < updateActiveJobBody.indexOf('writeStatusMirror'),
+        'runtime mirrors must be written only after FSM status ingestion accepts the snapshot',
+    );
+});
+
 function collectFrontendSources() {
     const root = fileURLToPath(new URL('.', import.meta.url));
     const files = listFilesRecursively(root)

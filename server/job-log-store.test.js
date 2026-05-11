@@ -61,9 +61,55 @@ test('backend job logs are created with a human-readable title and rendered from
         },
         at: '2026-04-18T20:23:00.000Z',
     });
+    appendJobLog(job, {
+        source: 'frontend',
+        event: 'status_ingest_rejected',
+        summary: 'Frontend ignored a stale backend status.',
+        detail: {
+            reason: 'out_of_order_revision',
+            statusRevision: 2,
+            currentRevision: 5,
+        },
+        frontendStatus: {
+            fsmState: 'running',
+            fsmJobId: job.jobId,
+            fsmRunId: 'run-1',
+            fsmLastStatusRevision: 5,
+            runtimeActiveJobId: job.jobId,
+            runtimeMirrorJobId: job.jobId,
+            runtimeMirrorRunId: 'run-1',
+            runtimeMirrorState: 'running',
+            runtimeMirrorPhase: 'backend_running',
+            runtimeMirrorRevision: 5,
+            runtimeAcceptedCount: 1,
+            runtimeTargetAcceptedCount: 2,
+            runtimeAttemptCount: 1,
+            runtimeMaxAttempts: 30,
+            runtimeTargetMessageVersion: 2,
+            runtimeNativeState: 'confirmed',
+            runtimeFrontendVisibilityState: 'hidden',
+            lastKnownTargetMessageVersion: 2,
+            lastAppliedVersion: 1,
+            pendingVisibleRenderVersion: 2,
+            reloadAttempted: false,
+            browserVisibilityState: 'hidden',
+            browserOnline: false,
+            logJobId: job.jobId,
+            logEntryCount: 3,
+            logUpdatedAt: '2026-04-18T21:23:00+01:00',
+        },
+        at: '2026-04-18T20:23:05.000Z',
+    });
 
     const logPath = getJobLogPath('default-user', directories, job.jobId);
     assert.equal(fs.existsSync(logPath), true);
+    const persistedEntries = fs.readFileSync(logPath, 'utf8')
+        .trim()
+        .split(/\r?\n/u)
+        .map((line) => JSON.parse(line));
+    assert.equal(persistedEntries.at(-1).backendStatus.state, 'running');
+    assert.equal(persistedEntries.at(-1).frontendStatus.fsmState, 'running');
+    assert.equal(persistedEntries.at(-1).frontendStatus.runtimeMirrorRevision, 5);
 
     const rendered = renderJobLog(job, {
         compatibility: {
@@ -78,10 +124,19 @@ test('backend job logs are created with a human-readable title and rendered from
     });
 
     assert.match(rendered, /^2026-04-18 21-22-30 UTC\+01:00 - 白肆昀 - 9dbefa8a/mu);
+    assert.match(rendered, /revision: \d+/u);
+    assert.match(rendered, /frontendVisibilityState: unknown/u);
+    assert.match(rendered, /logEntryCount: 3/u);
     assert.match(rendered, /Attempt Summary:/u);
+    assert.match(rendered, /Latest Frontend Snapshot:/u);
+    assert.match(rendered, /fsm: fsm=running job=9dbefa8a-2f07-48e0-84cc-ee459a010b55 run=run-1 rev=5/u);
+    assert.match(rendered, /runtimeMirror: active=9dbefa8a-2f07-48e0-84cc-ee459a010b55 mirror=running mirrorJob=9dbefa8a-2f07-48e0-84cc-ee459a010b55/u);
+    assert.match(rendered, /render: known=2 applied=1 pending=2 reload=no/u);
+    assert.match(rendered, /browser: visibility=hidden online=no backendVisibility=hidden/u);
     assert.match(rendered, /Event Timeline:/u);
     assert.match(rendered, /attempt_started/u);
-    assert.match(rendered, /2026-04-18T21:23:00\+01:00 \| backend \| attempt_started/u);
+    assert.match(rendered, /2026-04-18T21:23:00\+01:00 \| backend \| attempt_started .*backend=state=running phase=backend_running rev=\d+ accepted=1\/2 attempts=1\/30 native=pending version=0 frontend=unknown/u);
+    assert.match(rendered, /status_ingest_rejected .*frontend=fsm=running job=9dbefa8a-2f07-48e0-84cc-ee459a010b55/u);
 
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
 });

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { createStructuredError } from './retry-error.js';
 
-test('CURRENTLY FAILING (pre-fix): frontend cannot coin backend_write_failed in dev mode', () => {
+test('frontend cannot coin backend_write_failed in dev mode', () => {
     const previousDev = globalThis.__RM_DEV__;
     globalThis.__RM_DEV__ = true;
     try {
@@ -15,7 +15,7 @@ test('CURRENTLY FAILING (pre-fix): frontend cannot coin backend_write_failed in 
     }
 });
 
-test('CURRENTLY PASSING (pre-fix): client-prefixed structured errors remain valid', () => {
+test('client-prefixed structured errors remain valid', () => {
     const result = createStructuredError('client_patch_failed', 'patch failed', 'detail');
     assert.equal(result.code, 'client_patch_failed');
     assert.equal(result.message, 'patch failed');

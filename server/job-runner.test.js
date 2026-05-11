@@ -681,8 +681,34 @@ test('runJob treats native_attempt_timeout as a timed-out first attempt and proc
     };
 
     const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-native-attempt-timeout-'));
+    const chatsRoot = path.join(tempRoot, 'chats');
+    const cardDir = path.join(chatsRoot, 'Kate');
     const jobsDir = path.join(tempRoot, 'retry-mobile', 'jobs');
     fs.mkdirSync(jobsDir, { recursive: true });
+    fs.mkdirSync(cardDir, { recursive: true });
+
+    const integrity = 'integrity-native-attempt-timeout';
+    const userAnchorId = 'user-anchor';
+    const chatId = 'chat-native-attempt-timeout';
+    fs.writeFileSync(path.join(cardDir, `${chatId}.jsonl`), [
+        JSON.stringify({ chat_metadata: { integrity } }),
+        JSON.stringify({
+            name: 'User',
+            is_user: true,
+            is_system: false,
+            mes: 'hello',
+            extra: { retryMobileUserAnchorId: userAnchorId },
+        }),
+        JSON.stringify({
+            name: 'Kate',
+            is_user: false,
+            is_system: false,
+            mes: '',
+            swipes: [''],
+            swipe_id: 0,
+            extra: { retryMobileAssistantAnchorId: 'assistant-anchor' },
+        }),
+    ].join('\n'));
 
     const now = new Date().toISOString();
     const job = {
@@ -700,25 +726,31 @@ test('runJob treats native_attempt_timeout as a timed-out first attempt and proc
         attemptCount: 0,
         maxAttempts: 2,
         targetMessageVersion: 0,
-        targetUserAnchorId: 'user-anchor',
+        targetUserAnchorId: userAnchorId,
         targetAssistantAnchorId: 'assistant-anchor',
-        capturedChatIntegrity: 'integrity',
-        capturedChatLength: 1,
+        capturedChatIntegrity: integrity,
+        capturedChatLength: 2,
         targetFingerprint: {
             userMessageIndex: 0,
             userMessageText: 'hello',
+            assistantBaseline: {
+                messageText: '',
+                swipeCount: 1,
+                swipeId: 0,
+                genFinished: '',
+            },
         },
         chatIdentity: {
             kind: 'character',
             avatarUrl: 'Kate.png',
-            chatId: 'chat-native-attempt-timeout',
-            fileName: 'chat-native-attempt-timeout',
+            chatId,
+            fileName: chatId,
         },
         userContext: {
             handle: 'default-user',
             directories: {
                 root: tempRoot,
-                chats: path.join(tempRoot, 'chats'),
+                chats: chatsRoot,
                 groupChats: path.join(tempRoot, 'group chats'),
             },
         },
@@ -738,13 +770,14 @@ test('runJob treats native_attempt_timeout as a timed-out first attempt and proc
     };
 
     try {
-        await assert.rejects(
-            async () => runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null }),
-            () => false,
-        ).catch(() => {});
-        assert.equal(job.attemptCount >= 1, true);
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000', requestAuth: null });
+        assert.equal(job.state, 'failed');
+        assert.equal(job.nativeState, 'abandoned');
+        assert.equal(job.recoveryMode, 'reuse_empty_placeholder');
+        assert.equal(job.attemptCount, 1);
         assert.equal(job.attemptLog.some((entry) => entry.reason === 'native_attempt_timeout'), true);
-        assert.equal(fetchCalls.length >= 1, true);
+        assert.equal(fetchCalls.length, 1);
+        assert.notEqual(job.structuredError?.code, 'native_write_not_ready');
     } finally {
         global.fetch = originalFetch;
         fs.rmSync(tempRoot, { recursive: true, force: true });

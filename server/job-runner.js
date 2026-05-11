@@ -634,6 +634,7 @@ async function awaitNativeOutcome(job) {
             'native_attempt_timeout',
             `Native first reply exceeded the configured attempt timeout of ${Math.max(1, Number(job.runConfig?.attemptTimeoutSeconds) || 0)} seconds. Moving on to the next retry attempt.`,
         );
+        await resolvePendingNativeState(job, 'native_attempt_timeout');
         return;
     }
 

@@ -37,6 +37,7 @@ export function createInitialRetryContext(overrides = {}) {
         runId: stringOrNull(overrides.runId),
         jobId: stringOrNull(overrides.jobId),
         pollingToken: stringOrNull(overrides.pollingToken),
+        lastStatusRevision: numberOrNull(overrides.lastStatusRevision) || 0,
         lastKnownTargetMessageVersion: numberOrNull(overrides.lastKnownTargetMessageVersion) || 0,
         lastAppliedVersion: numberOrNull(overrides.lastAppliedVersion) || 0,
         pendingVisibleRender: clonePlain(overrides.pendingVisibleRender) || null,
@@ -130,6 +131,7 @@ export function createRetryFsm({
             runId: createRunId(),
             jobId: null,
             pollingToken: null,
+            lastStatusRevision: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: null,
             // Manual arm starts a fresh user-facing run. The previous terminal
@@ -203,6 +205,7 @@ export function createRetryFsm({
             runId: stringOrNull(payload.runId) || context.runId || createRunId(),
             jobId,
             pollingToken: null,
+            lastStatusRevision: 0,
             lastKnownTargetMessageVersion: 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
@@ -366,6 +369,7 @@ export function createRetryFsm({
             runId: stringOrNull(payload.runId) || stringOrNull(status?.runId) || previous.runId || createRunId(),
             jobId,
             pollingToken: null,
+            lastStatusRevision: 0,
             lastKnownTargetMessageVersion: numberOrNull(payload.lastKnownTargetMessageVersion) || numberOrNull(status?.targetMessageVersion) || 0,
             lastAppliedVersion: 0,
             pendingVisibleRender: clonePlain(payload.pendingVisibleRender) || null,
@@ -681,9 +685,10 @@ export function createRetryFsm({
         return 'apply';
     }
 
-    // Public entry point for all backend status updates. Validates the status
-    // (jobId presence, valid state) and defensively lifts lockdown on terminal
-    // states before delegating to handlePollingStatus.
+    // Public entry point for all backend status updates. This is the only
+    // place that may accept a backend job snapshot into frontend control
+    // state; runtime mirrors are written by callers only after this returns
+    // accepted:true.
     async function observeBackendStatus(status) {
         if (!status) {
             return { accepted: false, reason: 'no_status' };
@@ -700,6 +705,44 @@ export function createRetryFsm({
         if (!VALID_STATUS_STATES.has(state)) {
             logEvent?.('status_ingest_rejected', `Invalid status state "${state}".`, { state, reason: 'invalid_state' });
             return { accepted: false, reason: 'invalid_state' };
+        }
+
+        if (!isState(context, RetryState.RUNNING)) {
+            if (state === 'running') {
+                logEvent?.('status_ingest_rejected', 'Running status arrived with no active frontend run.', { statusJobId, reason: 'no_active_run' });
+                return { accepted: false, reason: 'no_active_run' };
+            }
+            return { accepted: true, reason: 'terminal_outside_running' };
+        }
+
+        if (statusJobId !== context.jobId) {
+            logEvent?.('status_ingest_rejected', `Ignored status for job ${statusJobId}; active job is ${context.jobId}.`, { statusJobId, contextJobId: context.jobId, reason: 'job_id_mismatch' });
+            return { accepted: false, reason: 'job_id_mismatch' };
+        }
+
+        const statusRunId = stringOrNull(status.runId);
+        if (context.runId && statusRunId && statusRunId !== context.runId) {
+            logEvent?.('status_ingest_rejected', `Ignored status for run ${statusRunId}; active run is ${context.runId}.`, { statusRunId, contextRunId: context.runId, reason: 'run_id_mismatch' });
+            return { accepted: false, reason: 'run_id_mismatch' };
+        }
+
+        const statusRevision = getStatusRevision(status);
+        const currentRevision = numberOrNull(context.lastStatusRevision) || 0;
+        if (currentRevision > 0 && statusRevision <= 0) {
+            logEvent?.('status_ingest_rejected', 'Status is missing a revision after revision tracking started.', { statusJobId, currentRevision, reason: 'missing_revision' });
+            return { accepted: false, reason: 'missing_revision' };
+        }
+
+        if (statusRevision > 0 && currentRevision > 0 && statusRevision <= currentRevision) {
+            logEvent?.('status_ingest_rejected', `Ignored out-of-order status revision ${statusRevision}; current revision is ${currentRevision}.`, { statusJobId, statusRevision, currentRevision, reason: 'out_of_order_revision' });
+            return { accepted: false, reason: 'out_of_order_revision' };
+        }
+
+        if (statusRevision > 0) {
+            context = createContextForState({
+                ...context,
+                lastStatusRevision: statusRevision,
+            });
         }
 
         // Defensive lockdown lift: when backend confirms terminal state, clear
@@ -890,11 +933,7 @@ export function createRetryFsm({
                         logEvent?.('chat_reload_completed', 'Chat reload after flush failure completed.', null);
                     } catch {}
                 }
-                context = createContextForState({
-                    ...context,
-                    lastAppliedVersion: Math.max(Number(context.lastAppliedVersion || 0), pendingVersion),
-                    pendingVisibleRender: null,
-                });
+                handleVisibleApplyFailure(result?.error);
                 return;
             }
             logEvent?.('reconcile_flush_succeeded', `Flush succeeded for version ${pendingVersion}.`, { targetMessageVersion: pendingVersion });
@@ -1097,6 +1136,7 @@ function normalizeBaseContext(nextContext) {
         runId: stringOrNull(nextContext.runId),
         jobId: stringOrNull(nextContext.jobId),
         pollingToken: stringOrNull(nextContext.pollingToken),
+        lastStatusRevision: numberOrNull(nextContext.lastStatusRevision) || 0,
         lastAppliedVersion: numberOrNull(nextContext.lastAppliedVersion) || 0,
         lastKnownTargetMessageVersion: numberOrNull(nextContext.lastKnownTargetMessageVersion) || 0,
         pendingVisibleRender: clonePlain(nextContext.pendingVisibleRender) || null,
@@ -1119,6 +1159,7 @@ export function createIdleContext(nextContext) {
         runId: null,
         jobId: null,
         pollingToken: null,
+        lastStatusRevision: 0,
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
@@ -1137,6 +1178,7 @@ export function createArmedContext(nextContext) {
         captureFingerprint: null,
         jobId: null,
         pollingToken: null,
+        lastStatusRevision: 0,
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
@@ -1153,6 +1195,7 @@ export function createCapturingContext(nextContext) {
         state: RetryState.CAPTURING,
         jobId: null,
         pollingToken: null,
+        lastStatusRevision: 0,
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
@@ -1441,6 +1484,14 @@ function numberOrNull(value) {
         return value;
     }
     return null;
+}
+
+function getStatusRevision(status) {
+    const revision = Number(status?.revision);
+    if (Number.isFinite(revision) && revision > 0) {
+        return Math.floor(revision);
+    }
+    return 0;
 }
 
 function defaultCreateRunId() {

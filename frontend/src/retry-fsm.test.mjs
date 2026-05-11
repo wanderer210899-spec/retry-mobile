@@ -251,6 +251,7 @@ test('createInitialRetryContext exposes the explicit FSM context shape', () => {
         runId: null,
         jobId: null,
         pollingToken: null,
+        lastStatusRevision: 0,
         lastKnownTargetMessageVersion: 0,
         lastAppliedVersion: 0,
         pendingVisibleRender: null,
@@ -981,7 +982,7 @@ test('resume keeps the pending render queued and triggers guarded reload when th
     assert.equal(calls.filter((entry) => entry.method === 'guardedReload').length, 1);
 });
 
-test('resume flush with result.ok === false triggers guardedReload and clears pendingVisibleRender', async () => {
+test('resume flush with result.ok === false keeps pendingVisibleRender until recovery verifies it', async () => {
     const { fsm, calls, setFlushPendingVisibleRenderResult } = createHarness();
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
     const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
@@ -1015,7 +1016,9 @@ test('resume flush with result.ok === false triggers guardedReload and clears pe
 
     assert.equal(resumed.state, RetryState.RUNNING);
     assert.equal(calls.filter((entry) => entry.method === 'guardedReload').length, 1);
-    assert.equal(fsm.getContext().pendingVisibleRender, null);
+    assert.deepEqual(fsm.getContext().pendingVisibleRender, pendingVisibleRender);
+    assert.equal(fsm.getContext().lastAppliedVersion, 0);
+    assert.equal(fsm.getContext().runError?.code, 'render_apply_failed');
 });
 
 test('resume keeps pending renders queued while the tab is still hidden', async () => {
@@ -1501,7 +1504,7 @@ test('userStop from RUNNING cancels the backend job, disengages intent, and retu
     ]);
 });
 
-test('CURRENTLY FAILING (pre-fix): running context shape excludes terminalError key', () => {
+test('running context shape excludes terminalError key', () => {
     const ctx = createRunningContext({
         state: RetryState.RUNNING,
         intent: { mode: 'toggle', engaged: true, singleTarget: null, settings: {} },
@@ -1513,7 +1516,7 @@ test('CURRENTLY FAILING (pre-fix): running context shape excludes terminalError 
     assert.equal(Object.prototype.hasOwnProperty.call(ctx, 'terminalError'), false);
 });
 
-test('CURRENTLY FAILING (pre-fix): running context rejects terminalError writes in dev mode', () => {
+test('running context rejects terminalError writes in dev mode', () => {
     const previousDev = globalThis.__RM_DEV__;
     globalThis.__RM_DEV__ = true;
     try {
@@ -1533,7 +1536,7 @@ test('CURRENTLY FAILING (pre-fix): running context rejects terminalError writes 
     }
 });
 
-test('CURRENTLY FAILING (pre-fix): healthy running polls clear runError even with no version bump', async () => {
+test('healthy running polls clear runError even with no version bump', async () => {
     const { fsm, emitPolledStatus, setApplyAcceptedOutputResult } = createHarness();
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
     const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
@@ -1600,7 +1603,7 @@ test('running hidden-tab queue branch clears runError while deferring render', a
     assert.equal(Boolean(fsm.getContext().pendingVisibleRender), true);
 });
 
-test('CURRENTLY FAILING (pre-fix): queued final render payload does not carry terminalOutcome', async () => {
+test('queued final render payload does not carry terminalOutcome', async () => {
     const { fsm, emitPolledStatus, calls, setVisible } = createHarness();
     const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
     const target = { chatIdentity, assistantAnchorId: 'assistant-anchor-1' };
@@ -1858,6 +1861,79 @@ test('stale completed status from a prior job does not affect a newly started jo
 
     assert.equal(fsm.getContext().state, RetryState.RUNNING, 'stale job-A completed poll must not terminate job-B');
     assert.equal(fsm.getContext().jobId, 'job-B');
+});
+
+test('observeBackendStatus rejects out-of-order revisions without applying stale output', async () => {
+    const { fsm, calls } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    const runId = fsm.getContext().runId;
+    const accepted = await fsm.observeBackendStatus({
+        jobId: 'job-1',
+        runId,
+        state: 'running',
+        revision: 2,
+        targetMessageVersion: 1,
+    });
+    const stale = await fsm.observeBackendStatus({
+        jobId: 'job-1',
+        runId,
+        state: 'running',
+        revision: 1,
+        targetMessageVersion: 2,
+    });
+
+    assert.equal(accepted.accepted, true);
+    assert.equal(stale.accepted, false);
+    assert.equal(stale.reason, 'out_of_order_revision');
+    assert.equal(fsm.getContext().lastAppliedVersion, 1);
+    assert.equal(calls.filter((entry) => entry.method === 'applyAcceptedOutput').length, 1);
+});
+
+test('observeBackendStatus rejects stale terminal revisions after newer running status', async () => {
+    const { fsm } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    const runId = fsm.getContext().runId;
+    await fsm.observeBackendStatus({ jobId: 'job-1', runId, state: 'running', revision: 4, targetMessageVersion: 0 });
+    const staleTerminal = await fsm.observeBackendStatus({ jobId: 'job-1', runId, state: 'completed', revision: 3, targetMessageVersion: 0 });
+
+    assert.equal(staleTerminal.accepted, false);
+    assert.equal(staleTerminal.reason, 'out_of_order_revision');
+    assert.equal(fsm.getContext().state, RetryState.RUNNING);
+    assert.equal(fsm.getContext().jobId, 'job-1');
+});
+
+test('observeBackendStatus rejects active job responses for a different runId', async () => {
+    const { fsm } = createHarness();
+    const chatIdentity = { kind: 'character', chatId: 'chat-1', groupId: null };
+    const target = { chatIdentity, assistantAnchorId: 'anchor-1' };
+
+    fsm.arm({ chatIdentity, intent: { mode: 'toggle' }, target });
+    fsm.capture({ request: { messages: ['hi'] }, fingerprint: { chatIdentity, userMessageText: 'hi' }, target });
+    fsm.jobStarted({ jobId: 'job-1', target });
+
+    const result = await fsm.observeBackendStatus({
+        jobId: 'job-1',
+        runId: 'run-stale',
+        state: 'running',
+        revision: 1,
+        targetMessageVersion: 1,
+    });
+
+    assert.equal(result.accepted, false);
+    assert.equal(result.reason, 'run_id_mismatch');
+    assert.equal(fsm.getContext().lastAppliedVersion, 0);
 });
 
 test('enterRunning calls stopAllExcept with the newly allocated polling token', () => {

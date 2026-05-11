@@ -81,6 +81,7 @@ export async function sendFrontendLogEvent(runtime, event) {
         event: typeof event?.event === 'string' && event.event ? event.event : 'frontend_event',
         summary: typeof event?.summary === 'string' && event.summary ? event.summary : 'Frontend reported a retry-log event.',
         detail: event?.detail ?? null,
+        frontendStatus: buildFrontendStatusSnapshot(runtime),
     };
 
     try {
@@ -118,6 +119,44 @@ function buildRetryLogCursor(status) {
         String(status?.logUpdatedAt || ''),
         String(Number(status?.logEntryCount) || 0),
     ].join('|');
+}
+
+export function buildFrontendStatusSnapshot(runtime = {}) {
+    const fsm = runtime.retryFsm || null;
+    const fsmContext = safeGetFsmContext(fsm);
+    const activeStatus = runtime.activeJobStatus || null;
+    const pendingVisibleRender = fsmContext?.pendingVisibleRender || null;
+
+    return compactSnapshot({
+        fsmState: stringOrNull(fsm?.getState?.()) || stringOrNull(fsmContext?.state),
+        fsmJobId: stringOrNull(fsmContext?.jobId),
+        fsmRunId: stringOrNull(fsmContext?.runId),
+        fsmLastStatusRevision: finiteNumber(fsmContext?.lastStatusRevision),
+        runtimeActiveJobId: stringOrNull(runtime.activeJobId),
+        runtimeMirrorJobId: stringOrNull(activeStatus?.jobId),
+        runtimeMirrorRunId: stringOrNull(activeStatus?.runId),
+        runtimeMirrorState: stringOrNull(activeStatus?.state),
+        runtimeMirrorPhase: stringOrNull(activeStatus?.phase),
+        runtimeMirrorRevision: finiteNumber(activeStatus?.revision),
+        runtimeAcceptedCount: finiteNumber(activeStatus?.acceptedCount),
+        runtimeTargetAcceptedCount: finiteNumber(activeStatus?.targetAcceptedCount),
+        runtimeAttemptCount: finiteNumber(activeStatus?.attemptCount),
+        runtimeMaxAttempts: finiteNumber(activeStatus?.maxAttempts),
+        runtimeTargetMessageVersion: finiteNumber(activeStatus?.targetMessageVersion),
+        runtimeNativeState: stringOrNull(activeStatus?.nativeState),
+        runtimeFrontendVisibilityState: stringOrNull(activeStatus?.frontendVisibilityState),
+        lastKnownTargetMessageVersion: finiteNumber(fsmContext?.lastKnownTargetMessageVersion),
+        lastAppliedVersion: finiteNumber(fsmContext?.lastAppliedVersion),
+        pendingVisibleRenderVersion: finiteNumber(pendingVisibleRender?.targetMessageVersion),
+        reloadAttempted: booleanOrNull(fsmContext?.reloadAttempted),
+        runErrorCode: stringOrNull(fsmContext?.runError?.code),
+        terminalErrorCode: stringOrNull(fsmContext?.terminalError?.code),
+        browserVisibilityState: stringOrNull(globalThis.document?.visibilityState),
+        browserOnline: booleanOrNull(globalThis.navigator?.onLine),
+        logJobId: stringOrNull(runtime.log?.jobId),
+        logEntryCount: finiteNumber(runtime.log?.entryCount),
+        logUpdatedAt: stringOrNull(runtime.log?.updatedAt),
+    });
 }
 
 function sanitizeTimestamp(value) {
@@ -158,4 +197,41 @@ function writeRetryLogOutbox(jobId, entries) {
     } catch {
         // Ignore localStorage failures; log ownership still lives on the backend.
     }
+}
+
+function safeGetFsmContext(fsm) {
+    try {
+        const context = fsm?.getContext?.();
+        return context && typeof context === 'object' ? context : null;
+    } catch {
+        return null;
+    }
+}
+
+function compactSnapshot(input) {
+    const output = {};
+    for (const [key, value] of Object.entries(input || {})) {
+        if (value === null || value === undefined || value === '') {
+            continue;
+        }
+        output[key] = value;
+    }
+    return output;
+}
+
+function stringOrNull(value) {
+    return typeof value === 'string' && value.trim()
+        ? value.trim()
+        : null;
+}
+
+function finiteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number)
+        ? number
+        : null;
+}
+
+function booleanOrNull(value) {
+    return typeof value === 'boolean' ? value : null;
 }

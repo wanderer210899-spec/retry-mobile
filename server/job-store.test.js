@@ -10,6 +10,7 @@ const {
     getCurrentGeneration,
     getRetryMobileUserPaths,
     pruneTerminalJobUnits,
+    rollbackGeneration,
     writeJobSnapshot,
 } = require('./job-store');
 
@@ -42,6 +43,36 @@ test('generation index starts at zero and increments per chat', () => {
     assert.equal(advanceGeneration('default-user', directories, chatKey), 1);
     assert.equal(advanceGeneration('default-user', directories, chatKey), 2);
     assert.equal(getCurrentGeneration('default-user', directories, chatKey), 2);
+
+    fs.rmSync(sandboxRoot, { recursive: true, force: true });
+});
+
+test('generation rollback only restores the reservation it owns', () => {
+    const { sandboxRoot, directories } = setupStore();
+    const chatKey = 'character::chat-rollback::';
+
+    const first = advanceGeneration('default-user', directories, chatKey);
+    const second = advanceGeneration('default-user', directories, chatKey);
+
+    assert.equal(first, 1);
+    assert.equal(second, 2);
+    assert.equal(rollbackGeneration('default-user', directories, chatKey, {
+        fromGeneration: 2,
+        toGeneration: 1,
+    }), true);
+    assert.equal(getCurrentGeneration('default-user', directories, chatKey), 1);
+
+    assert.equal(rollbackGeneration('default-user', directories, chatKey, {
+        fromGeneration: 2,
+        toGeneration: 0,
+    }), false);
+    assert.equal(getCurrentGeneration('default-user', directories, chatKey), 1);
+
+    assert.equal(rollbackGeneration('default-user', directories, chatKey, {
+        fromGeneration: 1,
+        toGeneration: 0,
+    }), true);
+    assert.equal(getCurrentGeneration('default-user', directories, chatKey), 0);
 
     fs.rmSync(sandboxRoot, { recursive: true, force: true });
 });

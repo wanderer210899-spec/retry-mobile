@@ -95,10 +95,13 @@ function renderJobLog(job, options = {}) {
         `runId: ${job?.runId || 'none'}`,
         `createdAt: ${job?.createdAt || 'none'}`,
         `updatedAt: ${job?.updatedAt || 'none'}`,
+        `revision: ${formatNumber(job?.revision, 'none')}`,
         `state: ${job?.state || 'unknown'}`,
         `phase: ${job?.phase || 'unknown'}`,
         `accepted: ${Number(job?.acceptedCount) || 0}/${Number(job?.targetAcceptedCount) || 0}`,
         `attempts: ${Number(job?.attemptCount) || 0}/${Number(job?.maxAttempts) || 0}`,
+        `cancelRequested: ${job?.cancelRequested ? 'yes' : 'no'}`,
+        `ownerSessionId: ${job?.ownerSessionId || 'none'}`,
         `validationMode: ${job?.runConfig?.validationMode || 'characters'}`,
         `validationThreshold: ${resolveValidationThreshold(job?.runConfig)}`,
         `allowHeuristicTokenFallback: ${job?.runConfig?.allowHeuristicTokenFallback === true ? 'yes' : 'no'}`,
@@ -108,9 +111,14 @@ function renderJobLog(job, options = {}) {
         `nativeResolutionCause: ${job?.nativeResolutionCause || 'none'}`,
         `nativeFailureHintedAt: ${job?.nativeFailureHintedAt || 'none'}`,
         `nativeGraceDeadline: ${job?.nativeGraceDeadline || 'none'}`,
+        `frontendVisibilityState: ${job?.frontendVisibilityState || 'unknown'}`,
+        `frontendHiddenSince: ${job?.frontendHiddenSince || 'none'}`,
+        `lastFrontendSeenAt: ${job?.lastFrontendSeenAt || 'none'}`,
         `assistantMessageIndex: ${job?.assistantMessageIndex == null ? 'none' : Number(job.assistantMessageIndex)}`,
         `targetMessageVersion: ${Number(job?.targetMessageVersion) || 0}`,
         `lastError: ${job?.lastError || 'none'}`,
+        `logUpdatedAt: ${job?.logUpdatedAt || 'none'}`,
+        `logEntryCount: ${Number(job?.logEntryCount) || 0}`,
         '',
         'Runtime Compatibility:',
         `nativeSaveSupport: ${compatibility?.nativeSaveSupport ? 'yes' : 'no'}`,
@@ -140,6 +148,21 @@ function renderJobLog(job, options = {}) {
             `tokenCountModel: ${latestAttempt.tokenCountModel || 'none'}`,
             `tokenCountDetail: ${latestAttempt.tokenCountDetail || 'none'}`,
             `targetMessageVersion: ${latestAttempt.targetMessageVersion == null ? 'none' : latestAttempt.targetMessageVersion}`,
+        );
+    }
+
+    lines.push('', 'Latest Frontend Snapshot:');
+    const latestFrontendSnapshot = getLatestFrontendSnapshot(entries);
+    if (!latestFrontendSnapshot) {
+        lines.push('No frontend status snapshots recorded yet.');
+    } else {
+        lines.push(
+            `event: ${latestFrontendSnapshot.event || 'frontend_event'}`,
+            `at: ${latestFrontendSnapshot.at || 'unknown-time'}`,
+            `fsm: ${formatFrontendFsmSnapshot(latestFrontendSnapshot.snapshot)}`,
+            `runtimeMirror: ${formatFrontendRuntimeSnapshot(latestFrontendSnapshot.snapshot)}`,
+            `render: ${formatFrontendRenderSnapshot(latestFrontendSnapshot.snapshot)}`,
+            `browser: ${formatFrontendBrowserSnapshot(latestFrontendSnapshot.snapshot)}`,
         );
     }
 
@@ -228,6 +251,8 @@ function buildLogEntry(job, entry = {}) {
         runId: job?.runId || null,
         state: job?.state || 'unknown',
         phase: job?.phase || 'unknown',
+        backendStatus: buildBackendStatusSnapshot(job),
+        frontendStatus: normalizeFrontendStatusSnapshot(entry.frontendStatus),
     };
 }
 
@@ -417,6 +442,12 @@ function formatEventEntry(entry) {
     if (entry?.phase) {
         parts.push(`phase=${entry.phase}`);
     }
+    if (entry?.backendStatus) {
+        parts.push(`backend=${formatBackendStatusSnapshot(entry.backendStatus)}`);
+    }
+    if (entry?.frontendStatus) {
+        parts.push(`frontend=${formatFrontendStatusSnapshot(entry.frontendStatus)}`);
+    }
     if (entry?.summary) {
         parts.push(`summary=${entry.summary}`);
     }
@@ -435,6 +466,223 @@ function formatDetail(detail) {
     } catch {
         return String(detail);
     }
+}
+
+function buildBackendStatusSnapshot(job) {
+    if (!job) {
+        return null;
+    }
+
+    return compactObject({
+        state: stringOrNull(job.state) || 'unknown',
+        phase: stringOrNull(job.phase) || 'unknown',
+        revision: finiteNumber(job.revision),
+        acceptedCount: finiteNumber(job.acceptedCount) ?? 0,
+        targetAcceptedCount: finiteNumber(job.targetAcceptedCount) ?? 0,
+        attemptCount: finiteNumber(job.attemptCount) ?? 0,
+        maxAttempts: finiteNumber(job.maxAttempts) ?? 0,
+        nativeState: stringOrNull(job.nativeState) || 'unknown',
+        recoveryMode: stringOrNull(job.recoveryMode),
+        nativeResolutionCause: stringOrNull(job.nativeResolutionCause),
+        targetMessageVersion: finiteNumber(job.targetMessageVersion) ?? 0,
+        frontendVisibilityState: stringOrNull(job.frontendVisibilityState) || 'unknown',
+        frontendHiddenSince: stringOrNull(job.frontendHiddenSince),
+        lastFrontendSeenAt: stringOrNull(job.lastFrontendSeenAt),
+        cancelRequested: Boolean(job.cancelRequested),
+        lastError: stringOrNull(job.lastError),
+        structuredErrorCode: stringOrNull(job.structuredError?.code),
+    });
+}
+
+function normalizeFrontendStatusSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
+        return null;
+    }
+
+    return compactObject({
+        fsmState: stringOrNull(snapshot.fsmState),
+        fsmJobId: stringOrNull(snapshot.fsmJobId),
+        fsmRunId: stringOrNull(snapshot.fsmRunId),
+        fsmLastStatusRevision: finiteNumber(snapshot.fsmLastStatusRevision),
+        runtimeActiveJobId: stringOrNull(snapshot.runtimeActiveJobId),
+        runtimeMirrorJobId: stringOrNull(snapshot.runtimeMirrorJobId),
+        runtimeMirrorRunId: stringOrNull(snapshot.runtimeMirrorRunId),
+        runtimeMirrorState: stringOrNull(snapshot.runtimeMirrorState),
+        runtimeMirrorPhase: stringOrNull(snapshot.runtimeMirrorPhase),
+        runtimeMirrorRevision: finiteNumber(snapshot.runtimeMirrorRevision),
+        runtimeAcceptedCount: finiteNumber(snapshot.runtimeAcceptedCount),
+        runtimeTargetAcceptedCount: finiteNumber(snapshot.runtimeTargetAcceptedCount),
+        runtimeAttemptCount: finiteNumber(snapshot.runtimeAttemptCount),
+        runtimeMaxAttempts: finiteNumber(snapshot.runtimeMaxAttempts),
+        runtimeTargetMessageVersion: finiteNumber(snapshot.runtimeTargetMessageVersion),
+        runtimeNativeState: stringOrNull(snapshot.runtimeNativeState),
+        runtimeFrontendVisibilityState: stringOrNull(snapshot.runtimeFrontendVisibilityState),
+        lastKnownTargetMessageVersion: finiteNumber(snapshot.lastKnownTargetMessageVersion),
+        lastAppliedVersion: finiteNumber(snapshot.lastAppliedVersion),
+        pendingVisibleRenderVersion: finiteNumber(snapshot.pendingVisibleRenderVersion),
+        reloadAttempted: booleanOrNull(snapshot.reloadAttempted),
+        runErrorCode: stringOrNull(snapshot.runErrorCode),
+        terminalErrorCode: stringOrNull(snapshot.terminalErrorCode),
+        browserVisibilityState: stringOrNull(snapshot.browserVisibilityState),
+        browserOnline: booleanOrNull(snapshot.browserOnline),
+        logJobId: stringOrNull(snapshot.logJobId),
+        logEntryCount: finiteNumber(snapshot.logEntryCount),
+        logUpdatedAt: stringOrNull(snapshot.logUpdatedAt),
+    });
+}
+
+function getLatestFrontendSnapshot(entries) {
+    for (let index = entries.length - 1; index >= 0; index--) {
+        const entry = entries[index];
+        if (entry?.source === 'frontend' && entry.frontendStatus) {
+            return {
+                at: entry.at,
+                event: entry.event,
+                snapshot: entry.frontendStatus,
+            };
+        }
+    }
+    return null;
+}
+
+function formatBackendStatusSnapshot(snapshot) {
+    if (!snapshot) {
+        return 'none';
+    }
+
+    const parts = [
+        `state=${snapshot.state || 'unknown'}`,
+        `phase=${snapshot.phase || 'unknown'}`,
+        `rev=${formatNumber(snapshot.revision, 'none')}`,
+        `accepted=${formatNumber(snapshot.acceptedCount, 0)}/${formatNumber(snapshot.targetAcceptedCount, 0)}`,
+        `attempts=${formatNumber(snapshot.attemptCount, 0)}/${formatNumber(snapshot.maxAttempts, 0)}`,
+        `native=${snapshot.nativeState || 'unknown'}`,
+        `version=${formatNumber(snapshot.targetMessageVersion, 0)}`,
+        `frontend=${snapshot.frontendVisibilityState || 'unknown'}`,
+    ];
+
+    if (snapshot.recoveryMode) {
+        parts.push(`recovery=${snapshot.recoveryMode}`);
+    }
+    if (snapshot.nativeResolutionCause) {
+        parts.push(`nativeCause=${snapshot.nativeResolutionCause}`);
+    }
+    if (snapshot.lastFrontendSeenAt) {
+        parts.push(`lastSeen=${snapshot.lastFrontendSeenAt}`);
+    }
+    if (snapshot.cancelRequested) {
+        parts.push('cancelRequested=yes');
+    }
+    if (snapshot.structuredErrorCode) {
+        parts.push(`errorCode=${snapshot.structuredErrorCode}`);
+    } else if (snapshot.lastError) {
+        parts.push(`lastError=${snapshot.lastError}`);
+    }
+
+    return parts.join(' ');
+}
+
+function formatFrontendStatusSnapshot(snapshot) {
+    if (!snapshot) {
+        return 'none';
+    }
+
+    return [
+        formatFrontendFsmSnapshot(snapshot),
+        formatFrontendRuntimeSnapshot(snapshot),
+        formatFrontendRenderSnapshot(snapshot),
+        formatFrontendBrowserSnapshot(snapshot),
+    ].filter(Boolean).join(' | ');
+}
+
+function formatFrontendFsmSnapshot(snapshot) {
+    if (!snapshot) {
+        return 'none';
+    }
+
+    return [
+        `fsm=${snapshot.fsmState || 'unknown'}`,
+        `job=${snapshot.fsmJobId || 'none'}`,
+        `run=${snapshot.fsmRunId || 'none'}`,
+        `rev=${formatNumber(snapshot.fsmLastStatusRevision, 0)}`,
+    ].join(' ');
+}
+
+function formatFrontendRuntimeSnapshot(snapshot) {
+    if (!snapshot) {
+        return 'none';
+    }
+
+    return [
+        `active=${snapshot.runtimeActiveJobId || 'none'}`,
+        `mirror=${snapshot.runtimeMirrorState || 'none'}`,
+        `mirrorJob=${snapshot.runtimeMirrorJobId || 'none'}`,
+        `mirrorRun=${snapshot.runtimeMirrorRunId || 'none'}`,
+        `mirrorRev=${formatNumber(snapshot.runtimeMirrorRevision, 0)}`,
+        `accepted=${formatNumber(snapshot.runtimeAcceptedCount, 0)}/${formatNumber(snapshot.runtimeTargetAcceptedCount, 0)}`,
+        `attempts=${formatNumber(snapshot.runtimeAttemptCount, 0)}/${formatNumber(snapshot.runtimeMaxAttempts, 0)}`,
+        `version=${formatNumber(snapshot.runtimeTargetMessageVersion, 0)}`,
+    ].join(' ');
+}
+
+function formatFrontendRenderSnapshot(snapshot) {
+    if (!snapshot) {
+        return 'none';
+    }
+
+    return [
+        `known=${formatNumber(snapshot.lastKnownTargetMessageVersion, 0)}`,
+        `applied=${formatNumber(snapshot.lastAppliedVersion, 0)}`,
+        `pending=${formatNumber(snapshot.pendingVisibleRenderVersion, 'none')}`,
+        `reload=${snapshot.reloadAttempted === true ? 'yes' : 'no'}`,
+        snapshot.runErrorCode ? `runError=${snapshot.runErrorCode}` : '',
+        snapshot.terminalErrorCode ? `terminalError=${snapshot.terminalErrorCode}` : '',
+    ].filter(Boolean).join(' ');
+}
+
+function formatFrontendBrowserSnapshot(snapshot) {
+    if (!snapshot) {
+        return 'none';
+    }
+
+    return [
+        `visibility=${snapshot.browserVisibilityState || 'unknown'}`,
+        `online=${snapshot.browserOnline == null ? 'unknown' : (snapshot.browserOnline ? 'yes' : 'no')}`,
+        `backendVisibility=${snapshot.runtimeFrontendVisibilityState || 'unknown'}`,
+    ].join(' ');
+}
+
+function compactObject(input) {
+    const output = {};
+    for (const [key, value] of Object.entries(input || {})) {
+        if (value === null || value === undefined || value === '') {
+            continue;
+        }
+        output[key] = value;
+    }
+    return Object.keys(output).length > 0 ? output : null;
+}
+
+function stringOrNull(value) {
+    return typeof value === 'string' && value.trim()
+        ? value.trim()
+        : null;
+}
+
+function finiteNumber(value) {
+    const number = Number(value);
+    return Number.isFinite(number)
+        ? number
+        : null;
+}
+
+function booleanOrNull(value) {
+    return typeof value === 'boolean' ? value : null;
+}
+
+function formatNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? String(number) : String(fallback);
 }
 
 function formatRecoveryMode(mode) {

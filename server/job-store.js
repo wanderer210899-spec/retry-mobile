@@ -183,6 +183,25 @@ function advanceGeneration(handle, directories, chatKey) {
     return nextGeneration;
 }
 
+function rollbackGeneration(handle, directories, chatKey, { fromGeneration, toGeneration } = {}) {
+    const paths = getRetryMobileUserPaths(handle, directories);
+    const state = readJsonIfExists(paths.generationFile) || {};
+    const current = Number.isFinite(Number(state?.[chatKey])) ? Number(state[chatKey]) : 0;
+    const expectedCurrent = Number(fromGeneration);
+    if (!Number.isFinite(expectedCurrent) || current !== expectedCurrent) {
+        return false;
+    }
+
+    const previous = Number(toGeneration);
+    if (Number.isFinite(previous) && previous > 0) {
+        state[chatKey] = Math.floor(previous);
+    } else {
+        delete state[chatKey];
+    }
+    writeJsonCrashResistant(paths.generationFile, state);
+    return true;
+}
+
 function writeJsonCrashResistant(filePath, data) {
     const directory = path.dirname(filePath);
     fs.mkdirSync(directory, { recursive: true });
@@ -345,5 +364,6 @@ module.exports = {
     deletePersistedJobSnapshot,
     getCurrentGeneration,
     advanceGeneration,
+    rollbackGeneration,
     writeUnknownSchemaRecoverySidecar,
 };

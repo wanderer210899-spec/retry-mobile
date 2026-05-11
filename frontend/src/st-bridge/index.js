@@ -10,10 +10,9 @@
 //   - Surface area is fixed by `port.js` (ST_PORT_METHOD_ALLOWLIST) and the
 //     re-exports below; both are enforced by `st-bridge-boundary.test.mjs`.
 //
-// Phase 1 of the bridge plan keeps every previously existing helper available
-// through this file with no behavioural change. Phase 2 swaps the swipe-write
-// path to `saveReply({type:'swipe'})`; Phase 3 slims lockdown to cooperate
-// with `body.dataset.generating`. Both happen behind this barrel.
+// Normal accepted-output projection appends directly to the live target turn,
+// saves once, and refreshes ST swipe controls behind this barrel. Full reloads
+// and foreground `saveReply({type:'swipe'})` are not normal render paths.
 
 import { createStructuredError, normalizeStructuredError } from '../retry-error.js';
 import { t } from '../i18n.js';

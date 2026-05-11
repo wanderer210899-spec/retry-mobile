@@ -19,6 +19,7 @@ const {
     getCurrentGeneration,
     loadPersistedJobSnapshots,
     pruneTerminalJobUnits,
+    rollbackGeneration,
     writeJobSnapshot,
 } = require('./job-store');
 const {
@@ -238,6 +239,7 @@ async function init(router) {
                 ? request.body.summary
                 : 'Frontend reported a retry-log event.',
             detail: request.body?.detail ?? null,
+            frontendStatus: request.body?.frontendStatus ?? null,
             at: typeof request.body?.at === 'string' && request.body.at
                 ? request.body.at
                 : new Date().toISOString(),
@@ -294,6 +296,8 @@ async function init(router) {
     });
 
     router.post('/start', async (request, response) => {
+        let generationRollback = null;
+        let createdStartJob = null;
         try {
             const protocolValidation = validateProtocol(request.body?.clientProtocolVersion);
             if (!protocolValidation.ok) {
@@ -374,6 +378,13 @@ async function init(router) {
 
             const normalizedRunConfig = normalizeRunConfig(request.body.runConfig);
             const generationNumber = advanceGeneration(handle, directories, chatKey);
+            generationRollback = {
+                handle,
+                directories,
+                chatKey,
+                fromGeneration: generationNumber,
+                toGeneration: currentGeneration,
+            };
             const termux = refreshTermuxStatusForStart();
             const nativeGraceSeconds = normalizeNativeGraceSeconds(request.body.nativeGraceSeconds);
             const sessionId = normalizeSessionId(request.body?.sessionId);
@@ -419,6 +430,7 @@ async function init(router) {
                 },
                 lastError: '',
             });
+            createdStartJob = job;
             ensureJobLog(job);
             appendJobLog(job, {
                 source: 'backend',
@@ -432,6 +444,7 @@ async function init(router) {
                     nativeGraceSeconds,
                 },
             });
+            generationRollback = null;
 
             void runJob(job, {
                 baseUrl: getRequestBaseUrl(request),
@@ -450,6 +463,24 @@ async function init(router) {
         } catch (error) {
             console.error('[retry-mobile:backend] Start failed:', error);
             const structuredError = toStructuredError(error, 'handoff_request_failed', 'Retry Mobile could not start the backend job.');
+            if (generationRollback) {
+                try {
+                    rollbackGeneration(generationRollback.handle, generationRollback.directories, generationRollback.chatKey, {
+                        fromGeneration: generationRollback.fromGeneration,
+                        toGeneration: generationRollback.toGeneration,
+                    });
+                } catch (rollbackError) {
+                    console.error('[retry-mobile:backend] Start generation rollback failed:', rollbackError);
+                }
+            }
+            if (createdStartJob?.state === 'running') {
+                touchJob(createdStartJob, {
+                    state: 'failed',
+                    phase: 'failed',
+                    lastError: structuredError.message,
+                    structuredError,
+                });
+            }
             return response.status(500).send({
                 error: structuredError.message,
                 structuredError,
@@ -623,10 +654,25 @@ async function init(router) {
                 ));
             }
 
+            const previousVisibilityState = job.frontendVisibilityState || 'unknown';
+            const visibilityState = normalizeVisibilityState(request.body?.visibilityState);
             touchFrontendPresence(job, {
                 at: typeof request.body?.at === 'string' && request.body.at ? request.body.at : new Date().toISOString(),
                 sessionId: normalizeSessionId(request.body?.sessionId),
-                visibilityState: normalizeVisibilityState(request.body?.visibilityState),
+                visibilityState,
+            });
+            appendJobLog(job, {
+                source: 'backend',
+                event: 'frontend_presence',
+                summary: `Frontend presence reported ${visibilityState} (${String(request.body?.reason || 'presence').trim() || 'presence'}).`,
+                detail: {
+                    reason: String(request.body?.reason || '').trim() || 'presence',
+                    previousVisibilityState,
+                    visibilityState,
+                    sessionId: normalizeSessionId(request.body?.sessionId),
+                    frontendHiddenSince: job.frontendHiddenSince || null,
+                    lastFrontendSeenAt: job.lastFrontendSeenAt || null,
+                },
             });
             return response.send({
                 ok: true,
@@ -1037,6 +1083,16 @@ function getRunIdMismatchError(job, runId, message) {
         return null;
     }
 
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'request_rejected',
+        summary: message,
+        detail: {
+            reason: 'run_id_mismatch',
+            expectedRunId: job.runId || '',
+            receivedRunId: runId || '',
+        },
+    });
     const structuredError = toStructuredError(createStructuredError(
         'handoff_request_failed',
         message,
@@ -1050,6 +1106,19 @@ function getRunIdMismatchError(job, runId, message) {
 }
 
 function buildConflictResponse(job, message) {
+    appendJobLog(job, {
+        source: 'backend',
+        event: 'request_conflict',
+        summary: message,
+        detail: {
+            reason: 'job_state_conflict',
+            jobState: job?.state || 'unknown',
+            jobPhase: job?.phase || 'unknown',
+            nativeState: job?.nativeState || 'unknown',
+            nativeResolutionCause: job?.nativeResolutionCause || '',
+            targetMessageVersion: Number(job?.targetMessageVersion) || 0,
+        },
+    });
     const structuredError = toStructuredError(createStructuredError(
         'handoff_request_failed',
         message,

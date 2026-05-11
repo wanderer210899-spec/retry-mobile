@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { deriveUiState } from './derive-ui.js';
 
-test('CURRENTLY FAILING (pre-fix): deriveUiState throws in dev when running has terminalError', () => {
+test('deriveUiState throws in dev when running has terminalError', () => {
     const previousDev = globalThis.__RM_DEV__;
     globalThis.__RM_DEV__ = true;
     try {
@@ -26,7 +26,7 @@ test('CURRENTLY FAILING (pre-fix): deriveUiState throws in dev when running has 
     }
 });
 
-test('CURRENTLY PASSING (pre-fix): deriveUiState hides non-render apply running errors', () => {
+test('deriveUiState hides non-render apply running errors', () => {
     const snapshot = deriveUiState(
         {
             state: 'running',

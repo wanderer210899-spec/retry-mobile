@@ -75,6 +75,7 @@ export async function bootRetryMobile() {
             await syncRetryLogForStatus(runtime, status);
             render();
         },
+        logEvent: (event, summary, detail) => window.__rmLogEvent?.(event, summary, detail),
     });
 
     stPort = createStPort({
@@ -483,8 +484,11 @@ export async function bootRetryMobile() {
         if (!status) {
             return false;
         }
+        const ingest = await retryFsm?.observeBackendStatus?.(status);
+        if (ingest && ingest.accepted === false) {
+            return false;
+        }
         writeStatusMirror(runtime, status);
-        await retryFsm?.observeBackendStatus?.(status);
         return true;
     }
 

@@ -1,7 +1,6 @@
 // core/projector.js
-// Replaces app-runtime-sync.js. Single owner of runtime field projection from
-// FSM context snapshots. All runtime writes flow through projectRuntime or
-// writeStatusMirror — no other module mutates runtime directly.
+// Single owner of runtime field projection from FSM context snapshots. All
+// runtime active-job writes flow through projectRuntime or writeStatusMirror.
 
 import { clearActiveRunBinding, writeActiveRunBinding } from '../job/run-binding.js';
 import { RetryState } from '../retry-fsm.js';
@@ -94,6 +93,7 @@ export function buildActiveJobStatusRenderKey(status) {
     return JSON.stringify({
         jobId: String(status.jobId || ''),
         runId: String(status.runId || ''),
+        revision: Number(status.revision || 0),
         state: String(status.state || ''),
         acceptedCount: Number(status.acceptedCount || 0),
         attemptCount: Number(status.attemptCount || 0),

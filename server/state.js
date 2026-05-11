@@ -30,6 +30,9 @@ function createJob(input = {}) {
         phase: input.phase || 'pending_native',
         createdAt: input.createdAt || new Date().toISOString(),
         updatedAt: input.updatedAt || new Date().toISOString(),
+        revision: Number.isFinite(Number(input.revision)) && Number(input.revision) > 0
+            ? Math.floor(Number(input.revision))
+            : 1,
         acceptedCount: Number(input.acceptedCount) || 0,
         attemptCount: Number(input.attemptCount) || 0,
         acceptedResults: Array.isArray(input.acceptedResults) ? input.acceptedResults : [],
@@ -155,6 +158,7 @@ function touchJob(job, patch = {}) {
     Object.assign(job, patch, {
         updatedAt: new Date().toISOString(),
     });
+    bumpJobRevision(job);
     persistJobSnapshot(job);
     return job;
 }
@@ -181,14 +185,28 @@ function appendAttemptLog(job, entry = {}) {
     const current = Array.isArray(job.attemptLog) ? job.attemptLog : [];
     job.attemptLog = [...current, nextEntry].slice(-ATTEMPT_LOG_LIMIT);
     job.updatedAt = new Date().toISOString();
+    bumpJobRevision(job);
     persistJobSnapshot(job);
     return nextEntry;
 }
 
 function updateJobLogState(job, patch = {}) {
     Object.assign(job, patch);
+    bumpJobRevision(job);
     persistJobSnapshot(job);
     return job;
+}
+
+function bumpJobRevision(job) {
+    if (!job) {
+        return 0;
+    }
+
+    const current = Number(job.revision);
+    job.revision = Number.isFinite(current) && current > 0
+        ? Math.floor(current) + 1
+        : 1;
+    return job.revision;
 }
 
 // Mirrors the frontend's computeTerminalKind so the frontend can read job.kind
@@ -220,6 +238,7 @@ function serializeJob(job) {
         phaseText: describePhase(job),
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
+        revision: Number(job.revision) || 1,
         acceptedCount: job.acceptedCount,
         attemptCount: job.attemptCount,
         targetAcceptedCount: job.targetAcceptedCount,
@@ -272,6 +291,7 @@ function snapshotJobForPersistence(job) {
         phase: job.phase,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
+        revision: Number(job.revision) || 1,
         acceptedCount: job.acceptedCount,
         attemptCount: job.attemptCount,
         acceptedResults: cloneValue(job.acceptedResults),

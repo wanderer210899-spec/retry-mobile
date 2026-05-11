@@ -3,11 +3,15 @@ const assert = require('node:assert/strict');
 
 const {
     buildChatKey,
+    appendAttemptLog,
     createJob,
     getJobByChat,
     getJobByChatSession,
     getLatestJobByChat,
     jobs,
+    serializeJob,
+    touchJob,
+    updateJobLogState,
 } = require('./state');
 
 function createIdentity(chatId) {
@@ -66,6 +70,37 @@ test('getLatestJobByChat returns the newest job for the same chat, including ter
 
     const latest = getLatestJobByChat(chatIdentity);
     assert.equal(latest?.jobId, 'job-new-completed');
+
+    jobs.clear();
+});
+
+test('job revision is serialized and advances on every state/log mutation helper', () => {
+    jobs.clear();
+
+    const chatIdentity = createIdentity('chat-revision');
+    const job = createJob({
+        jobId: 'job-revision',
+        runId: 'run-revision',
+        state: 'running',
+        chatIdentity,
+        chatKey: buildChatKey(chatIdentity),
+        userContext: { handle: 'default-user', directories: {} },
+        skipPersist: true,
+    });
+
+    assert.equal(job.revision, 1);
+    assert.equal(serializeJob(job).revision, 1);
+
+    touchJob(job, { phase: 'pending_native' });
+    assert.equal(job.revision, 2);
+    assert.equal(serializeJob(job).revision, 2);
+
+    appendAttemptLog(job, { attemptNumber: 1, outcome: 'retry', message: 'Attempt started.' });
+    assert.equal(job.revision, 3);
+
+    updateJobLogState(job, { logEntryCount: 1 });
+    assert.equal(job.revision, 4);
+    assert.equal(serializeJob(job).revision, 4);
 
     jobs.clear();
 });
