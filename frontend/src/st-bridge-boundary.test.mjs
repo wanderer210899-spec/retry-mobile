@@ -65,6 +65,19 @@ test('files outside st-bridge/ may not subscribe to ST event names directly', ()
     );
 });
 
+test('ST event-name literals are centralized in st-bridge/internal/ctx.js', () => {
+    const stEventLiterals = /['"](GENERATION_STARTED|GENERATION_ENDED|GENERATION_STOPPED|MESSAGE_SENT|MESSAGE_RECEIVED|MESSAGE_DELETED|MESSAGE_EDITED|MESSAGE_UPDATED|MESSAGE_SWIPED|MESSAGE_SWIPE_DELETED|CHARACTER_MESSAGE_RENDERED|CHAT_CHANGED|CHAT_LOADED|CHAT_DELETED|GENERATE_AFTER_DATA|CHAT_COMPLETION_SETTINGS_READY|TEXT_COMPLETION_SETTINGS_READY)['"]/;
+
+    const offenders = collectFrontendSources()
+        .filter((entry) => !entry.filePath.endsWith(path.join('st-bridge', 'internal', 'ctx.js')))
+        .filter((entry) => stEventLiterals.test(entry.source));
+    assert.deepEqual(
+        offenders.map((entry) => path.relative(SRC_ROOT, entry.filePath)),
+        [],
+        'ST event-name string literals are allowed only in st-bridge/internal/ctx.js',
+    );
+});
+
 test('files outside st-bridge/ may not hardcode ST-specific DOM selectors', () => {
     // Selector list mirrors ST's own send-bar and message DOM. New selectors
     // discovered during ST integration must be added to st-bridge/lockdown.js

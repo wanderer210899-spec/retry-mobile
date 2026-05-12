@@ -5,7 +5,7 @@
 //
 // All listeners are registered with `{ passive: true }` because none of
 // them call `preventDefault()`. (The lockdown in
-// `frontend/src/ui/session-lockdown.js` has its own touch/pointer
+// `frontend/src/st-bridge/lockdown.js` has its own touch/pointer
 // handlers; this module deliberately stays out of that surface.)
 
 const PASSIVE_LISTENER = { passive: true };

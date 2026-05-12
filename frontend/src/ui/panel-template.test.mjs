@@ -19,6 +19,16 @@ test('buildPanelTemplate uses collapsible blocks for configuration and notificat
     assert.match(template, /rm-collapsible__summary/);
 });
 
+test('buildPanelTemplate exposes terminal-only Termux notification controls', () => {
+    const template = buildPanelTemplate();
+
+    assert.match(template, /data-setting="notifyOnComplete"/);
+    assert.match(template, /data-setting="vibrateOnComplete"/);
+    assert.doesNotMatch(template, /data-setting="notifyOnSuccess"/);
+    assert.doesNotMatch(template, /data-setting="vibrateOnSuccess"/);
+    assert.doesNotMatch(template, /Notify on accepted|Vibrate on accepted/);
+});
+
 test('buildPanelTemplate places UI language control in the system pane only', () => {
     const template = buildPanelTemplate();
 

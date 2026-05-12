@@ -55,9 +55,6 @@
  * @property {() => void} clearTargetMutationWatch
  *   Stop watching the current Retry Mobile target for user mutation events.
  *
- * @property {(kind: 'info'|'success'|'warning'|'error', title: string, message: string) => void} notifyToast
- *   Surface a toastr notification (debug-oriented, dedupe is the caller's job).
- *
  * @property {object} reconciler
  *   The single accepted-output apply/reload owner. See controllers/reconciler.js.
  */
@@ -89,6 +86,5 @@ export const ST_PORT_METHOD_ALLOWLIST = Object.freeze([
     'clearGeneratingIndicator',
     'watchTargetMutation',
     'clearTargetMutationWatch',
-    'notifyToast',
     'reconciler',
 ]);

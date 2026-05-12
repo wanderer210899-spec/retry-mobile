@@ -204,9 +204,6 @@ export function createStPort({
         clearTargetMutationWatch() {
             targetMutationGuard.clear();
         },
-        notifyToast(kind, title, message) {
-            showToast(kind, title, message);
-        },
     };
 
     async function observeNative(payload, signal) {

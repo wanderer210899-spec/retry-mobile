@@ -46,6 +46,62 @@ test('target mutation guard ignores edits to unrelated messages', () => {
     assert.equal(reports.length, 0);
 });
 
+test('target mutation guard ignores delete events when the assistant target was never resolved', () => {
+    const eventSource = createEventSource();
+    const context = createContext(eventSource);
+    context.chat = [
+        {
+            is_user: true,
+            mes: 'Hello',
+            extra: { retryMobileUserAnchorId: 'user-anchor-1' },
+        },
+        {
+            is_user: false,
+            mes: 'Unrelated assistant',
+            extra: {},
+        },
+    ];
+    const reports = [];
+    const guard = createTargetMutationGuard({
+        getContext: () => context,
+        onMutation(payload) {
+            reports.push(payload);
+        },
+    });
+
+    guard.watch(createStatus({
+        targetMessageIndex: null,
+        targetMessageVersion: 0,
+    }));
+    context.chat.pop();
+    eventSource.emit('message_deleted', context.chat.length);
+
+    assert.equal(reports.length, 0);
+});
+
+test('target mutation guard ignores delete events when watch-time chat identity was not verifiable', () => {
+    const eventSource = createEventSource();
+    const context = createContext(eventSource);
+    let currentChatId = 'other-chat';
+    context.chatId = currentChatId;
+    context.getCurrentChatId = () => currentChatId;
+    const reports = [];
+    const guard = createTargetMutationGuard({
+        getContext: () => context,
+        onMutation(payload) {
+            reports.push(payload);
+        },
+    });
+
+    guard.watch(createStatus());
+    currentChatId = 'chat-1';
+    context.chatId = currentChatId;
+    context.chat = [context.chat[0]];
+    eventSource.emit('message_deleted', context.chat.length);
+
+    assert.equal(reports.length, 0);
+});
+
 test('target mutation guard reports swipe deletion on the watched assistant target', () => {
     const eventSource = createEventSource();
     const context = createContext(eventSource);

@@ -2,16 +2,17 @@ import {
     getChatIdentity,
     getCurrentChatArray,
     getEventTypes,
+    ST_EVENT_NAMES,
     subscribeEvent,
 } from './internal/ctx.js';
 import { isSameChat } from './inspect.js';
 
 const TARGET_EVENT_NAMES = Object.freeze([
-    'MESSAGE_DELETED',
-    'MESSAGE_EDITED',
-    'MESSAGE_UPDATED',
-    'MESSAGE_SWIPED',
-    'MESSAGE_SWIPE_DELETED',
+    ST_EVENT_NAMES.MESSAGE_DELETED,
+    ST_EVENT_NAMES.MESSAGE_EDITED,
+    ST_EVENT_NAMES.MESSAGE_UPDATED,
+    ST_EVENT_NAMES.MESSAGE_SWIPED,
+    ST_EVENT_NAMES.MESSAGE_SWIPE_DELETED,
 ]);
 
 export function createTargetMutationGuard({
@@ -20,6 +21,7 @@ export function createTargetMutationGuard({
     onEvent,
 } = {}) {
     let watchedStatus = null;
+    let watchedBaseline = null;
     let stops = [];
     const reported = new Set();
 
@@ -35,12 +37,17 @@ export function createTargetMutationGuard({
         }
 
         watchedStatus = cloneValue(status);
+        watchedBaseline = inspectCurrentTarget(watchedStatus) ?? {
+            assistantKnown: false,
+            userKnown: false,
+        };
         ensureSubscribed();
         return true;
     }
 
     function clear() {
         watchedStatus = null;
+        watchedBaseline = null;
         reported.clear();
         for (const stop of stops) {
             try { stop(); } catch {}
@@ -86,6 +93,7 @@ export function createTargetMutationGuard({
             chat,
             sourceEvent,
             eventMessageId,
+            baseline: watchedBaseline,
         });
         if (!inspection.affected) {
             return;
@@ -114,6 +122,20 @@ export function createTargetMutationGuard({
         onEvent?.('target_mutation_detected', `Detected ${inspection.reason} from ${sourceEvent}.`);
         void onMutation?.(payload);
     }
+
+    function inspectCurrentTarget(status) {
+        const context = getContext?.();
+        const liveChatIdentity = getChatIdentity(context);
+        if (!isSameChat(status?.chatIdentity, liveChatIdentity)) {
+            return null;
+        }
+
+        const chat = getCurrentChatArray(context);
+        return {
+            assistantKnown: resolveAssistantIndex(status, chat) != null,
+            userKnown: resolveUserIndex(status, chat) != null,
+        };
+    }
 }
 
 export function inspectWatchedTarget({
@@ -121,46 +143,49 @@ export function inspectWatchedTarget({
     chat,
     sourceEvent,
     eventMessageId = null,
+    baseline = null,
 } = {}) {
     const assistantIndex = resolveAssistantIndex(status, chat);
     const userIndex = resolveUserIndex(status, chat);
     const eventHitsAssistant = eventMessageId != null && assistantIndex != null && eventMessageId === assistantIndex;
     const eventHitsUser = eventMessageId != null && userIndex != null && eventMessageId === userIndex;
-    const hasSpecificMessage = eventMessageId != null && sourceEvent !== 'MESSAGE_DELETED';
+    const hasSpecificMessage = eventMessageId != null && sourceEvent !== ST_EVENT_NAMES.MESSAGE_DELETED;
 
     if (hasSpecificMessage && !eventHitsAssistant && !eventHitsUser) {
         return { affected: false };
     }
 
-    if (sourceEvent === 'MESSAGE_DELETED') {
-        if (assistantIndex == null) {
+    if (sourceEvent === ST_EVENT_NAMES.MESSAGE_DELETED) {
+        const assistantWasKnown = baseline?.assistantKnown !== false;
+        const userWasKnown = baseline?.userKnown !== false;
+        if (assistantWasKnown && assistantIndex == null) {
             return affected('assistant_missing_after_delete', 'message_deleted');
         }
-        if (userIndex == null) {
+        if (userWasKnown && userIndex == null) {
             return affected('user_missing_after_delete', 'message_deleted');
         }
         return { affected: false };
     }
 
-    if (sourceEvent === 'MESSAGE_SWIPE_DELETED') {
+    if (sourceEvent === ST_EVENT_NAMES.MESSAGE_SWIPE_DELETED) {
         return eventHitsAssistant
             ? affected('assistant_swipe_deleted', 'swipe_deleted')
             : { affected: false };
     }
 
-    if (sourceEvent === 'MESSAGE_SWIPED') {
+    if (sourceEvent === ST_EVENT_NAMES.MESSAGE_SWIPED) {
         return eventHitsAssistant
             ? affected('assistant_swiped', 'message_swiped')
             : { affected: false };
     }
 
-    if (sourceEvent === 'MESSAGE_EDITED') {
+    if (sourceEvent === ST_EVENT_NAMES.MESSAGE_EDITED) {
         return eventHitsAssistant || eventHitsUser
             ? affected(eventHitsUser ? 'user_message_edited' : 'assistant_message_edited', 'message_edited')
             : { affected: false };
     }
 
-    if (sourceEvent === 'MESSAGE_UPDATED') {
+    if (sourceEvent === ST_EVENT_NAMES.MESSAGE_UPDATED) {
         return eventHitsAssistant || eventHitsUser
             ? affected(eventHitsUser ? 'user_message_updated' : 'assistant_message_updated', 'message_updated')
             : { affected: false };
@@ -185,7 +210,7 @@ function canWatchStatus(status) {
 
 function readEventMessageId(sourceEvent, args) {
     const first = Array.isArray(args) ? args[0] : null;
-    if (sourceEvent === 'MESSAGE_SWIPE_DELETED') {
+    if (sourceEvent === ST_EVENT_NAMES.MESSAGE_SWIPE_DELETED) {
         return numberOrNull(first?.messageId);
     }
 

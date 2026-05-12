@@ -1,5 +1,5 @@
 // Single owner of state-aware browser-return recovery, per
-// `files/architecture.md > Browser Return / BFCache Resume`.
+// `files/architecture.md > Rendering And Recovery Contract`.
 //
 // Responsibilities:
 //
@@ -10,11 +10,12 @@
 //   to flush any already-queued visible render, then trigger one explicit
 //   return poll whose status flows through the normal FSM ingest path.
 // * Non-RUNNING path: remount the panel host, then call
-//   `restoreController.reconcileLatestForCurrentChat({ allowReload: true })`
+//   `restoreController.reconcileLatestForCurrentChat(...)`
 //   so a completed retry result that arrived while the tab was hidden
 //   renders automatically on return — no manual Sync, no full reload as
-//   the normal path. The reconciler still patches in place first; the
-//   reload is its own documented last-resort recovery.
+//   the normal path. Rendering still enters through retryFsm.observeBackendStatus;
+//   a guarded reload is only triggered by the FSM/reconciler after an unsafe
+//   projection failure.
 // * `page.hidden` reports frontend presence to the backend (RUNNING
 //   only) and bails — the backend job continues independently.
 //
@@ -170,15 +171,10 @@ export function createResumeCoordinator({
             return;
         }
 
-        // `allowReload: true` is the render-on-return contract: the
-        // reconciler still patches in place first and only escalates
-        // to a guarded full reload as last-resort recovery. This
-        // matches `USER_REQUIREMENTS.md > Rendering Requirements >
-        // Out-of-focus rendering` ("when focus is restored, apply all
-        // queued renders in order before resuming normal display
-        // state") and `architecture.md > Browser Return / BFCache
-        // Resume` ("Non-RUNNING return path: the coordinator calls
-        // reconcileLatestForCurrentChat({ allowReload: true })").
+        // `allowReload` remains a caller-intent flag for browser-return
+        // recovery. app-recovery only fetches backend status; any guarded
+        // reload is owned by the FSM/reconciler after projection says the
+        // live chat is structurally stale.
         try {
             await restoreController.reconcileLatestForCurrentChat({
                 reason: type,

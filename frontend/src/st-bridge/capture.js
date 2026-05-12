@@ -11,6 +11,7 @@ import {
     getEventTypes,
     getChatIdentity,
     getUserMessageIndexFromEvent,
+    ST_EVENT_NAMES,
     subscribeEvent,
 } from './internal/ctx.js';
 import {
@@ -38,41 +39,41 @@ export function createArmCaptureSession({
     let capturePending = false;
     let closed = false;
 
-    if (eventTypes.MESSAGE_SENT) {
+    if (eventTypes[ST_EVENT_NAMES.MESSAGE_SENT]) {
         stopListening.push(
-            subscribeEvent(eventTypes.MESSAGE_SENT, (messageId) => {
+            subscribeEvent(eventTypes[ST_EVENT_NAMES.MESSAGE_SENT], (messageId) => {
                 messageIdHint = getUserMessageIndexFromEvent(messageId);
-                onEvent?.('MESSAGE_SENT', `Captured user-message hint ${messageIdHint ?? 'unknown'}.`);
+                onEvent?.(ST_EVENT_NAMES.MESSAGE_SENT, `Captured user-message hint ${messageIdHint ?? 'unknown'}.`);
             }, context),
         );
     }
 
-    if (eventTypes.CHAT_COMPLETION_SETTINGS_READY) {
+    if (eventTypes[ST_EVENT_NAMES.CHAT_COMPLETION_SETTINGS_READY]) {
         stopListening.push(
-            subscribeEvent(eventTypes.CHAT_COMPLETION_SETTINGS_READY, (payload) => {
-                void handleCapturePayload(payload, 'CHAT_COMPLETION_SETTINGS_READY');
+            subscribeEvent(eventTypes[ST_EVENT_NAMES.CHAT_COMPLETION_SETTINGS_READY], (payload) => {
+                void handleCapturePayload(payload, ST_EVENT_NAMES.CHAT_COMPLETION_SETTINGS_READY);
             }, context),
         );
     }
 
-    if (eventTypes.TEXT_COMPLETION_SETTINGS_READY) {
+    if (eventTypes[ST_EVENT_NAMES.TEXT_COMPLETION_SETTINGS_READY]) {
         stopListening.push(
-            subscribeEvent(eventTypes.TEXT_COMPLETION_SETTINGS_READY, (payload) => {
-                void handleCapturePayload(payload, 'TEXT_COMPLETION_SETTINGS_READY');
+            subscribeEvent(eventTypes[ST_EVENT_NAMES.TEXT_COMPLETION_SETTINGS_READY], (payload) => {
+                void handleCapturePayload(payload, ST_EVENT_NAMES.TEXT_COMPLETION_SETTINGS_READY);
             }, context),
         );
     }
 
-    if (eventTypes.GENERATE_AFTER_DATA) {
+    if (eventTypes[ST_EVENT_NAMES.GENERATE_AFTER_DATA]) {
         stopListening.push(
-            subscribeEvent(eventTypes.GENERATE_AFTER_DATA, (payload) => {
-                void handleCapturePayload(payload, 'GENERATE_AFTER_DATA');
+            subscribeEvent(eventTypes[ST_EVENT_NAMES.GENERATE_AFTER_DATA], (payload) => {
+                void handleCapturePayload(payload, ST_EVENT_NAMES.GENERATE_AFTER_DATA);
             }, context),
         );
     }
 
     stopListening.push(
-        subscribeEvent(eventTypes.CHAT_CHANGED, () => {
+        subscribeEvent(eventTypes[ST_EVENT_NAMES.CHAT_CHANGED], () => {
             if (closed) {
                 return;
             }
@@ -99,7 +100,7 @@ export function createArmCaptureSession({
                 'Retry Mobile disarmed because the active chat changed before capture completed.',
             ));
         }, context),
-        subscribeEvent(eventTypes.CHAT_DELETED, () => {
+        subscribeEvent(eventTypes[ST_EVENT_NAMES.CHAT_DELETED], () => {
             if (closed) {
                 return;
             }
@@ -116,7 +117,7 @@ export function createArmCaptureSession({
         stop: close,
     };
 
-    async function handleCapturePayload(payload, sourceEventName = 'CHAT_COMPLETION_SETTINGS_READY') {
+    async function handleCapturePayload(payload, sourceEventName = ST_EVENT_NAMES.CHAT_COMPLETION_SETTINGS_READY) {
         if (closed || capturePending) {
             return;
         }
@@ -145,7 +146,7 @@ export function createArmCaptureSession({
         }
 
         if (!payloadHasRequiredKeys(payload)) {
-            if (sourceEventName === 'GENERATE_AFTER_DATA') {
+            if (sourceEventName === ST_EVENT_NAMES.GENERATE_AFTER_DATA) {
                 onEvent?.(sourceEventName, 'Ignored fallback payload without required keys while armed.');
                 return;
             }

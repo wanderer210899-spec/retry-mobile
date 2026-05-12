@@ -708,10 +708,22 @@ async function init(router) {
                 return response.status(409).send(runIdMismatch);
             }
 
-            const reportedChatKey = request.body?.chatIdentity
-                ? buildChatKey(request.body.chatIdentity)
+            const reportedIdentity = request.body?.chatIdentity;
+            const reportedChatKey = reportedIdentity?.chatId
+                ? buildChatKey(reportedIdentity)
                 : '';
-            if (reportedChatKey && reportedChatKey !== job.chatKey) {
+            if (!reportedChatKey) {
+                const structuredError = toStructuredError(createStructuredError(
+                    'handoff_request_failed',
+                    'The target mutation report is missing chat identity.',
+                ));
+                return response.status(400).send({
+                    error: structuredError.message,
+                    structuredError,
+                    job: serializeJob(job),
+                });
+            }
+            if (reportedChatKey !== job.chatKey) {
                 return response.status(409).send(buildConflictResponse(
                     job,
                     'The target mutation report did not match the backend job chat.',
@@ -928,6 +940,7 @@ function restoreSinglePersistedJob(snapshot) {
             recovery.detail,
         ));
 
+    const terminalEvent = completed ? 'completed' : 'failed';
     touchJob(job, {
         state: completed ? 'completed' : 'failed',
         phase: recovery.reason,
@@ -936,6 +949,17 @@ function restoreSinglePersistedJob(snapshot) {
             : job.acceptedCount,
         lastError: completed ? '' : structuredError.message,
         structuredError,
+    }, {
+        event: terminalEvent,
+        detail: {
+            source: 'restart_recovery',
+            recoveryReason: recovery.reason,
+            acceptedCount: Number.isFinite(Number(recovery.acceptedCount))
+                ? Number(recovery.acceptedCount)
+                : job.acceptedCount,
+            targetAcceptedCount: Number(job.targetAcceptedCount) || 0,
+            detail: recovery.detail || '',
+        },
     });
     appendJobLog(job, {
         source: 'backend',
@@ -947,6 +971,12 @@ function restoreSinglePersistedJob(snapshot) {
             recoveryReason: recovery.reason,
             detail: recovery.detail,
         },
+    });
+    notifyTerminalOnce(job, terminalEvent, {
+        attemptCount: job.attemptCount,
+        acceptedCount: job.acceptedCount,
+        targetAcceptedCount: job.targetAcceptedCount,
+        reason: recovery.reason,
     });
     pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
 }

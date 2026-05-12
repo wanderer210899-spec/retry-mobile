@@ -698,9 +698,24 @@ function buildAcceptedExtra(job, currentExtra, accepted) {
 }
 
 function getSaveTarget(job) {
-    const directories = job.userContext.directories;
-    if (job.chatIdentity?.kind === 'group') {
-        const id = String(job.chatIdentity.groupId || job.chatIdentity.chatId || '');
+    const directories = job?.userContext?.directories;
+    if (!directories) {
+        throw createStructuredError(
+            'backend_write_failed',
+            'Retry Mobile could not resolve the user directories needed to locate the chat file.',
+        );
+    }
+
+    const chatIdentity = job?.chatIdentity;
+    if (!chatIdentity || typeof chatIdentity !== 'object') {
+        throw createStructuredError(
+            'backend_write_failed',
+            'Retry Mobile could not resolve the chat identity needed to locate the chat file.',
+        );
+    }
+
+    if (chatIdentity.kind === 'group') {
+        const id = String(chatIdentity.groupId || chatIdentity.chatId || '');
         if (!id) {
             throw createStructuredError(
                 'backend_write_failed',
@@ -713,15 +728,15 @@ function getSaveTarget(job) {
         };
     }
 
-    const cardName = String(job.chatIdentity.avatarUrl || '').replace('.png', '').trim();
+    const cardName = String(chatIdentity.avatarUrl || '').replace('.png', '').trim();
     if (!cardName) {
         throw createStructuredError(
             'backend_write_failed',
             'Retry Mobile could not resolve the character avatar name needed to locate the chat file. Ensure the character has an avatar set.',
-            `avatarUrl received: "${job.chatIdentity.avatarUrl}"`,
+            `avatarUrl received: "${chatIdentity.avatarUrl}"`,
         );
     }
-    const fileName = `${String(job.chatIdentity.fileName || job.chatIdentity.chatId || 'chat')}.jsonl`;
+    const fileName = `${String(chatIdentity.fileName || chatIdentity.chatId || 'chat')}.jsonl`;
     return {
         filePath: path.join(directories.chats, cardName, sanitizeFileName(fileName)),
         cardName,

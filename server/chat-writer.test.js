@@ -9,6 +9,7 @@ const {
     assertWritePathReady,
     inspectNativeAssistantState,
     inspectRecoverySnapshot,
+    writeAcceptedResult,
 } = require('./chat-writer');
 
 function createDirectories(rootPath) {
@@ -313,6 +314,32 @@ test('write path refuses tombstoned jobs so user-deleted targets are not recreat
         () => assertWritePathReady(job),
         /user changed or deleted the target message/,
     );
+});
+
+test('writeAcceptedResult fails closed when chat identity is missing', async () => {
+    const sandboxRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-missing-chat-'));
+    const directories = createDirectories(sandboxRoot);
+    const job = createJob(directories, {
+        chatIdentity: null,
+    });
+
+    try {
+        await assert.rejects(
+            writeAcceptedResult(job, {
+                text: 'Accepted backend result long enough to write.',
+                characterCount: 45,
+                wordCount: 7,
+                tokenCount: 0,
+            }),
+            (error) => {
+                assert.equal(error.code, 'backend_write_failed');
+                assert.match(error.message, /chat identity/u);
+                return true;
+            },
+        );
+    } finally {
+        fs.rmSync(sandboxRoot, { recursive: true, force: true });
+    }
 });
 
 test('inspectNativeAssistantState treats a persisted pre-swipe prefix as target_pending when capture saw a new empty swipe slot', () => {

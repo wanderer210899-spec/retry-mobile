@@ -34,6 +34,10 @@ function clearNativeResolution(jobId) {
 }
 
 async function runJob(job, environment) {
+    if (job.state && job.state !== 'running') {
+        return;
+    }
+
     acquireWakeLock();
     job.jobController ??= new AbortController();
     job.transportFailureCount = 0;
@@ -646,6 +650,10 @@ function extractNativeReplyText(targetMessage) {
 }
 
 async function awaitNativeOutcome(job) {
+    if (job.cancelRequested || (job.state && job.state !== 'running')) {
+        return;
+    }
+
     if (job.nativeResolutionCause === 'native_attempt_timeout') {
         touchJob(job, {
             phase: 'attempt_timed_out',
@@ -1587,6 +1595,23 @@ async function waitBeforeNextAttempt(job, failureKind) {
 }
 
 function finalizeCancelled(job) {
+    if (job.userTombstone || job.recoverySuppressed) {
+        if (job.state !== 'cancelled' || job.phase !== 'cancelled') {
+            touchJob(job, {
+                state: 'cancelled',
+                phase: 'cancelled',
+            });
+        }
+        pruneTerminalJobUnits(job.userContext.handle, job.userContext.directories);
+        notifyTerminalOnce(job, 'cancelled', {
+            attemptCount: job.attemptCount,
+            acceptedCount: job.acceptedCount,
+            targetAcceptedCount: job.targetAcceptedCount,
+            reason: 'user_target_mutated',
+        });
+        return;
+    }
+
     touchJob(job, {
         state: 'cancelled',
         phase: 'cancelled',

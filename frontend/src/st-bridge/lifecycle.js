@@ -11,7 +11,14 @@ import {
     NATIVE_WAIT_PROGRESS_TIMEOUT_MS,
     NATIVE_WAIT_TIMEOUT_MS,
 } from '../constants.js';
-import { getChatIdentity, getContext, getCurrentChatArray, getEventTypes, subscribeEvent } from './internal/ctx.js';
+import {
+    getChatIdentity,
+    getContext,
+    getCurrentChatArray,
+    getEventTypes,
+    ST_EVENT_NAMES,
+    subscribeEvent,
+} from './internal/ctx.js';
 import { confirmTargetTurn, isSameChat, wasInternalChatReloadRecentlyTriggered } from './inspect.js';
 import { createStructuredError } from '../retry-error.js';
 
@@ -48,7 +55,7 @@ export function waitForNativeCompletion({
             ? Date.now() + (Number(attemptTimeoutSeconds) * 1000)
             : 0;
 
-        if (!eventTypes.GENERATION_ENDED) {
+        if (!eventTypes[ST_EVENT_NAMES.GENERATION_ENDED]) {
             reject(createStructuredError(
                 'native_wait_timeout',
                 'Retry Mobile could not subscribe to SillyTavern generation completion events.',
@@ -70,25 +77,25 @@ export function waitForNativeCompletion({
         document.addEventListener('visibilitychange', onVisibilityChange);
 
         stopListening.push(
-            subscribeEvent(eventTypes.GENERATION_ENDED, (messageId) => {
+            subscribeEvent(eventTypes[ST_EVENT_NAMES.GENERATION_ENDED], (messageId) => {
                 lastEndedMessageId = normalizeMessageId(messageId);
                 clearProgressTimeout();
                 clearVisibleProgressPoll();
-                onEvent?.('GENERATION_ENDED', `SillyTavern reported native completion for message ${lastEndedMessageId}.`);
+                onEvent?.(ST_EVENT_NAMES.GENERATION_ENDED, `SillyTavern reported native completion for message ${lastEndedMessageId}.`);
                 void confirmFromObservedEvents();
             }, context),
         );
 
-        if (eventTypes.CHARACTER_MESSAGE_RENDERED) {
+        if (eventTypes[ST_EVENT_NAMES.CHARACTER_MESSAGE_RENDERED]) {
             stopListening.push(
-                subscribeEvent(eventTypes.CHARACTER_MESSAGE_RENDERED, (messageId, type) => {
+                subscribeEvent(eventTypes[ST_EVENT_NAMES.CHARACTER_MESSAGE_RENDERED], (messageId, type) => {
                     lastRenderedMessageId = normalizeMessageId(messageId);
                     lastRenderedType = String(type || '');
                     lastRenderedSummary = `Rendered assistant message ${messageId} (${type || 'unknown'}).`;
                     lastVisibleProgressAt = Date.now();
                     lastVisibleProgressSignature = readMessageProgressSignature(lastRenderedMessageId);
                     clearProgressTimeout();
-                    onEvent?.('CHARACTER_MESSAGE_RENDERED', lastRenderedSummary);
+                    onEvent?.(ST_EVENT_NAMES.CHARACTER_MESSAGE_RENDERED, lastRenderedSummary);
                     if (lastEndedMessageId != null) {
                         void confirmFromObservedEvents();
                     } else {
@@ -98,9 +105,9 @@ export function waitForNativeCompletion({
             );
         }
 
-        if (eventTypes.GENERATION_STOPPED) {
+        if (eventTypes[ST_EVENT_NAMES.GENERATION_STOPPED]) {
             stopListening.push(
-                subscribeEvent(eventTypes.GENERATION_STOPPED, () => {
+                subscribeEvent(eventTypes[ST_EVENT_NAMES.GENERATION_STOPPED], () => {
                     fail(createStructuredError(
                         'native_generation_stopped',
                         'Retry Mobile stopped because SillyTavern stopped the native generation before handoff.',
@@ -109,9 +116,9 @@ export function waitForNativeCompletion({
             );
         }
 
-        if (eventTypes.CHAT_CHANGED) {
+        if (eventTypes[ST_EVENT_NAMES.CHAT_CHANGED]) {
             stopListening.push(
-                subscribeEvent(eventTypes.CHAT_CHANGED, () => {
+                subscribeEvent(eventTypes[ST_EVENT_NAMES.CHAT_CHANGED], () => {
                     const liveIdentity = getChatIdentity(getContext());
                     if (isSameChat(fingerprint?.chatIdentity, liveIdentity) && wasInternalChatReloadRecentlyTriggered(liveIdentity)) {
                         onEvent?.('CHAT_CHANGED_IGNORED', 'Ignored CHAT_CHANGED triggered by Retry Mobile refreshing the current chat.');
@@ -126,9 +133,9 @@ export function waitForNativeCompletion({
             );
         }
 
-        if (eventTypes.CHAT_DELETED) {
+        if (eventTypes[ST_EVENT_NAMES.CHAT_DELETED]) {
             stopListening.push(
-                subscribeEvent(eventTypes.CHAT_DELETED, () => {
+                subscribeEvent(eventTypes[ST_EVENT_NAMES.CHAT_DELETED], () => {
                     fail(createStructuredError(
                         'capture_chat_changed',
                         'Retry Mobile stopped because the active chat was deleted before native completion was confirmed.',
@@ -293,7 +300,7 @@ export function waitForNativeCompletion({
             if (lastRenderedMessageId != null) {
                 candidates.push({
                     messageId: lastRenderedMessageId,
-                    source: 'CHARACTER_MESSAGE_RENDERED',
+                    source: ST_EVENT_NAMES.CHARACTER_MESSAGE_RENDERED,
                     detail: lastRenderedSummary,
                 });
             }
@@ -301,7 +308,7 @@ export function waitForNativeCompletion({
             if (lastEndedMessageId != null && lastEndedMessageId !== lastRenderedMessageId) {
                 candidates.push({
                     messageId: lastEndedMessageId,
-                    source: 'GENERATION_ENDED',
+                    source: ST_EVENT_NAMES.GENERATION_ENDED,
                     detail: `SillyTavern reported native completion for message ${lastEndedMessageId}.`,
                 });
             }
@@ -312,14 +319,14 @@ export function waitForNativeCompletion({
         function describeObservedEvents() {
             const details = [];
             if (lastEndedMessageId != null) {
-                details.push(`GENERATION_ENDED=${lastEndedMessageId}`);
+                details.push(`${ST_EVENT_NAMES.GENERATION_ENDED}=${lastEndedMessageId}`);
             }
 
             if (lastRenderedMessageId != null) {
                 details.push(
                     lastRenderedType
-                        ? `CHARACTER_MESSAGE_RENDERED=${lastRenderedMessageId} (${lastRenderedType})`
-                        : `CHARACTER_MESSAGE_RENDERED=${lastRenderedMessageId}`,
+                        ? `${ST_EVENT_NAMES.CHARACTER_MESSAGE_RENDERED}=${lastRenderedMessageId} (${lastRenderedType})`
+                        : `${ST_EVENT_NAMES.CHARACTER_MESSAGE_RENDERED}=${lastRenderedMessageId}`,
                 );
             }
 

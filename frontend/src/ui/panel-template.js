@@ -114,16 +114,8 @@ export function buildPanelTemplate(options = {}) {
                         </div>
                         <div class="rm-checkbox-grid">
                             <label class="rm-checkbox">
-                                <input data-setting="notifyOnSuccess" type="checkbox" />
-                                <span>${escapeHtml(t('panel.notifyOnAccepted'))}</span>
-                            </label>
-                            <label class="rm-checkbox">
                                 <input data-setting="notifyOnComplete" type="checkbox" />
                                 <span>${escapeHtml(t('panel.notifyOnComplete'))}</span>
-                            </label>
-                            <label class="rm-checkbox">
-                                <input data-setting="vibrateOnSuccess" type="checkbox" />
-                                <span>${escapeHtml(t('panel.vibrateOnAccepted'))}</span>
                             </label>
                             <label class="rm-checkbox">
                                 <input data-setting="vibrateOnComplete" type="checkbox" />

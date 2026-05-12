@@ -91,6 +91,57 @@ test('replayCapturedRequest forwards cookie and csrf headers from the successful
     }
 });
 
+test('runJob preserves user_target_mutated event when cancellation finalizer races a tombstone', async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-tombstone-cancel-'));
+    const job = {
+        jobId: 'job-tombstone-race',
+        runId: 'run-tombstone-race',
+        state: 'running',
+        phase: 'awaiting_retry_results',
+        cancelRequested: true,
+        userTombstone: {
+            at: new Date().toISOString(),
+            mutationType: 'message_deleted',
+            reason: 'assistant_missing_after_delete',
+            sourceEvent: 'MESSAGE_DELETED',
+            targetMessageVersion: 1,
+        },
+        recoverySuppressed: true,
+        eventSeq: 1,
+        lastEvent: {
+            seq: 1,
+            type: 'user_target_mutated',
+            at: new Date().toISOString(),
+            detail: null,
+        },
+        notificationLedger: {},
+        attemptCount: 0,
+        acceptedCount: 0,
+        targetAcceptedCount: 2,
+        maxAttempts: 3,
+        nativeState: 'pending',
+        runConfig: {
+            notifyOnComplete: false,
+            vibrateOnComplete: false,
+        },
+        userContext: {
+            handle: 'test-user',
+            directories: { root: tempRoot },
+        },
+    };
+
+    try {
+        await runJob(job, { baseUrl: 'http://127.0.0.1:8000' });
+
+        assert.equal(job.state, 'cancelled');
+        assert.equal(job.phase, 'cancelled');
+        assert.equal(job.lastEvent.type, 'user_target_mutated');
+        assert.equal(job.notificationLedger['terminal:cancelled'].eventType, 'user_target_mutated');
+    } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('replayCapturedRequest includes auth-context diagnostics when generation replay fails', async () => {
     const originalFetch = global.fetch;
     global.fetch = async () => ({

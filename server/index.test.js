@@ -186,6 +186,83 @@ test('restoreSinglePersistedJob skips terminal snapshots and deletes them from d
     }
 });
 
+test('restoreSinglePersistedJob records terminal event identity and notification dedupe on running recovery', () => {
+    jobs.clear();
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'retry-mobile-running-restore-'));
+    const handle = 'default-user';
+    const userRoot = path.join(tempRoot, handle);
+    const directories = createRecoveryDirectories(userRoot);
+    const chatPath = path.join(directories.chats, 'hero', 'session-1.jsonl');
+    const snapshot = {
+        schemaVersion: 1,
+        jobId: 'restored-running-job',
+        runId: 'restored-running-run',
+        state: 'running',
+        phase: 'awaiting_retry_results',
+        chatIdentity: {
+            kind: 'character',
+            chatId: 'session-1',
+            fileName: 'session-1',
+            avatarUrl: 'hero.png',
+            groupId: null,
+        },
+        chatKey: 'character::session-1::',
+        userContext: { handle, directories },
+        acceptedCount: 1,
+        attemptCount: 1,
+        targetAcceptedCount: 1,
+        maxAttempts: 3,
+        capturedChatIntegrity: 'integrity-a',
+        targetFingerprint: {
+            userMessageIndex: 0,
+            userMessageText: 'Hello there',
+        },
+        runConfig: {
+            notifyOnComplete: false,
+            vibrateOnComplete: false,
+        },
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+    };
+    writeJsonl(chatPath, [
+        {
+            chat_metadata: {
+                integrity: 'integrity-a',
+            },
+        },
+        {
+            name: 'You',
+            is_user: true,
+            mes: 'Hello there',
+        },
+        {
+            name: 'Hero',
+            is_user: false,
+            mes: 'Recovered swipe',
+            swipe_info: [
+                {
+                    extra: {
+                        retryMobileJobId: 'restored-running-job',
+                    },
+                },
+            ],
+        },
+    ]);
+
+    try {
+        plugin._test.restoreSinglePersistedJob(snapshot);
+
+        const job = getJob(snapshot.jobId);
+        assert.equal(job.state, 'completed');
+        assert.equal(job.lastEvent.type, 'completed');
+        assert.equal(job.lastEvent.detail.source, 'restart_recovery');
+        assert.equal(job.notificationLedger['terminal:completed'].eventType, 'completed');
+    } finally {
+        jobs.clear();
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+});
+
 test('restorePersistedJobsWith() skips a corrupt snapshot and still processes the remaining ones — one bad snapshot must not kill the whole boot', async () => {
     const processed = [];
     const snapshots = [
@@ -335,6 +412,57 @@ test('target-mutated route suppresses terminal recovery without rewriting termin
     jobs.clear();
 });
 
+test('target-mutated route rejects reports without a chat identity', async () => {
+    jobs.clear();
+    const posts = new Map();
+    const router = {
+        get() {},
+        post(routePath, handler) {
+            posts.set(routePath, handler);
+        },
+    };
+
+    plugin._test.bootState.ready = true;
+    plugin._test.bootState.promise = null;
+    plugin._test.bootState.lastError = '';
+    await plugin.init(router);
+
+    const identity = { kind: 'character', chatId: 'chat-missing-identity', groupId: null };
+    createJob({
+        jobId: 'job-missing-identity',
+        runId: 'run-missing-identity',
+        state: 'running',
+        phase: 'awaiting_retry_results',
+        chatIdentity: identity,
+        chatKey: buildChatKey(identity),
+        targetAcceptedCount: 2,
+        runConfig: {},
+        userContext: {
+            handle: 'test-user',
+            directories: { root: path.join(os.tmpdir(), 'retry-mobile-missing-identity') },
+        },
+        skipPersist: true,
+    });
+
+    const response = createResponse();
+    await posts.get('/target-mutated/:jobId')({
+        params: { jobId: 'job-missing-identity' },
+        body: {
+            runId: 'run-missing-identity',
+            mutationType: 'message_deleted',
+            reason: 'assistant_missing_after_delete',
+            sourceEvent: 'MESSAGE_DELETED',
+            targetMessageVersion: 1,
+        },
+    }, response);
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(getJob('job-missing-identity').userTombstone, null);
+    assert.equal(getJob('job-missing-identity').recoverySuppressed, false);
+
+    jobs.clear();
+});
+
 function createResponse() {
     return {
         statusCode: 200,
@@ -351,4 +479,23 @@ function createResponse() {
             return payload;
         },
     };
+}
+
+function createRecoveryDirectories(rootPath) {
+    const directories = {
+        root: rootPath,
+        chats: path.join(rootPath, 'chats'),
+        groupChats: path.join(rootPath, 'groups'),
+        backups: path.join(rootPath, 'backups'),
+    };
+
+    fs.mkdirSync(path.join(directories.chats, 'hero'), { recursive: true });
+    fs.mkdirSync(directories.groupChats, { recursive: true });
+    fs.mkdirSync(directories.backups, { recursive: true });
+    return directories;
+}
+
+function writeJsonl(filePath, rows) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, rows.map((row) => JSON.stringify(row)).join('\n'), 'utf8');
 }
